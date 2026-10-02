@@ -2,18 +2,34 @@ import { describe, expect, it } from "vitest";
 
 import * as contract from "../src/edge-origin-contract";
 import {
-  checkContractSources,
   EDGE_ORIGIN_CONTRACT_CHECKS,
   type ContractAssert,
 } from "./edge-origin-contract-vectors";
 
-// The same checks run under Node in cloud-run/edge-origin-contract.check.mjs,
-// which also compares the callback-query rule with the Cloud Run boundary.
+// Production-line port (edge port of d43c8f92). The same vectors run on the
+// GCP line (claude/gcp-fastpath-final), whose Node check and source check
+// also compare the callback-query rule with cloud-run/request-boundary.mjs.
+// This line has no cloud-run/ origin, so here the source check covers the
+// contract alone. The contract-blob rule (E10's EDGE_CONTRACT_DRIFT, E12's
+// EDGE_BUNDLE_CONTRACT_DRIFT) requires this file to be byte-identical to the
+// GCP line's, where the full comparison runs.
 
-// Vite's ?raw query returns a file's text; the specifiers are variables so
-// the type checker does not need a module declaration for them.
+// Vite's ?raw query returns a file's text; the specifier is a variable so
+// the type checker does not need a module declaration for it.
 const CONTRACT_SOURCE_SPECIFIER = "../src/edge-origin-contract.ts?raw";
-const REQUEST_BOUNDARY_SOURCE_SPECIFIER = "../cloud-run/request-boundary.mjs?raw";
+
+const RUNTIME_SPECIFIC_SOURCE_PATTERNS: readonly (readonly [label: string, pattern: RegExp])[] = [
+  ["static import", /^\s*import\b/mu],
+  ["dynamic import", /\bimport\s*\(/u],
+  ["re-export", /\bexport\s+(?:\*|\{[^}]*\})\s*from\b/u],
+  ["require", /\brequire\s*\(/u],
+  ["node: specifier", /["']node:/u],
+  ["Buffer", /\bBuffer\b/u],
+  ["process", /\bprocess\b/u],
+  ["globalThis", /\bglobalThis\b/u],
+  ["Workers cache", /\bcaches\b/u],
+  ["console", /\bconsole\b/u],
+];
 
 async function rawSource(specifier: string): Promise<string> {
   const module: { readonly default?: unknown } = await import(/* @vite-ignore */ specifier);
@@ -47,11 +63,18 @@ describe("edge/origin transport contract (workerd)", () => {
   }
 
   it("keeps the contract source self-contained and runtime-neutral", async () => {
-    const [contractSource, requestBoundarySource] = await Promise.all([
-      rawSource(CONTRACT_SOURCE_SPECIFIER),
-      rawSource(REQUEST_BOUNDARY_SOURCE_SPECIFIER),
-    ]);
-    checkContractSources({ contract: contractSource, requestBoundary: requestBoundarySource }, assert);
+    const code = (await rawSource(CONTRACT_SOURCE_SPECIFIER))
+      .replace(/\/\*[\s\S]*?\*\//gu, "")
+      .split("\n")
+      .filter((line) => !/^\s*\/\//u.test(line))
+      .join("\n");
+    expect(code).toContain("export function parseCloudRunInvokerClaims");
+    for (const [label, pattern] of RUNTIME_SPECIFIC_SOURCE_PATTERNS) {
+      expect(pattern.test(code), label).toBe(false);
+    }
+    // No per-address header, derivation or pattern.
+    expect([...new Set(code.match(/\w*client\w*/giu) ?? [])])
+      .toStrictEqual(["EDGE_MIN_CLIENT_KEY_SECRET_LENGTH"]);
   });
 
   it("never writes rejected input to the console", () => {
