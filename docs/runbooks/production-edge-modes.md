@@ -21,6 +21,8 @@ status: maintained
 > `1bea3b5f`). The edge code it describes is blob-identical on both lines. This
 > text differs in five places: the deploy-line rule, the release-guard D1
 > procedure, the secret order, the Node.js requirement, and the local gates.
+> It also adds section 11, the staging-edge rehearsal. Its driver (STG-DRV)
+> exists only on this line.
 > Files that exist only on the GCP line are written as paths. Take exact flags
 > from this line's code.
 
@@ -33,7 +35,8 @@ The production Worker's thin edge has three modes: `worker`, `fenced` and
 - the writer fence, the brake and the abort;
 - the pre-gcp verifier;
 - releases in gcp mode;
-- the local proof.
+- the local proof;
+- the staging-edge rehearsal.
 
 Authority:
 
@@ -127,7 +130,9 @@ npx vitest run test/edge-*.spec.ts test/distribution-analytics*.spec.ts
 `edge:scripts-check` runs in this order (`scripts:check` also runs it):
 
 1. the R2 inventory, writer fence, EP-9, E10 and dry-run checks;
-2. the edge-mode dry run (section 10).
+2. the edge-mode dry run (section 10);
+3. `staging-edge:scripts-check`: the staging driver's checks and the staging
+   dry run (section 11).
 
 **Endpoint check on every deploy.** Every deploy, with or without
 `--edge-mode`, runs the deployment endpoint check. That check now also
@@ -151,9 +156,8 @@ an edge-mode fault.
 - **The staging rehearsal.** Rehearse worker, fenced (with an EP-8 drill) and
   gcp on a staging Worker before the first production use of each mode. The
   staging Worker has its own hostnames, Access application and Cloud Run
-  service. The rehearsal needs STG-DRV, the typed staging driver, and STG-DRV
-  does not exist yet. When it is built, it must be built on this line with
-  E10.
+  service. STG-DRV, the typed staging driver, is on this line with E10
+  (section 11). The gating rehearsal runs from the deploy line.
 
 ## 2. Release-guard D1
 
@@ -649,3 +653,294 @@ PG_TEST_SOCKET=<local PostgreSQL 17 socket> PG_TEST_PORT=<port> \
 
 The optional live check (OD-E3) against the GCP test origin runs from the GCP
 line only. Each of its tiers needs the owner's authorization.
+
+## 11. Staging-edge rehearsal
+
+The staging edge is a separate Worker with its own name, hostnames, Access
+application, D1 databases, buckets, rate-limit namespaces and release-guard
+D1. The staging-edge plan (`design/staging-edge-plan-2026-10-02.md` in the
+parity home) owns its design, the owner proposals D-S1 to D-S10 and the
+resource names. The owner creates every Cloudflare and Google Cloud resource
+and runs every command marked as a write. Nothing here authorizes one.
+
+**What it proves.** The rehearsal qualifies the edge mechanics on a Worker
+that can fail without touching production:
+
+- the three modes and their transitions;
+- the EP-9 overlay and its isolation guard;
+- the EP-8 fence and the abort;
+- the edge secrets and their puts;
+- the edge-tier limits and the Access chokepoint;
+- the release-guard D1;
+- forwarding to a real Cloud Run origin.
+
+It does not qualify the production zone, the production Access application,
+the production hostnames, production data, the CR-6 and CR-7 origin
+composition, Workers Rate Limiting across production locations, or the
+signed-release and updater paths. A pre-P run, from a line other than the
+deploy line, qualifies only that line's mechanics.
+
+### The driver
+
+`npm run staging-edge -- <subcommand>` runs `scripts/staging-edge-deploy.mjs`
+from `apps/worker`. Every subcommand is a dry run unless it is given
+`--execute`. It drives the staging Worker through E10's own gates:
+`prepareEdgeModeDeployment` runs with EP-9's staging overlay
+(`applyEdgeModeStagingOverlay` and `applyEdgeModeStagingSnapshotDelta`), bound
+to the production isolation inputs. The transition matrix, the fence-history
+rule for the abort, source descent, the entry and contract blobs, the six
+edge-tier bindings, the edge secrets, the pre-gcp origin verifier, the
+contract-blob identity, the release-guard migration gate and the
+privacy-marker rule are therefore production's code paths, aimed at the
+staging Worker.
+
+| Subcommand | Dry run (default) | With `--execute` |
+|---|---|---|
+| `render` | Validates the inputs, checks them against the production references and prints the digests of every rendered file. `--write --output-directory <new private dir>` writes the files | Not accepted |
+| `deploy` | Runs every pre-upload gate. Writes the candidate config and a content-free `plan.json` into a new private output directory | Also needs `--confirm DEPLOY_STAGING_EDGE` and `--expected-candidate-sha256 <the dry run's candidateConfigSha256>`. It recaptures the predecessor, deploys with Wrangler and verifies the captured live version |
+| `reconcile` | Compares a captured private staging inventory with a deploy's plan: `verified`, `not_deployed` or `drift` | Captures the inventory itself, read-only |
+| `endpoints` | Prints the per-mode public-surface matrix | Reads it, with GET only and no credentials |
+| `rehearsal` | Prints the R1 and R2 sequence with each step's expected outcome | Not accepted |
+
+### Inputs and refusals
+
+- **The template.** `apps/worker/ops/staging-edge/staging-edge.template.jsonc`
+  is committed with placeholders only. It starts from the checked-in
+  `env.staging` vars and changes only what the plan's section 3.2 lists.
+  JSON storage mode never reads `TELEMETRY_STORAGE_NAMESPACE`, so the template
+  omits it. It holds the two rate-limit profiles, `rehearsal` and `load`, in
+  namespaces 4001 to 4008.
+- **The inputs.** The owner's private, non-secret inputs file, mode 0600 and
+  outside the repository, follows
+  `apps/worker/ops/staging-edge/staging-edge-inputs.example.json` (schema
+  `staging-edge-inputs-v1`). It holds:
+  - the account;
+  - the two Worker names;
+  - the public hostname (the admin hostname is derived);
+  - the Access team domain, AUD and owner email;
+  - the five D1 ids and names;
+  - the two buckets;
+  - the rate-limit profile;
+  - the stand-in cron;
+  - the fence quiet window;
+  - the staging origin, or `null` until it exists.
+
+  It never holds a secret.
+- **Refusals.** Every Worker, D1 and bucket name must contain `staging`, and
+  the public hostname needs a `staging` label below its zone. The driver
+  refuses, before rendering:
+  - a production or reserved Worker name (`STAGING_EDGE_PRODUCTION_WORKER`):
+    `app-usagemonitor`, the existing `app-usagemonitor-staging`, every name in
+    `wrangler.jsonc` and `wrangler.dogfood.jsonc`, and the production
+    snapshot's;
+  - a production hostname (`STAGING_EDGE_PRODUCTION_HOSTNAME`): the five
+    production hostnames, every checked-in route and the production snapshot's
+    domains and routes;
+  - a production D1 id or name (`STAGING_EDGE_PRODUCTION_DATABASE`), including
+    `tibotattle-release-guard` and the production gcp plan's guard D1;
+  - a production bucket (`STAGING_EDGE_PRODUCTION_BUCKET`);
+  - a checked-in rate-limit namespace (`STAGING_EDGE_PRODUCTION_RATE_LIMIT`);
+  - a staging inventory that is not the staging Worker's
+    (`STAGING_EDGE_INVENTORY_TARGET_MISMATCH`), such as production's own.
+
+  EP-9 then refuses any production reference on the live staging version, the
+  rendered config or the gcp plan (`EDGE_MODE_STAGING_PRODUCTION_REFERENCE`).
+- **Production isolation inputs.** Every `deploy` takes the owner-private
+  production inventory and its sha256, and either the production gcp plan
+  (`--production-plan`) or `--production-plan-absent`. Use the plan from the
+  moment the owner creates the production origin and guard D1 (OWN-12). After
+  the production gcp switch, also pass a pre-gcp production inventory
+  (`--production-baseline-inventory`).
+
+### Render the resources (plan phases B, C and G)
+
+```bash
+npm run staging-edge -- render --inputs <private inputs.json> \
+  --production-inventory <private production inventory> --production-inventory-sha256 <sha256> \
+  --write --output-directory <new private directory>
+```
+
+It writes these files, each mode 0600:
+
+- `staging-edge.tracked.json`: the rendered staging config, for review;
+- `standin.wrangler.json`: the stand-in fenced cron Worker;
+- one `migrations-<role>.wrangler.json` for each D1;
+- `fence-plan.json`: the EP-8 plan, validated by the fence's own validator;
+- `gcp-plan.json`: the staging gcp plan, validated by EP-9, once the inputs
+  name the origin.
+
+**The stand-in.** `apps/worker/ops/staging-edge/catchup-standin/` is a cron
+Worker that binds only `STORAGE_ANALYTICS_CATCHUP_CONTROL_DB`. Each run
+inserts one heartbeat row (the scheduled time and the cron). That gives the
+fence's quiescence proof real writes and invocations to see stop. Apply its
+migration, then deploy it with `wrangler deploy --config
+<directory>/standin.wrangler.json --strict`.
+
+**The D1 migrations.** Apply each with `wrangler d1 migrations apply
+<database name> --remote --config <directory>/migrations-<role>.wrangler.json`,
+then list them to confirm that nothing is pending. Mark the data D1s pre-P
+until the owner names P's migration tail.
+
+### Typed deploys
+
+Each `deploy` run needs a new private output directory outside the
+repository. It writes these files, each mode 0600:
+
+- `candidate.wrangler.json`, with absolute entry, site and migration paths;
+- `plan.json`;
+- the baseline and expected snapshots;
+- `target.json`.
+
+After an executed run it also writes:
+
+- `operation.json`, saved before Wrangler runs;
+- `post-deploy-inventory.json`;
+- `receipt.json`.
+
+`plan.json` is content-free. It holds:
+
+- the modes and the transition identity;
+- the overlay sha256 and the contract blob;
+- the source and previous source;
+- the inventory sha256 and the two fingerprints;
+- `candidateConfigSha256`;
+- the release-guard pending count;
+- `typedSchemaInspection: "not_applicable_staging_json_topology"`;
+- the exact Wrangler arguments.
+
+| Mode | Flags beyond the common ones |
+|---|---|
+| Genesis `worker` | `--genesis`. With `--execute`, also `--secrets-file <owner-private 0600 file>` |
+| `worker` | The live inventory: `--inventory`, `--inventory-sha256`, `--expected-previous-source`. After a fence, `--fence-receipt` and `--fence-receipt-sha256` |
+| `fenced` | The live inventory |
+| `gcp` | The live inventory, `--origin-commit` and `--origin-verifier-account`. The plan comes from the inputs' origin and the staging release-guard D1. Add `--candidate-site` when the site is built from the source |
+
+The common flags are `--inputs`, `--production-inventory`,
+`--production-inventory-sha256`, `--production-plan` or
+`--production-plan-absent`, `--site <candidate site directory>` and
+`--output-directory`.
+
+**Two differences from production:**
+
+- **Genesis.** The first deploy has no live predecessor, so source descent
+  and the fence history do not apply. It checks null → worker, the entry and
+  contract blobs, and the staging overlay and isolation guard on the snapshot
+  the rendered config declares. Wrangler refuses to create a Worker with
+  required secrets unless `--secrets-file` supplies them. The driver checks
+  that file's metadata only (regular, mode 0600, the caller's) and hands it
+  to Wrangler by path, so its contents are never read. Delete the file after
+  the deploy. An executed genesis is refused if the Worker already exists.
+  R1.1, the first worker → worker redeploy, then runs every E10 gate.
+- **Typed schema inspection.** It does not apply to the staging edge's JSON
+  topology (U-4), so it is skipped, and the plan says so.
+
+**An executed deploy:**
+
+1. Requires a clean checkout at the planned source.
+2. Requires the dry run's candidate bytes.
+3. Runs the workspace-package guard.
+4. Recaptures the live staging version. It refuses
+   `STAGING_EDGE_PREDECESSOR_CHANGED` unless the version is the planned
+   baseline.
+5. Saves `operation.json` with outcome `outcome_unknown`.
+6. Runs `wrangler deploy --config <candidate> --env production --strict`.
+   Wrangler gets only `PATH`, `HOME` and `CLOUDFLARE_API_TOKEN`. An endpoint
+   override is refused.
+7. Captures the new version. It requires the expected fingerprint (for
+   genesis, the candidate config), a new version, and EP-9's live check with
+   the staging domains.
+
+`CLOUDFLARE_API_TOKEN` comes from the approved credential mechanism. It is
+never printed, written or put in an error. On an uncertain outcome, run
+`reconcile`; never retry with raw Wrangler.
+
+### Endpoints
+
+After each deploy, run `npm run staging-edge -- endpoints --edge-mode <mode>
+--inputs <private inputs> --expected-source <edge commit> [--origin-commit
+<origin commit>] --execute`. It checks the following:
+
+- **Health.** Public health is checked with E10's edge health rule against the
+  staging origin. Fenced must be barrier health. Worker must report the edge
+  commit and gcp the origin commit.
+- **Retained site.** The release manifest answers 200, and the root carries no
+  dashboard marker.
+- **Fenced.** `/api/ready` answers `503 MUTATION_BARRIER_ACTIVE`.
+- **Forbidden paths.** Every forbidden path follows the mode table of
+  `check-deployment-endpoints.mjs`.
+- **Admin host.** An unauthenticated request to the admin host must redirect
+  to the Access team domain in every mode (N10).
+
+The staging Worker has no `www` host, so the `www` redirect is not checked.
+
+### The sequence
+
+`npm run staging-edge -- rehearsal` prints every step with its command and its
+expected outcome. Run each deploy step without `--execute` first and compare
+the result with the expected outcome. Then rerun only the ok steps with
+`--execute`. Never execute a refusal step. Worker → gcp is forbidden, so the
+abort and gcp are separated by a fresh fenced step and a fresh fence.
+
+| Steps | Transition | Expected |
+|---|---|---|
+| R1.0 | Genesis, none → worker | ok |
+| R1.1 | worker → worker | ok |
+| R1.2 | worker → gcp (N3) | `EDGE_MODE_TRANSITION_FORBIDDEN` |
+| R1.3 | worker → fenced | ok; the stand-in's heartbeats still increase |
+| R1.4 to R1.7 | EP-8 `inventory`, `plan`, `apply`, `verify` | ok; after the quiet window there are no heartbeat writes and no stand-in invocations |
+| R1.8 | fenced → fenced | ok |
+| R1.9 | fenced → gcp, inputs with origin `null` | `EDGE_MODE_PLAN_REQUIRED` |
+| R1.10 | fenced → gcp before phase F (N1) | `EDGE_MODE_SECRET_MISSING` |
+| R1.11 | fenced with a marked site (N4) | `EDGE_PRIVACY_PAGE_PREMATURE` |
+| R1.12 | fenced → worker without the fence receipt | `EDGE_MODE_TRANSITION_FORBIDDEN` |
+| R1.13 | Abort: fenced → worker with the fence receipt | ok |
+| R1.14 | EP-8 `release --pre-gcp` | ok; the exact cron returns |
+| R1.15 | EP-8 `verify` on the released fence (N7) | `FENCE_RELEASED` |
+| Phase F | The four gcp secrets, in worker mode | Recapture the inventory after each put |
+| R2.0 to R2.4 | worker → fenced, then a fresh fence in a new receipts directory | ok |
+| R2.5 | fenced → gcp naming an unmigrated throwaway guard D1 (N2) | `EDGE_MODE_RELEASE_GUARD_MIGRATIONS_PENDING` |
+| R2.6 | fenced → gcp without `--candidate-site` | `EDGE_PRIVACY_PAGE_NOT_CUTOVER` |
+| R2.7 | The switch: fenced → gcp | ok, with the stated `RETIRED_SECRET_PRESENT` warning |
+| R2.8 | gcp → gcp | ok |
+| R2.9 | Brake: gcp → fenced | ok |
+| R2.10 | fenced → worker after gcp | `EDGE_MODE_TRANSITION_FORBIDDEN` |
+| R2.11 | EP-8 `release --pre-gcp` after gcp (N6) | `FENCE_RELEASE_AFTER_GCP` |
+| R2.12, R2.13 | fenced → gcp, then the brake again | ok; the rehearsal ends fenced |
+
+The gcp drills in the plan's section 7 R2 step 5 are manual owner steps
+between R2.7 and R2.9:
+
+- the `CLIENT_ATTEMPT_RATE_LIMIT` exhaustion (N9);
+- the invoker-key rotation;
+- the revoked-key drill (N8).
+
+Record each cycle in a content-free receipt, as the plan's section 10 says.
+
+**Limits:**
+
+- **Rate-limit profiles.** A typed redeploy reproduces the live limits. A
+  profile therefore takes effect only at genesis. Moving a live staging edge
+  to the `load` profile is not a mode transition and needs its own reviewed
+  change.
+- **The gcp half.** It needs the staging origin, D-CRB, the staging OPS-2
+  apply and the verifier smoke.
+- **Remote reads in a dry run.** A dry run still makes the gcp origin
+  verifier, the fence-history and the release-guard ledger reads. Each needs
+  its credential.
+
+### Local proof
+
+`npm run staging-edge:dry-run` makes no remote call:
+
+1. It renders the template with the synthetic example inputs, against EP-9's
+   synthetic production snapshot.
+2. It walks every deploy step of the sequence through the driver's own dry
+   run, and each step must give its expected outcome. The fence steps only
+   move the simulated fence; `cloudflare-writer-fence.check.mjs` covers EP-8
+   itself.
+3. It bundles four candidates and the stand-in with `wrangler deploy
+   --dry-run`, under PATH and HOME only. The candidates are the genesis
+   worker, fenced, gcp and the brake.
+
+`npm run staging-edge:scripts-check` runs the driver's checks and then that dry
+run.

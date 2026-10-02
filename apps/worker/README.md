@@ -295,9 +295,15 @@ The thin edge (`src/edge-entry.ts`) deploys only through the typed path with
 `--edge-mode worker|fenced|gcp`. The checked-in `wrangler.jsonc` still names
 `src/index.ts`. The edge's release-guard D1 has its own
 `release-guard-migrations/` directory, which no deploy applies.
-`npm run edge:scripts-check` runs the edge script checks and then
-`npm run edge:modes:dry-run`, the credential-free bundle of each mode. Both need
-a Node.js release that strips TypeScript types by default. The
+`npm run edge:scripts-check` runs the edge script checks, then
+`npm run edge:modes:dry-run`, the credential-free bundle of each mode, and then
+`npm run staging-edge:scripts-check`. That last script checks the typed
+staging-edge driver (`npm run staging-edge`, STG-DRV) and runs its offline
+rehearsal dry run. Every staging-edge subcommand is a dry run unless given
+`--execute`, and it refuses any production Worker, hostname, D1, bucket or
+rate-limit namespace. The committed template, example inputs and stand-in
+cron Worker live in `ops/staging-edge/`. These scripts need a Node.js release
+that strips TypeScript types by default. The
 [production edge modes runbook](../../docs/runbooks/production-edge-modes.md)
 governs these operations. It is not operational until the first typed
 worker-mode edge deploy.

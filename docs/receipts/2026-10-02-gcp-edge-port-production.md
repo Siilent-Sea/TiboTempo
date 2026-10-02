@@ -351,6 +351,83 @@ version.
 | Repository root `npm run test:preflight` | Exit 0, 20 of 20 |
 | Repository root `npm run architecture:check` | Passed: 676 production files, 2,861 imports, 0 debt edges |
 
+## Addendum: STG-DRV, the typed staging-edge driver
+
+Added on 2026-10-02, after the port. The code is commit `e06768de` on this
+branch. The evidence is local and synthetic, from the same workstation, on
+Node.js 26.2.0 and wrangler `4.114.0`. No credential was present, and
+wrangler ran with `--dry-run` only. Nothing was deployed, put, migrated or
+created. No Cloudflare, Google or production endpoint was called. The
+staging-edge rehearsal itself has not run. This addendum does not qualify it.
+
+**What it adds.** It follows the staging-edge plan's STG-DRV, STG-STANDIN and
+STG-PLAN items. The procedure is section 11 of the
+[edge runbook](../runbooks/production-edge-modes.md).
+
+- **The driver.** `scripts/staging-edge-deploy.mjs` (`npm run staging-edge`)
+  has five subcommands: `render`, `deploy`, `reconcile`, `endpoints` and
+  `rehearsal`. Each is a dry run unless it is given `--execute`. `deploy`
+  runs E10's `prepareEdgeModeDeployment` with EP-9's staging overlay. An
+  executed deploy needs `--confirm DEPLOY_STAGING_EDGE` and the dry run's
+  candidate sha256.
+- **The target library.** `scripts/staging-edge-target.mjs` holds:
+  - the closed private inputs schema (`staging-edge-inputs-v1`);
+  - the template renderer and the genesis snapshot;
+  - the EP-8 fence plan and gcp plan wrappers, validated by the fence's and
+    EP-9's own validators;
+  - the refusals of every production or reserved Worker name, hostname, D1,
+    bucket and rate-limit namespace.
+- **The committed inputs.** `ops/staging-edge/` holds:
+  - the template, with placeholders only;
+  - synthetic example inputs;
+  - the stand-in fenced cron Worker and its one heartbeat migration.
+- **Changes to existing code.** E10 (`production-edge-mode.mjs`) gains the
+  optional `overlay` and `renderTrackedConfig` parameters.
+  `recheckProductionEdgeHealth` in `production-deploy.mjs` gains an optional
+  `origin`. Their defaults keep production's behaviour: the E10, EP-9, deploy
+  and reconcile checks pass unchanged, 106 of 106. These two files are
+  therefore no longer blob-identical to the GCP line ([Open](#open)).
+
+**Findings while building it:**
+
+- **Genesis secrets.** Wrangler `4.114.0` refuses to create a Worker whose
+  config lists `secrets.required` unless `--secrets-file` supplies them. Its
+  code says "required secrets missing before first deploy". The plan's phase
+  D order (deploy, then put the three worker-mode secrets) therefore cannot
+  work. The genesis deploy takes the owner's 0600 secrets file by path
+  instead. The driver checks its metadata only, never reads it, and refuses
+  an executed genesis if the Worker already exists.
+- **The empty namespace var.** The typed render refuses an empty var, so
+  `env.staging`'s empty `TELEMETRY_STORAGE_NAMESPACE` cannot round-trip. JSON
+  storage mode never reads it, so the template omits it.
+- **Rate-limit profiles.** A typed redeploy reproduces the live limits. The
+  `load` profile therefore takes effect only at genesis. Moving a live
+  staging edge to it needs its own reviewed change.
+- **The stand-in's exports.** The stand-in exports only its handler, because
+  workerd refuses a named export that is not a handler.
+- **U-4.** Typed schema inspection is skipped for the staging edge's JSON
+  topology. Every plan records
+  `typedSchemaInspection: "not_applicable_staging_json_topology"`.
+- **U-5.** The Access team domain and the owner email are not refused as
+  production references. The checks cover this.
+- **Sequence numbering.** The requested order runs worker, fenced (EP-8
+  drill), abort to worker, gcp, then brake to fenced. It needs a fresh fenced
+  step and a fresh fence between the abort and gcp, as the plan's finding 5
+  says. `npm run staging-edge -- rehearsal` prints that sequence as R1.0 to
+  R2.13, with each step's command and expected outcome.
+
+**Gates.** These ran on the commit's tree:
+
+| Gate | Result |
+|---|---|
+| `npm run staging-edge:scripts-check` | Exit 0: 29 of 29, then the staging dry run |
+| Staging dry run (`npm run staging-edge:dry-run`) | All 19 deploy steps of R1.0 to R2.13 (11 more are EP-8 steps) give their expected outcome through the driver's own dry run, against EP-9's synthetic production snapshot. The worker, fenced, gcp and brake candidates and the stand-in bundle with `wrangler deploy --dry-run` under PATH and HOME only. gcp and the brake keep only `RELEASE_GUARD_DB` and `SPARKLE_RELEASES`; gcp has no crons; all keep the eight rate limits and the Durable Object. Overlay sha256: `3e72fae5…` (worker), `98904b29…` (fenced), `23b4f471…` (gcp, synthetic staging plan) |
+| `npm run scripts:check` (apps/worker) | Exit 0: 24 node:test runs, 1,105 pass, 0 fail, then both edge dry runs |
+| E10, EP-9, deploy and reconcile checks | 106 of 106, unchanged |
+| `npx tsc --noEmit` (apps/worker) | Exit 0 |
+| Repository root `npm run architecture:check` | Passed: 677 production files, 2,861 imports, 0 debt edges |
+| Repository root `npm run test:preflight`, with this addendum and the runbook section in place | Exit 0: root workspace hygiene clean; documentation governance valid across 289 Markdown files and 1,196 source and config files; 20 of 20 |
+
 ## PROD-5: owner-run steps
 
 Every step below is a protected operation. Each needs the owner's explicit
@@ -444,13 +521,20 @@ this before the first production use of each mode, as
 `design/staging-edge-plan-2026-10-02.md` in the parity home lays out. The
 gating rehearsal (R1 and R2 there) must run from this line.
 
-This step is blocked today:
+At the port's head (`218fa91a`) this step was blocked: no typed staging-edge
+driver existed, and EP-9's staging overlay was only a library. STG-DRV is now
+on this line, with E10 ([addendum](#addendum-stg-drv-the-typed-staging-edge-driver)).
+The owner-run procedure is section 11 of the runbook. The owner runs it in
+this order:
 
-- No typed staging-edge driver (STG-DRV) exists on either line.
-- EP-9's staging overlay exists only as a library, and E10 deploys production
-  only.
-- STG-DRV must be built on this line, with E10, before this step can run.
-- The gcp half also needs the staging origin.
+1. Phases A to C and G of the plan: `npm run staging-edge -- render`, the D1s,
+   buckets, migrations, stand-in and Access application.
+2. R1, from genesis to the abort and release.
+3. Phase F.
+4. R2.
+
+The gcp half (R2) still needs the staging origin: D-CRB, the staging OPS-2
+apply and the verifier smoke.
 
 ### 5. Worker-mode edge deploy (P1)
 
@@ -524,8 +608,13 @@ only brake is gcp → fenced (OWN-10).
 
 ## Open
 
-- **STG-DRV.** The typed staging-edge driver does not exist. PROD-5's staging
-  rehearsal cannot run until it is built on this line.
+- **STG-DRV.** Built on this line ([addendum](#addendum-stg-drv-the-typed-staging-edge-driver)).
+  The staging rehearsal itself (R1 and R2) is owner-run and has not run. Its
+  gcp half waits for the staging origin.
+- **E10 differs from the GCP line.** STG-DRV adds optional parameters to
+  `production-edge-mode.mjs` and `production-deploy.mjs`; their defaults keep
+  production's behaviour. Port them, or reconcile the two copies, when the
+  lines merge.
 - **The E12 S0 fix.** `41bd9702` is not merged into
   `claude/gcp-fastpath-final`. Until it is, E12 gates this port only from a
   worktree that carries it.
