@@ -696,9 +696,9 @@ staging Worker.
 
 | Subcommand | Dry run (default) | With `--execute` |
 |---|---|---|
-| `render` | Validates the inputs, checks them against the production references and prints the digests of every rendered file. `--write --output-directory <new private dir>` writes the files | Not accepted |
+| `render` | Takes the same production isolation inputs as `deploy` and runs the same refusals, then EP-9's guard on the rendered edge config. Prints the digests of every rendered file. `--write --output-directory <new private dir>` writes the files | Not accepted |
 | `deploy` | Runs every pre-upload gate. Writes the candidate config and a content-free `plan.json` into a new private output directory | Also needs `--confirm DEPLOY_STAGING_EDGE` and `--expected-candidate-sha256 <the dry run's candidateConfigSha256>`. It recaptures the predecessor, deploys with Wrangler and verifies the captured live version |
-| `reconcile` | Compares a captured private staging inventory with a deploy's plan: `verified`, `not_deployed` or `drift` | Captures the inventory itself, read-only |
+| `reconcile` | Compares a captured private staging inventory with a deploy's plan: `verified`, `not_deployed` or `drift` | Checks the operation's `target.json` names the staging Worker, then captures the inventory itself, read-only |
 | `endpoints` | Prints the per-mode public-surface matrix | Reads it, with GET only and no credentials |
 | `rehearsal` | Prints the R1 and R2 sequence with each step's expected outcome | Not accepted |
 
@@ -714,7 +714,8 @@ staging Worker.
   outside the repository, follows
   `apps/worker/ops/staging-edge/staging-edge-inputs.example.json` (schema
   `staging-edge-inputs-v1`). It holds:
-  - the account;
+  - the account, which is production's: the staging Custom Domains sit in
+    the production zone, so the staging edge shares production's account;
   - the two Worker names;
   - the public hostname (the admin hostname is derived);
   - the Access team domain, AUD and owner email;
@@ -726,39 +727,69 @@ staging Worker.
   - the staging origin, or `null` until it exists.
 
   It never holds a secret.
+- **Production isolation inputs.** Every `render` and every `deploy` takes
+  the same owner-private inputs, under the same rules:
+  - the production inventory and its sha256 (`--production-inventory`,
+    `--production-inventory-sha256`). It must be a capture of
+    `app-usagemonitor` in the inputs' account. Another Worker's capture would
+    empty the refused set of every live production reference, so it is
+    refused (`STAGING_EDGE_PRODUCTION_INVENTORY_NOT_PRODUCTION`), as is
+    another account's (`STAGING_EDGE_PRODUCTION_ACCOUNT_MISMATCH`);
+  - the production gcp plan (`--production-plan`) from the moment the owner
+    creates the production origin and guard D1 (OWN-12), or
+    `--production-plan-absent` before then;
+  - after the production gcp switch, a pre-gcp production inventory
+    (`--production-baseline-inventory` and its sha256), under the same
+    identity rule. Without it the data D1s are no longer evidenced, and EP-9
+    refuses (`EDGE_MODE_STAGING_INPUT_INVALID`);
+  - the production EP-8 fence plan and its sha256 (`--production-fence-plan`,
+    `--production-fence-plan-sha256`), the closed file of
+    [section 6](#fence). It is the only evidence of the catch-up control D1,
+    which only the separate catch-up consumer binds, and of the other
+    production scripts. It must pass EP-8's own validator
+    (`STAGING_EDGE_PRODUCTION_FENCE_PLAN_INVALID`) and name `app-usagemonitor`
+    in the same account. Its ingestion, analytics, deletion-ledger and
+    quarantine entries must be what the production captures bind
+    (`STAGING_EDGE_PRODUCTION_FENCE_PLAN_MISMATCH`).
 - **Refusals.** Every Worker, D1 and bucket name must contain `staging`, and
-  the public hostname needs a `staging` label below its zone. The driver
-  refuses, before rendering:
+  the public hostname needs a `staging` label below its zone. Render and
+  deploy both refuse, before anything is rendered or written:
   - a production or reserved Worker name (`STAGING_EDGE_PRODUCTION_WORKER`):
     `app-usagemonitor`, the existing `app-usagemonitor-staging`, every name in
-    `wrangler.jsonc` and `wrangler.dogfood.jsonc`, and the production
-    snapshot's;
+    `wrangler.jsonc` and `wrangler.dogfood.jsonc`, and every script the
+    production fence plan names;
   - a production hostname (`STAGING_EDGE_PRODUCTION_HOSTNAME`): the five
-    production hostnames, every checked-in route and the production snapshot's
-    domains and routes;
-  - a production D1 id or name (`STAGING_EDGE_PRODUCTION_DATABASE`), including
-    `tibotattle-release-guard` and the production gcp plan's guard D1;
+    production hostnames, every checked-in route and the production
+    captures' domains and routes;
+  - a production D1 id or name (`STAGING_EDGE_PRODUCTION_DATABASE`): the
+    checked-in ones, the production captures' (the baseline's after the
+    switch), `tibotattle-release-guard`, the production gcp plan's guard D1
+    and the production fence plan's four D1s, including the catch-up control
+    D1;
   - a production bucket (`STAGING_EDGE_PRODUCTION_BUCKET`);
+  - a production origin, audience or invoker account
+    (`STAGING_EDGE_PRODUCTION_ORIGIN`);
   - a checked-in rate-limit namespace (`STAGING_EDGE_PRODUCTION_RATE_LIMIT`);
   - a staging inventory that is not the staging Worker's
     (`STAGING_EDGE_INVENTORY_TARGET_MISMATCH`), such as production's own.
 
-  EP-9 then refuses any production reference on the live staging version, the
-  rendered config or the gcp plan (`EDGE_MODE_STAGING_PRODUCTION_REFERENCE`).
-- **Production isolation inputs.** Every `deploy` takes the owner-private
-  production inventory and its sha256, and either the production gcp plan
-  (`--production-plan`) or `--production-plan-absent`. Use the plan from the
-  moment the owner creates the production origin and guard D1 (OWN-12). After
-  the production gcp switch, also pass a pre-gcp production inventory
-  (`--production-baseline-inventory`).
+  `render` then runs EP-9's guard on the snapshot the rendered edge config
+  declares, as genesis does. EP-9 refuses any production reference on the
+  live staging version, the rendered config or the gcp plan
+  (`EDGE_MODE_STAGING_PRODUCTION_REFERENCE`).
 
 ### Render the resources (plan phases B, C and G)
 
 ```bash
 npm run staging-edge -- render --inputs <private inputs.json> \
   --production-inventory <private production inventory> --production-inventory-sha256 <sha256> \
+  --production-plan-absent \
+  --production-fence-plan <private production fence plan> --production-fence-plan-sha256 <sha256> \
   --write --output-directory <new private directory>
 ```
+
+Use `--production-plan <file>` in place of `--production-plan-absent` once
+the production gcp plan exists, and add the baseline pair after the switch.
 
 It writes these files, each mode 0600:
 
@@ -780,6 +811,24 @@ migration, then deploy it with `wrangler deploy --config
 <database name> --remote --config <directory>/migrations-<role>.wrangler.json`,
 then list them to confirm that nothing is pending. Mark the data D1s pre-P
 until the owner names P's migration tail.
+
+**The throwaway guard D1 (for R2.5, N2).** Phase B also creates a sixth D1,
+for example `tibotattle-staging-release-guard-throwaway`. Never apply a
+migration to it:
+
+1. Copy the inputs file, change only `d1.releaseGuard` to the throwaway's id
+   and name, and render that copy into its own new private directory.
+2. Run `wrangler d1 migrations list <throwaway name> --remote --config
+   <that directory>/migrations-release-guard.wrangler.json`. Wrangler 4.114.0
+   creates the empty `d1_migrations` ledger before it lists, and applies
+   nothing. Confirm that exactly `0001_sparkle_appcast_guard_nonces.sql` is
+   listed as pending.
+
+R2.5 then names that copy. The gate reads an empty ledger, so 0001 is
+pending. Without step 2 the ledger table does not exist, Wrangler's read fails
+with `no such table: d1_migrations`, and the gate refuses
+`PRODUCTION_MIGRATION_STATE_UNKNOWN` instead. Delete the throwaway at
+teardown.
 
 ### Typed deploys
 
@@ -815,9 +864,10 @@ After an executed run it also writes:
 | `fenced` | The live inventory |
 | `gcp` | The live inventory, `--origin-commit` and `--origin-verifier-account`. The plan comes from the inputs' origin and the staging release-guard D1. Add `--candidate-site` when the site is built from the source |
 
-The common flags are `--inputs`, `--production-inventory`,
-`--production-inventory-sha256`, `--production-plan` or
-`--production-plan-absent`, `--site <candidate site directory>` and
+The common flags are `--inputs`, the production isolation inputs
+(`--production-inventory` and its sha256, `--production-plan` or
+`--production-plan-absent`, `--production-fence-plan` and its sha256, and the
+baseline pair after the switch), `--site <candidate site directory>` and
 `--output-directory`.
 
 **Two differences from production:**
@@ -829,7 +879,12 @@ The common flags are `--inputs`, `--production-inventory`,
   required secrets unless `--secrets-file` supplies them. The driver checks
   that file's metadata only (regular, mode 0600, the caller's) and hands it
   to Wrangler by path, so its contents are never read. Delete the file after
-  the deploy. An executed genesis is refused if the Worker already exists.
+  the deploy. Before Wrangler runs, an executed genesis reads the Worker's
+  deployments once. Only a positive not-found lets it proceed: HTTP 404 whose
+  errors are all Cloudflare's script-not-found code 10007. A successful read
+  is refused `STAGING_EDGE_GENESIS_WORKER_EXISTS`, even a split deployment.
+  Anything else, such as a 403 from a token without read scope, a 429 or a
+  network failure, is refused `STAGING_EDGE_GENESIS_EXISTENCE_UNKNOWN`.
   R1.1, the first worker → worker redeploy, then runs every E10 gate.
 - **Typed schema inspection.** It does not apply to the staging edge's JSON
   topology (U-4), so it is skipped, and the plan says so.
@@ -841,7 +896,7 @@ The common flags are `--inputs`, `--production-inventory`,
 3. Runs the workspace-package guard.
 4. Recaptures the live staging version. It refuses
    `STAGING_EDGE_PREDECESSOR_CHANGED` unless the version is the planned
-   baseline.
+   baseline. Genesis makes the existence read above instead.
 5. Saves `operation.json` with outcome `outcome_unknown`.
 6. Runs `wrangler deploy --config <candidate> --env production --strict`.
    Wrangler gets only `PATH`, `HOME` and `CLOUDFLARE_API_TOKEN`. An endpoint
@@ -852,7 +907,10 @@ The common flags are `--inputs`, `--production-inventory`,
 
 `CLOUDFLARE_API_TOKEN` comes from the approved credential mechanism. It is
 never printed, written or put in an error. On an uncertain outcome, run
-`reconcile`; never retry with raw Wrangler.
+`reconcile`; never retry with raw Wrangler. `reconcile --execute` first checks
+the operation's `target.json`: a valid account, a `staging` Worker name that
+is not reserved or checked in, and staging domains only. It refuses anything
+else before it builds the read-only provider.
 
 ### Endpoints
 
@@ -898,7 +956,7 @@ abort and gcp are separated by a fresh fenced step and a fresh fence.
 | R1.15 | EP-8 `verify` on the released fence (N7) | `FENCE_RELEASED` |
 | Phase F | The four gcp secrets, in worker mode | Recapture the inventory after each put |
 | R2.0 to R2.4 | worker → fenced, then a fresh fence in a new receipts directory | ok |
-| R2.5 | fenced → gcp naming an unmigrated throwaway guard D1 (N2) | `EDGE_MODE_RELEASE_GUARD_MIGRATIONS_PENDING` |
+| R2.5 | fenced → gcp naming the throwaway guard D1, whose ledger phase B initialised empty (N2) | `EDGE_MODE_RELEASE_GUARD_MIGRATIONS_PENDING` |
 | R2.6 | fenced → gcp without `--candidate-site` | `EDGE_PRIVACY_PAGE_NOT_CUTOVER` |
 | R2.7 | The switch: fenced → gcp | ok, with the stated `RETIRED_SECRET_PRESENT` warning |
 | R2.8 | gcp → gcp | ok |
@@ -933,11 +991,15 @@ Record each cycle in a content-free receipt, as the plan's section 10 says.
 `npm run staging-edge:dry-run` makes no remote call:
 
 1. It renders the template with the synthetic example inputs, against EP-9's
-   synthetic production snapshot.
+   synthetic production snapshot and a synthetic production fence plan that
+   matches it.
 2. It walks every deploy step of the sequence through the driver's own dry
-   run, and each step must give its expected outcome. The fence steps only
-   move the simulated fence; `cloudflare-writer-fence.check.mjs` covers EP-8
-   itself.
+   run, and each step must give its expected outcome. The release-guard gate
+   is production's own reader over a synthetic Wrangler that answers as
+   Wrangler 4.114.0 does: rows for the migrated guard D1, an empty ledger for
+   the throwaway, and exit 1 with `no such table: d1_migrations` for a D1
+   whose ledger was never created. The fence steps only move the simulated
+   fence; `cloudflare-writer-fence.check.mjs` covers EP-8 itself.
 3. It bundles four candidates and the stand-in with `wrangler deploy
    --dry-run`, under PATH and HOME only. The candidates are the genesis
    worker, fenced, gcp and the brake.

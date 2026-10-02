@@ -44,7 +44,9 @@ it ([review round](#review-round)).
   contract, the EP-9 overlay, E10 and the EP-8 fence are blob-identical to
   `9700d167`, apart from `production-deploy.check.mjs`, which keeps this
   line's own migration count. `src/index.ts` differs from `d43c8f92` by the `export` keyword
-  on `contributionRequestPreflight` and two comment lines only.
+  on `contributionRequestPreflight` and two comment lines only. This held at
+  the port's head. STG-DRV and its review round later changed E10, EP-9 and
+  `production-deploy.mjs` ([Open](#open)).
 - `wrangler.jsonc` is unchanged, so its `main` is still `src/index.ts`. Only
   the typed overlay of an `--edge-mode` deploy names `src/edge-entry.ts`.
   Moving the checked-in `main` stays a post-cutover integration commit
@@ -428,6 +430,40 @@ STG-PLAN items. The procedure is section 11 of the
 | Repository root `npm run architecture:check` | Passed: 677 production files, 2,861 imports, 0 debt edges |
 | Repository root `npm run test:preflight`, with this addendum and the runbook section in place | Exit 0: root workspace hygiene clean; documentation governance valid across 289 Markdown files and 1,196 source and config files; 20 of 20 |
 
+## STG-DRV review round
+
+A review of `92137db4` on 2026-10-02 raised six findings and one set of
+verified observations. Each finding was reproduced before it was acted on:
+the reviewer's synthetic probes were rerun on `92137db4` and gave the stated
+results. The fixes are commit `5a604d95`. The evidence is local and
+synthetic, on Node.js 26.2.0 and wrangler `4.114.0`. Nothing was deployed,
+created or migrated, and no Cloudflare, Google or production endpoint was
+called.
+
+| Finding | Disposition | Evidence and change |
+|---|---|---|
+| High: nothing checks that `--production-inventory` is production's | Accepted and fixed | Reproduced: another Worker's inventory in its place made genesis accept the production `ANALYTICS_DB` id and put it in the candidate. A production inventory (live or baseline) must now be a capture of `app-usagemonitor` in the inputs' account (`STAGING_EDGE_PRODUCTION_INVENTORY_NOT_PRODUCTION`, `STAGING_EDGE_PRODUCTION_ACCOUNT_MISMATCH`). The expected account is the inputs' own, because the staging Custom Domains sit in the production zone (plan R-1, D-S10). One resolver, `resolveStagingEdgeIsolation`, serves render and deploy. EP-9's `productionSnapshots` enforces the same name, against the staging snapshot's account. Negative tests cover the live inventory, the baseline, another account and the reviewer's other-Worker case, in the library, in `prepareStagingEdgeDeployment` and through the render CLI |
+| Medium: render checks less than deploy | Accepted and fixed | Reproduced (the reviewer's P2a and P2c). `render` now takes deploy's isolation flags with the same rules: the production inventory and its sha256 (required), `--production-plan` or `--production-plan-absent`, the optional baseline pair, and the production fence plan. They go through EP-9's own rules by the new export `edgeModeStagingProductionReferences`, so a gcp-era inventory without a baseline, or a null plan once production binds gcp values, is refused at render too. Render then runs EP-9's guard on the snapshot the rendered edge config declares, as genesis does. A refused render writes no file. Runbook section 11 is corrected |
+| Medium: D1s that only other production Workers bind are never refused | Accepted and fixed, with the first option | Reproduced (P2e). Render and deploy now require the owner-private production EP-8 fence plan and its sha256. It is validated by EP-8's own validator and must name `app-usagemonitor` in the same account. Its ingestion, analytics, deletion-ledger and quarantine entries must equal what the production captures bind, which is EP-8's own label rule. Its four D1s (including the catch-up control D1), its bucket and every script it names are refused. The second option, a read-only D1 lookup per id, was not taken, because it would make render need a token and a network |
+| Medium: the genesis existence check fails open | Accepted and fixed | Reproduced (P1): `DEPLOYMENT_AMBIGUOUS`, `READ_REFUSED` and `READ_FAILED` each reached `wrangler deploy`. Genesis now makes one read-only deployments read. Only HTTP 404 whose errors are all Cloudflare's script-not-found code 10007 counts as absent; this is Wrangler's `WORKER_NOT_FOUND_ERR_CODE` and the code EP-8's tests model. A successful read, even of a split deployment, is `STAGING_EDGE_GENESIS_WORKER_EXISTS`. Anything else is `STAGING_EDGE_GENESIS_EXISTENCE_UNKNOWN`. The old test that used a generic error as "absent" is replaced by tests for 403, 429, other 404 codes, malformed bodies and a network failure, none of which reach Wrangler. The 10007 shape is not yet observed against the live API |
+| Low: R2.5 expects the wrong code for a never-migrated D1 | Accepted, with option (a) | Reproduced with real wrangler `4.114.0` against local D1 state, through production's own `determinePendingD1Migrations`: a fresh D1 gives `PRODUCTION_MIGRATION_STATE_UNKNOWN` (exit 1, "no such table: d1_migrations"). After `wrangler d1 migrations list` the empty ledger exists with nothing applied, and the same gate returns `0001_sparkle_appcast_guard_nonces.sql` pending. Phase B in the runbook now creates the throwaway guard D1 and initialises its ledger that way, and R2.5 keeps `EDGE_MODE_RELEASE_GUARD_MIGRATIONS_PENDING`. The dry run's stub is replaced by production's own reader over a synthetic Wrangler, which answers with rows, an empty ledger, or "no such table". A check covers all three |
+| Low: `reconcile --execute` trusts `target.json` | Accepted and fixed | Before any read, `target.json` must hold a valid account, a `staging` Worker name that is not reserved or checked in, and staging domains only. Both the library reconcile and the CLI check it. CLI tests run without a token, so a missed check would surface as a credential error instead |
+| Info: gates, dry-run defaults, secret handling, sequence order | Verified observations. No change | The example inputs now use the synthetic production fixture's account, because of the shared-account rule. The overlay sha256s are unchanged |
+
+**Gates.** These ran on `5a604d95`'s tree:
+
+| Gate | Result |
+|---|---|
+| `npm run staging-edge:scripts-check` | Exit 0: 38 of 38, then the staging dry run |
+| Staging dry run | All 19 deploy steps give their expected outcome. R2.5 comes from the real ledger reader. The four candidates and the stand-in bundle under PATH and HOME only. Overlay sha256s unchanged: `3e72fae5…`, `98904b29…`, `23b4f471…` |
+| `npm run scripts:check` (apps/worker) | Exit 0: 24 node:test runs, 1,114 pass, 0 fail, then both edge dry runs |
+| E10, EP-9, deploy and reconcile checks | 106 of 106; EP-9's staging test gains the new negatives |
+| EP-8 fence and edge dry-run checks | 29 of 29 |
+| Mutation check (scratch, each file restored) | Each of six mutations fails at least one check. They remove the production-name check in the driver, the production-name check in EP-9, the account check in EP-9, the 10007 rule, the fence-plan D1 refusal and the operation-target check |
+| `npx tsc --noEmit` (apps/worker) | Exit 0 |
+| Repository root `npm run test:preflight`, with this section and the runbook changes in place | Exit 0: hygiene clean; documentation governance valid across 289 Markdown files and 1,196 source and config files; 20 of 20 |
+| Repository root `npm run architecture:check` | Passed: 677 production files, 2,861 imports, 0 debt edges |
+
 ## PROD-5: owner-run steps
 
 Every step below is a protected operation. Each needs the owner's explicit
@@ -527,7 +563,10 @@ on this line, with E10 ([addendum](#addendum-stg-drv-the-typed-staging-edge-driv
 The owner-run procedure is section 11 of the runbook. The owner runs it in
 this order:
 
-1. Phases A to C and G of the plan: `npm run staging-edge -- render`, the D1s,
+1. Phases A to C and G of the plan: `npm run staging-edge -- render` with
+   the production isolation inputs (the production inventory, the production
+   gcp plan or its absence, and the production EP-8 fence plan), the six
+   D1s (the throwaway guard D1's ledger initialised empty, never migrated),
    buckets, migrations, stand-in and Access application.
 2. R1, from genesis to the abort and release.
 3. Phase F.
@@ -611,10 +650,17 @@ only brake is gcp → fenced (OWN-10).
 - **STG-DRV.** Built on this line ([addendum](#addendum-stg-drv-the-typed-staging-edge-driver)).
   The staging rehearsal itself (R1 and R2) is owner-run and has not run. Its
   gcp half waits for the staging origin.
-- **E10 differs from the GCP line.** STG-DRV adds optional parameters to
-  `production-edge-mode.mjs` and `production-deploy.mjs`; their defaults keep
-  production's behaviour. Port them, or reconcile the two copies, when the
-  lines merge.
+- **E10 and EP-9 differ from the GCP line.** STG-DRV adds optional
+  parameters to `production-edge-mode.mjs` and `production-deploy.mjs`; their
+  defaults keep production's behaviour. Its review round tightens EP-9's
+  staging variant in `edge-mode-configuration.mjs`. The production captures
+  must be `app-usagemonitor` in the staging account, and a new export,
+  `edgeModeStagingProductionReferences`, exposes its references. Production's
+  own overlay is unchanged. Port these, or reconcile the copies, when the lines merge.
+- **The staging-edge plan.** `design/staging-edge-plan-2026-10-02.md` in the
+  parity home, outside this repository, still lists five D1s in phase B and
+  takes no production fence plan. The runbook's section 11 supersedes it on
+  both points.
 - **The E12 S0 fix.** `41bd9702` is not merged into
   `claude/gcp-fastpath-final`. Until it is, E12 gates this port only from a
   worktree that carries it.
