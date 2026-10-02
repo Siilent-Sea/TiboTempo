@@ -13,11 +13,16 @@ import {
  *
  * In gcp mode the origin sees only the headers the edge forwards
  * (FORWARDED_REQUEST_HEADERS, plus ADMIN_ONLY_FORWARDED_REQUEST_HEADERS on the
- * admin host) and the contract headers. A Worker or origin module that starts
- * reading any other request header would silently see it absent behind the
- * edge. So every header name read in src/**\/*.ts and cloud-run/**\/*.mjs
- * (headers.get/has, headers["x"], req.headers.x) must be classified below, and
- * a new unclassified read fails naming its file.
+ * admin host) and the contract headers. A Worker module that starts reading
+ * any other request header would silently see it absent behind the edge. So
+ * every header name read in src/**\/*.ts (headers.get/has, headers["x"],
+ * req.headers.x) must be classified below, and a new unclassified read fails
+ * naming its file.
+ *
+ * Production-line port (edge port of d43c8f92): this line has no cloud-run/
+ * origin, so the scan covers src/ only. The cloud-run/ half of the ratchet,
+ * with its origin-side response reads and dynamic reads, stays on the GCP
+ * line (claude/gcp-fastpath-final), which scans both trees.
  */
 
 // Vite's import.meta.glob hands the ratchet the raw text of every module. It
@@ -27,10 +32,7 @@ import {
 const GLOBBED_SOURCES: unknown = import.meta.glob(
   [
     "../src/**/*.ts",
-    "../cloud-run/**/*.mjs",
-    "!**/*.check.mjs",
     "!**/*.spec.*",
-    "!../cloud-run/dist/**",
     "!**/node_modules/**",
     "!**/vendor/**",
   ],
@@ -61,11 +63,10 @@ const ORIGIN_TRANSPORT_REQUEST_HEADERS = Object.freeze([
   // Cloud Run's IAM front end delivers the verified invoker claims here; the
   // edge sets it from its own ID token (EP-2) and EP-6 consumes it.
   EDGE_HEADERS.invokerToken,
-  // The Node host's own authority check (cloud-run/server.mjs and
-  // cloud-run/oauth-gateway.mjs); the edge's fetch sets it for the upstream.
+  // The origin host's own authority check; the edge's fetch sets it for the
+  // upstream.
   "host",
-  // Message framing chosen by the HTTP connection, not a forwarded value:
-  // cloud-run/oauth-gateway.mjs refuses a body on a bodyless route with it.
+  // Message framing chosen by the HTTP connection, not a forwarded value.
   "transfer-encoding",
 ]);
 
@@ -78,24 +79,6 @@ const ORIGIN_TRANSPORT_REQUEST_HEADERS = Object.freeze([
 const RESPONSE_HEADER_READS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   // GitHub REST pagination on the release-inventory response.
   link: ["../src/github-distribution-history.ts"],
-  // The GCP metadata server's identity on its token and project responses
-  // (Cloud Run jobs only; never a request the edge forwards).
-  "metadata-flavor": [
-    "../cloud-run/ledger-preflight-reconcile.mjs",
-    "../cloud-run/ledger-reconciliation-diagnostic.mjs",
-    "../cloud-run/postgres-community-daily-activation.mjs",
-    "../cloud-run/postgres-community-daily-publish-test.mjs",
-    "../cloud-run/postgres-community-graph-benchmark.mjs",
-    "../cloud-run/postgres-community-graph-readback-diagnostic.mjs",
-    "../cloud-run/synthetic-v12-cleanup.mjs",
-    "../cloud-run/synthetic-v12-discovery.mjs",
-    "../cloud-run/test-activation.mjs",
-    "../cloud-run/test-migrations.mjs",
-  ],
-  // The live smoke checks the headers community/daily served.
-  "cache-control": ["../cloud-run/postgres-community-daily-live-smoke.mjs"],
-  "referrer-policy": ["../cloud-run/postgres-community-daily-live-smoke.mjs"],
-  "x-content-type-options": ["../cloud-run/postgres-community-daily-live-smoke.mjs"],
   // The edge checks the origin marker on the upstream response.
   [EDGE_HEADERS.originMarker]: ["../src/edge-origin-proxy.ts"],
 });
@@ -115,14 +98,9 @@ const DYNAMIC_HEADER_READS: readonly Readonly<{
     reason: "copies FORWARDED_REQUEST_HEADERS (plus the admin-only list) to the upstream request",
   },
   {
-    file: "../cloud-run/postgres-edge-origin-dispatch.mjs",
-    expression: "rawHeaders.get(name)",
-    reason: "copies FORWARDED_REQUEST_HEADERS (plus the admin-only list) to the inner request",
-  },
-  {
-    file: "../cloud-run/oauth-gateway.mjs",
-    expression: "headers.get(name)",
-    reason: "copies an allowlisted set of headers from a provider RESPONSE",
+    file: "../src/storage-effective-history.ts",
+    expression: "headers[family]",
+    reason: "indexes the effective-history header rows by telemetry family, not an HTTP header",
   },
 ]);
 
@@ -274,7 +252,7 @@ function withInjected(file: string, snippet: string): Readonly<Record<string, st
 // ---------------------------------------------------------------------------
 
 describe("edge request-header ratchet", () => {
-  it("reads every src/**/*.ts and cloud-run/**/*.mjs module, recursively, and nothing excluded", () => {
+  it("reads every src/**/*.ts module, recursively, and nothing excluded", () => {
     const files = Object.keys(SOURCES);
     for (const required of [
       "../src/admission.ts",
@@ -282,20 +260,14 @@ describe("edge request-header ratchet", () => {
       "../src/edge-origin-proxy.ts",
       "../src/index.ts",
       "../src/session.ts",
-      "../cloud-run/server.mjs",
-      "../cloud-run/oauth-gateway.mjs",
-      "../cloud-run/postgres-edge-origin-dispatch.mjs",
-      "../cloud-run/routes/v11-day-manifests.mjs",
-      "../cloud-run/routes/upload-authorizations.mjs",
-      "../cloud-run/envelopes/v11.mjs",
     ]) {
       expect(files, required).toContain(required);
     }
-    expect(files.some((file) => /^\.\.\/src\/[^/]+\/.+\.ts$/u.test(file)),
-      "a nested src/**/ module").toBe(true);
+    // src/ at d43c8f92 has no subdirectory; the glob is recursive, so a
+    // nested module added later is scanned without a change here.
     for (const file of files) {
-      expect(file).toMatch(/^\.\.\/(?:src\/.+\.ts|cloud-run\/.+\.mjs)$/u);
-      expect(file).not.toMatch(/node_modules|\/dist\/|\/vendor\/|\.check\.mjs$|\.spec\./u);
+      expect(file).toMatch(/^\.\.\/src\/.+\.ts$/u);
+      expect(file).not.toMatch(/node_modules|\.spec\./u);
     }
   });
 
@@ -307,21 +279,11 @@ describe("edge request-header ratchet", () => {
     expect(has("../src/session.ts", "x-usage-monitor-admin")).toBe(true);
     // Resolved through `const ACCESS_JWT_HEADER = "cf-access-jwt-assertion"`.
     expect(has("../src/admin-access.ts", "cf-access-jwt-assertion")).toBe(true);
-    // Node property and bracket forms.
-    expect(has("../cloud-run/server.mjs", "host")).toBe(true);
-    expect(has("../cloud-run/server.mjs", "x-tibotattle-google-callback-query")).toBe(true);
-    expect(has("../cloud-run/oauth-gateway.mjs", "transfer-encoding")).toBe(true);
-    // Resolved through EDGE_HEADERS members.
-    expect(has("../cloud-run/postgres-edge-origin-dispatch.mjs", "x-serverless-authorization"))
-      .toBe(true);
-    expect(has("../cloud-run/postgres-edge-origin-dispatch.mjs", "x-tibotattle-edge-admission"))
-      .toBe(true);
-    // An assignment is a write, not a read.
-    expect(reads.some((read) => read.file === "../cloud-run/server.mjs"
-      && read.name === "set-cookie")).toBe(false);
+    // Resolved through an EDGE_HEADERS member.
+    expect(has("../src/edge-origin-proxy.ts", "x-tibotattle-origin")).toBe(true);
   });
 
-  it("classifies every request-header name read in src and cloud-run", () => {
+  it("classifies every request-header name read in src", () => {
     expect(violations(SOURCES)).toStrictEqual([]);
   });
 
@@ -347,26 +309,6 @@ describe("edge request-header ratchet", () => {
     ))).toStrictEqual(["../src/index.ts: unclassified header read 'x-unclassified-probe'"]);
   });
 
-  it("fails an injected unclassified read in a cloud-run/*.mjs module", () => {
-    expect(violations(withInjected(
-      "../cloud-run/server.mjs",
-      "const probe = req.headers[\"x-unclassified-probe\"];",
-    ))).toStrictEqual(["../cloud-run/server.mjs: unclassified header read 'x-unclassified-probe'"]);
-    expect(violations(withInjected(
-      "../cloud-run/postgres-test-dispatch.mjs",
-      "const probe = req.headers.via;",
-    ))).toStrictEqual(["../cloud-run/postgres-test-dispatch.mjs: unclassified header read 'via'"]);
-  });
-
-  it("fails an injected unclassified read in a cloud-run/routes/*.mjs module", () => {
-    expect(violations(withInjected(
-      "../cloud-run/routes/v11-day-manifests.mjs",
-      "const probe = request.headers.has('X-Unclassified-Probe');",
-    ))).toStrictEqual([
-      "../cloud-run/routes/v11-day-manifests.mjs: unclassified header read 'x-unclassified-probe'",
-    ]);
-  });
-
   it("fails an unreviewed dynamic read, a constant-named read and a misplaced response-only name", () => {
     expect(violations(withInjected(
       "../src/session.ts",
@@ -387,8 +329,19 @@ describe("edge request-header ratchet", () => {
 
   it("ignores header writes", () => {
     expect(violations(withInjected(
-      "../cloud-run/server.mjs",
+      "../src/index.ts",
       "headers[\"x-unclassified-probe\"] = \"1\";\nreq.headers.via = \"1\";",
     ))).toStrictEqual([]);
+  });
+
+  it("fails an injected unclassified Node property or bracket read in a src module", () => {
+    expect(violations(withInjected(
+      "../src/index.ts",
+      "const probe = req.headers.via;",
+    ))).toStrictEqual(["../src/index.ts: unclassified header read 'via'"]);
+    expect(violations(withInjected(
+      "../src/session.ts",
+      "const probe = request.headers[\"x-unclassified-probe\"];",
+    ))).toStrictEqual(["../src/session.ts: unclassified header read 'x-unclassified-probe'"]);
   });
 });
