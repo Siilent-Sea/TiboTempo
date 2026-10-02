@@ -16,8 +16,9 @@ status: accepted
 > **Production-line copy.** The edge port carries this record onto the
 > production line (`claude/gcp-edge-port-d43c8f92`). Its text equals the GCP
 > line's (`claude/gcp-fastpath-final` at `2bb6cb04`) except for the acceptance
-> status and that links to files that exist only on the GCP line are written
-> as paths. The implementation state below is as recorded on the GCP line; the
+> status, that links to files that exist only on the GCP line are written
+> as paths, and that the Operations row links this line's version of the edge
+> runbook. The implementation state below is as recorded on the GCP line; the
 > [edge-port receipt](../receipts/2026-10-02-gcp-edge-port-production.md)
 > records what this line carries and the gates it passed.
 
@@ -29,7 +30,7 @@ status: accepted
 | Does not apply to | Current Cloudflare production before the first edge deploy, local analysis and the desktop clients |
 | Production Worker source | `d43c8f92` (the source Cloudflare production runs). GitHub `main` is `f0067d0f` |
 | Builds on | Append-only contributions on the Google Cloud service (`docs/decisions/2026-09-26-append-only-contributions.md` on the GCP line), accepted 2026-09-30 |
-| Operations | Production edge modes (`docs/runbooks/production-edge-modes.md` on the GCP line) |
+| Operations | [Production edge modes](../runbooks/production-edge-modes.md), this line's version of the GCP line's runbook |
 | Delivery plan | GCP fast path (`docs/plans/2026-10-01-gcp-fastpath.md` on the GCP line) |
 
 ## Claim boundary and implementation state

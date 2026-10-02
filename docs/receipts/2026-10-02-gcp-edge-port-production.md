@@ -13,7 +13,8 @@ production line, branch `claude/gcp-edge-port-d43c8f92`, cut from
 production runs: the owner read `deployment.sourceCommit` from public
 `GET /api/health` on 2026-10-02. The edge source comes from the GCP line,
 `claude/gcp-fastpath-final` at `9700d167`. Every carried file is unchanged at
-`2bb6cb04`, the C-ADMIN merge that landed on that line during this work.
+`2bb6cb04`, the C-ADMIN merge that landed on that line during this work, and
+at `1bea3b5f`, the C-IPR merge, where the review round checked it again.
 
 It records **local, synthetic** evidence from one macOS arm64 workstation:
 Node 26.2.0 for the Worker and repository tooling, Node 22.16.0 for the E12
@@ -31,9 +32,11 @@ production origin composition (CR-6 and CR-7) or production data.
 The governing design is the
 [thin-edge decision record](../decisions/2026-10-01-thin-worker-edge-proxy.md),
 which the owner approved as written on 2026-10-02. This port carries a copy of
-it, because `src/edge-google-subrequest.ts` cites it. The edge runbook,
-`docs/runbooks/production-edge-modes.md`, stays on the GCP line (see
-[what stays on the GCP line](#what-stays-on-the-gcp-line)).
+it, because `src/edge-google-subrequest.ts` cites it. Since the review round,
+this line also carries its own version of the edge runbook,
+[Production edge modes](../runbooks/production-edge-modes.md). Production
+service operations, the Worker README and the documentation index point to
+it ([review round](#review-round)).
 
 ## Result
 
@@ -100,9 +103,16 @@ has 63).
 `reconcileTypedProductionDeployment`, and `d43c8f92` predates GitHub `main`'s
 `378002f0`. It adds a new confirmation, `RECONCILE_TYPED_PRODUCTION_DEPLOYMENT`,
 and changes no existing path. Without `--edge-mode`, E10 never loads
-`production-edge-mode.mjs`, and every existing deploy and reconcile path is
-unchanged. `production-deploy.check.mjs` and `production-reconcile.check.mjs`
-pass with the production line's own expectations.
+`production-edge-mode.mjs`. Every existing deploy and reconcile path is
+structurally unchanged, with one addition.
+
+`checkDeploymentEndpointConsumers` now also runs
+`validateEdgeModePublicSurface`. Every ordinary deploy and
+`deployment:endpoints:check` call it, so this is a new hard gate on the
+default path. It requires the public route hosts to include the apex and
+`www`, and the admin host to stay separate. Today's endpoints pass it.
+`production-deploy.check.mjs` and `production-reconcile.check.mjs` pass with
+the production line's own expectations.
 
 ### EP-8, beyond the record's list
 
@@ -150,9 +160,10 @@ into the Worker.
   builds this tree's edge through `EDGE_E2E_EDGE_TREE`.
 - The address-probe tooling (`scripts/edge-ip-probe/`) and the live check
   (`scripts/edge-live-check.mjs`).
-- The edge runbook and the fast-path plan. They link GCP-line files
-  throughout, so they move here with the cutover documentation (decision
-  record, section 16), not in this port.
+- The fast-path plan, the edge receipt and the planned cutover runbook. They
+  move here with the cutover documentation (decision record, section 16).
+  The GCP line's edge runbook stays there too. This line carries its own
+  version, adapted in the review round.
 
 ### The decision record copy
 
@@ -161,9 +172,12 @@ a citation of a missing file. The port therefore carries the record. Its text
 equals the GCP line's at `2bb6cb04`, with three kinds of change: 14 links to
 files that exist only on the GCP line are written as paths; the status, the
 banner, the sign-off box and section 15 record the owner's approval of
-2026-10-02; and a banner note names this copy and points here. The GCP line's
-copy still reads "proposed"; the two must be reconciled when the lines
-merge.
+2026-10-02; and a banner note names this copy and points here. In the
+review round, one of those paths, the Operations row, became a link to this
+line's runbook, and the banner says so. Section 16 still lists that pointer
+as owed at the cutover. The record's text stays as approved. The GCP line's
+copy still reads "proposed", and the two copies must be reconciled when the
+lines merge.
 
 ## OD-E5: admission re-derivation
 
@@ -266,6 +280,20 @@ the GCP line's `migrations/` (63 files; `d43c8f92` has 62, and its Worker
 never touches the extra one's table), and reads the GCP line's sanitized
 `env.production` variables, which equal this line's.
 
+## Review round
+
+A review of `4a5e6afd` on 2026-10-02 raised four actionable findings and
+six verified observations. Each was checked against the source before it was
+acted on.
+
+| Finding | Disposition | Evidence and change |
+|---|---|---|
+| Node.js 22.13 to 22.17 cannot load the new edge scripts | Accepted in part. The edge deploy and reconcile paths are affected. The `scripts:check` part predates the port | On Node.js 22.16.0, importing `edge-mode-configuration.mjs` fails with `ERR_UNKNOWN_FILE_EXTENSION`. `production-deploy.mjs` and `production-reconcile.mjs` still load, because they load the edge module only on request. An `--edge-mode` run fails closed with only `PRODUCTION_DEPLOYMENT_FAILED` or `PRODUCTION_RECONCILE_FAILED`, before any journal or remote call. The finding's premise is wrong: at `d43c8f92`, `accountless-migration-operator.mjs` and its check, plus both qualification preparers, already import `src/mutation-barrier.ts`. The operator's check fails on 22.16.0 with the same error, so `scripts:check` already needed type stripping before the port. Change: documentation only. The requirement is stated in the edge runbook, in Production service operations' local validation, in the Worker README and in the owner steps below. Node.js 24.14.0 and 26.2.0 were verified. E10 is not changed, so it stays blob-identical to the GCP line |
+| No maintained runbook for the new operator surfaces | Accepted and fixed | Added `docs/runbooks/production-edge-modes.md`, this line's version of the GCP line's runbook. It covers the deploy line, Node.js, the gates, the release-guard D1, the bindings, the deploy, reconcile and recovery flags, the secrets and their order, the fence, the brake, the verifier and the local proof. Pointers were added in Production service operations (introduction, local validation, endpoint check, typed recovery), in the Worker README and in the documentation index, together with the accepted decision record. The decision record's Operations row now links it |
+| "Unchanged" deploy tooling overstates | Accepted. No code change | The default path's one new gate, `validateEdgeModePublicSurface`, is now stated under [deploy tooling](#deploy-tooling) and in both runbooks |
+| The production release line is not settled | Facts verified. The fix's release-candidate branch is rejected | `claude/release-candidate-d43c8f92` (`ec0b3fce`) is 4 commits past `d43c8f92` and merges cleanly with the port. Its own receipt, `docs/receipts/2026-10-02-gcp-r-merge.md` on that branch, says it must never be deployed to Cloudflare, under the owner's OD-OAI-1 (#258 ships on GCP only, after cutover). It is therefore not a candidate edge deploy line. Owner step 0 now names the rule: deploy from this branch, or from an owner-named descendant without #257 or #258. On any other commit past `d43c8f92`, merge the port and rerun the listed gates first |
+| Worker-mode neutrality; dry-run bundles; carry blobs; EP-1 call sites; E12 15 of 15; no secrets | Verified observations. No change | The carry was re-checked against `1bea3b5f`, the current tip of the GCP line. Only the hand-ports differ: `production-deploy.check.mjs`, `index.ts`, the two hand-ported specs, the port-only dry run and its check, and this line's `package.json` scripts. E12 was rerun on this round's tree (below). Merging the S0 fix `41bd9702` into `claude/gcp-fastpath-final` belongs to the GCP line's owner and stays open |
+
 ## Gates
 
 Local, on the port's head before this receipt's commit (`faf9c254`), unless
@@ -289,101 +317,114 @@ stated.
 | Repository root `npm run architecture:check` | Passed: 676 production files, 2,861 imports, 0 debt edges |
 | Repository root `npm run test:preflight`, with this receipt and the decision record in place | Exit 0: root workspace hygiene clean; documentation governance valid across 288 Markdown files and 1,187 source and config files; 20 of 20 governance and guidance tests. Without the record copy it failed on the citation in `src/edge-google-subrequest.ts` |
 
+### Review-round gates
+
+These ran on 2026-10-02, on the review round's tree: `4a5e6afd` plus this
+round's Markdown changes. Only Markdown changed, including
+`apps/worker/README.md`, so no bundled source changed. The full Worker
+vitest suite and the direct production and staging `--dry-run` bundle diff
+were not rerun. Tooling: Node.js 26.2.0, except where a row names another
+version.
+
+| Gate | Result |
+|---|---|
+| E12 from `fp/EDGEPORT-E12` (`41bd9702`, clean) | 15 of 15 in 377 s, S0 to S10 |
+| E12 settings | Node.js 22.16.0, `--test-concurrency=1`, `EDGE_E2E_EDGE_TREE` set to this tree's `apps/worker`, `EDGE_E2E_GOLDEN=analytics-v2-test/golden`, `EDGE_E2E_REHEARSAL_NODE` set to Node.js 26.2.0, dedicated database `edgeport_e12f` on the local fan-out cluster |
+| E12 edge bundle | sha256 `8115167c…` and 2,785,245 bytes, as before |
+| E12 contract | sha256 `675a98fc…` |
+| E12 exchanges | 3,929, with 3,929 distinct request ids and 3 token exchanges |
+| E12 transport retry | 1, the known 9 MiB enrollment race |
+| E12 S9 | sha256 `a27aee711cabc056eea2ecb5c89b7f4de3ec4a9f85b72455057c1f760ffa680d`, 396,337 bytes, read from the run's private report, with 0 unexpected differences |
+| E12 cleanup | Database dropped; no `edgeport_` database remains |
+| `npm run scripts:check` (apps/worker) | Exit 0: 23 node:test runs, 1,076 pass, 0 fail |
+| Edge dry run inside `scripts:check` | worker, fenced and gcp overlays `3e72fae5…`, `98904b29…` and `3b6a1c39…`, unchanged |
+| `npx tsc --noEmit` | Exit 0 |
+| `deployment:endpoints:check` | Exit 0 |
+| `types:check` | Exit 0 |
+| `workspace-packages:guard` | Exit 0 |
+| Edge unit specs (`edge-*.spec.ts`, `distribution-analytics*.spec.ts`) | 9 files, 325 of 325 |
+| Node.js 22.16.0, importing `scripts/edge-mode-configuration.mjs` | `ERR_UNKNOWN_FILE_EXTENSION` |
+| Node.js 22.16.0, importing `production-deploy.mjs` and `production-reconcile.mjs` | Both load |
+| Node.js 22.16.0, `node --test scripts/accountless-migration-operator.check.mjs` | Fails with `ERR_UNKNOWN_FILE_EXTENSION` on `src/mutation-barrier.ts`. This file is unchanged since `d43c8f92` |
+| Node.js 24.14.0, importing `edge-mode-configuration.mjs` | Loads |
+| Repository root `npm run docs:check` | Valid across 289 Markdown files |
+| Repository root `npm run test:preflight` | Exit 0, 20 of 20 |
+| Repository root `npm run architecture:check` | Passed: 676 production files, 2,861 imports, 0 debt edges |
+
 ## PROD-5: owner-run steps
 
 Every step below is a protected operation. Each needs the owner's explicit
-authorization for that step, and the owner runs it; nothing here authorizes
-one. Keep identifiers, inventories, plans and receipts owner-private and
-outside the repository, and supply `CLOUDFLARE_API_TOKEN` only through the
-approved credential mechanism. Never print a secret value.
+authorization for that step, and the owner runs it. Nothing here authorizes
+one.
 
-### 0. Prerequisites
+- Keep identifiers, inventories, plans and receipts owner-private and outside
+  the repository.
+- Supply `CLOUDFLARE_API_TOKEN` only through the approved credential
+  mechanism.
+- Never print a secret value.
 
-1. Approve this branch as the edge-port line (OD-E1) and place it on the
-   production release line: merge or push it so the deploy commit contains
-   `d43c8f92` and every commit above. The deploy runs from a clean checkout of
-   that exact commit; E10 refuses `EDGE_MODE_SOURCE_NOT_DESCENDANT` otherwise.
-2. On that commit, from `apps/worker`, run the local validation in
-   `docs/runbooks/production-operations.md` ("Local validation before an owner
-   deploy") and the gates in this receipt, including
-   `npm run edge:scripts-check`.
+The maintained procedure is
+[Production edge modes](../runbooks/production-edge-modes.md). The section
+numbers below refer to it. This list records the order for PROD-5 as of this
+receipt. It reconciles the secret order with OWN-6b in the owner's cutover
+checklist: the secrets go on after P1 and before the fence.
+
+### 0. Deploy line and toolchain
+
+1. **Name the deploy line (OD-E1).** It is this branch, or a descendant of it
+   that the owner names as the production release line. It must contain
+   `d43c8f92` and every commit above. If it does not, E10 refuses
+   `EDGE_MODE_SOURCE_NOT_DESCENDANT`.
+   - Never use `claude/release-candidate-d43c8f92`, or any line that carries
+     #257 or #258. OD-OAI-1 keeps that release off Cloudflare.
+   - On any other commit past `d43c8f92`, merge the port. Then rerun on the
+     merged commit:
+     - the EP-1 and pre-admission specs;
+     - the header ratchet;
+     - the production and staging dry-run bundle diff;
+     - `npm run edge:modes:dry-run`;
+     - E12.
+2. **Check Node.js.** Use a Node.js release that strips TypeScript types by
+   default (section 1). 24.14.0 and 26.2.0 were verified. Node.js 22.16.0
+   fails: on it, `--edge-mode` reports only `PRODUCTION_DEPLOYMENT_FAILED` or
+   `PRODUCTION_RECONCILE_FAILED`.
+3. **Run the local gates.** From a clean checkout of that commit, run the
+   local validation in Production service operations. Then, from
+   `apps/worker`, run `npm run edge:scripts-check` and the edge specs
+   (section 1).
 
 ### 1. Create and migrate the release-guard D1
 
-Only the gcp overlay binds it, so creating it changes nothing that serves
-traffic.
+Follow section 2. In summary:
 
-1. From `apps/worker`, with the same location hint as the production D1s:
+- Create the database with
+  `npx wrangler d1 create tibotattle-release-guard`. Use the same location
+  hint as the production D1 databases.
+- Record its id only in the owner-private gcp plan.
+- Apply the one migration through a throwaway private config that binds only
+  `RELEASE_GUARD_DB`. The config must use the absolute
+  `release-guard-migrations` directory and the default `d1_migrations` table.
+- Confirm that nothing is pending, then delete the config.
 
-   ```bash
-   npx wrangler d1 create tibotattle-release-guard
-   ```
-
-   The name must be `tibotattle-release-guard`
-   (`EDGE_MODE_PRODUCTION_RELEASE_GUARD_DATABASE_NAME`). Record the returned
-   `database_id` only in the owner-private gcp plan (OWN-12).
-2. Write a throwaway private config (mode 0600, outside the repository) that
-   binds only this database as `RELEASE_GUARD_DB`, with `migrations_dir` set to
-   the absolute path of `apps/worker/release-guard-migrations` and the default
-   migrations table. Then:
-
-   ```bash
-   npx wrangler d1 migrations apply tibotattle-release-guard --remote --config <private-config>
-   npx wrangler d1 migrations list tibotattle-release-guard --remote --config <private-config>
-   ```
-
-   The list must show no pending migration. The one migration,
-   `0001_sparkle_appcast_guard_nonces.sql`, creates only the nonce table, with
-   the same statements as `migrations/0029`. A gcp deploy later refuses
-   `EDGE_MODE_RELEASE_GUARD_MIGRATIONS_PENDING` if anything is pending; no edge
-   deploy applies a migration.
-3. Delete the throwaway config.
+The worker and fenced modes never bind this database.
 
 ### 2. Confirm the edge-tier bindings
 
-In the current owner-private inventory, confirm that the live version binds
-all six edge-tier Workers Rate Limiting bindings: `ENROLLMENT_RATE_LIMIT`,
-`RECOVERY_RATE_LIMIT`, `CLIENT_ATTEMPT_RATE_LIMIT`, `PUBLIC_READ_RATE_LIMIT`,
-`UPLOAD_INGRESS_REQUEST_RATE_LIMIT` and `UPLOAD_INGRESS_CLIENT_RATE_LIMIT`.
-Worker mode does not check them; a gcp deploy refuses
-`EDGE_MODE_ADMISSION_BINDING_MISSING` without them.
+Follow section 3. In the current private inventory, all six bindings must be
+live:
 
-### 3. Put the edge secrets
+- `ENROLLMENT_RATE_LIMIT`
+- `RECOVERY_RATE_LIMIT`
+- `CLIENT_ATTEMPT_RATE_LIMIT`
+- `PUBLIC_READ_RATE_LIMIT`
+- `UPLOAD_INGRESS_REQUEST_RATE_LIMIT`
+- `UPLOAD_INGRESS_CLIENT_RATE_LIMIT`
 
-Worker mode never reads either secret, so each put is inert. Each put creates
-and deploys a new version at 100%.
+### 3. Baseline and read-only reconciliation
 
-1. `EDGE_INVOKER_KEY_JSON`: one JSON key of the edge-invoker service account,
-   which holds only `run.invoker` on the production service. If organization
-   policy blocks key creation, request the exception for this account only
-   (owner decision, 2026-10-02). Pipe the key into
-   `npx wrangler secret put EDGE_INVOKER_KEY_JSON --name app-usagemonitor`, run
-   from a directory with no wrangler configuration, then delete every local
-   copy. Rotate every 90 days.
-2. `EDGE_CLIENT_KEY_SECRET`: a fresh random value of at least 32 characters
-   that must never equal the origin's `IDENTITY_LINK_SECRET`, generated inside
-   the pipe, for example
-   `openssl rand -hex 32 | npx wrangler secret put EDGE_CLIENT_KEY_SECRET --name app-usagemonitor`.
-3. Keep `SPARKLE_APPCAST_GUARD_TOKEN` and `DISTRIBUTION_ANALYTICS_API_TOKEN`;
-   the gcp overlay requires both.
-4. After each put, confirm one version at 100%, an unchanged
-   `DEPLOYMENT_SOURCE_COMMIT` (`d43c8f92`) and unchanged public health.
-
-Unverified until the staging rehearsal: that `wrangler secret put` against
-this Worker copies the active version's bindings unchanged, and that piping a
-key file through stdin works (the staging plan's U-2). Step 4's recapture
-checks the first.
-
-### 4. Recapture the baseline
-
-Each secret put creates a new version, so the earlier inventory is stale and
-the next typed deploy must not use it.
-
-1. Capture a fresh owner-private inventory of the active version with the
-   owner's usual capture, and pin its sha256.
-2. Compare it with the previous inventory. Only the version id and the two new
-   `secret_text` binding names may differ.
-3. Run the read-only reconciliation with the worker-mode overlay:
+1. Capture a fresh owner-private inventory of the active version and pin its
+   sha256.
+2. Run the read-only reconciliation on the deploy commit:
 
    ```bash
    npm run production:reconcile -- \
@@ -394,25 +435,27 @@ the next typed deploy must not use it.
      --edge-mode worker
    ```
 
-   It must report a compatible candidate whose `edge.edgeMode` is `worker`, and
-   its report carries the expected post-deploy live-configuration fingerprint.
+   It must report a compatible candidate whose `edge.edgeMode` is `worker`.
 
-### 5. Staging-edge rehearsal
+### 4. Staging-edge rehearsal
 
-Rehearse worker, fenced (with an EP-8 drill) and gcp on the staging edge
-before the first production use of each mode, as
+Rehearse worker, fenced (with an EP-8 drill) and gcp on the staging edge. Do
+this before the first production use of each mode, as
 `design/staging-edge-plan-2026-10-02.md` in the parity home lays out. The
 gating rehearsal (R1 and R2 there) must run from this line.
 
-Blocked today: no typed staging-edge driver (STG-DRV) exists on either line.
-EP-9's staging overlay exists only as a library, and E10 deploys production
-only. STG-DRV must be built on this line, with E10, before this step can run.
-The gcp half also needs the staging origin.
+This step is blocked today:
 
-### 6. Worker-mode edge deploy (P1)
+- No typed staging-edge driver (STG-DRV) exists on either line.
+- EP-9's staging overlay exists only as a library, and E10 deploys production
+  only.
+- STG-DRV must be built on this line, with E10, before this step can run.
+- The gcp half also needs the staging origin.
 
-After steps 1 to 5, and with a freshly recaptured inventory, from `apps/worker`
-on the deploy commit:
+### 5. Worker-mode edge deploy (P1)
+
+After steps 0 to 4, run this from `apps/worker` on the deploy commit, with
+the inventory from step 3, or a newer one if anything changed:
 
 ```bash
 npm run production:deploy -- --confirm DEPLOY_PRODUCTION \
@@ -424,39 +467,84 @@ npm run production:deploy -- --confirm DEPLOY_PRODUCTION \
   --edge-mode worker
 ```
 
-- It is the typed path with the worker overlay: `main` becomes
-  `src/edge-entry.ts` and `EDGE_UPSTREAM_MODE` is `worker`. Nothing else
-  changes. The retained public release tree must be the exact live site; a
-  privacy page that carries the gcp marker is refused
+- **What changes.** This is the typed path with the worker overlay: `main`
+  becomes `src/edge-entry.ts` and `EDGE_UPSTREAM_MODE` is `worker`. Nothing
+  else changes.
+- **The public site.** The retained public release tree must be the exact live
+  site. A privacy page that carries the gcp marker is refused
   (`EDGE_PRIVACY_PAGE_PREMATURE`).
-- Verify as today: public health reports the deploy commit as
-  `deployment.sourceCommit`, one version serves 100% with the matching
-  `DEPLOYMENT_SOURCE_COMMIT` and `EDGE_UPSTREAM_MODE=worker` bindings, and the
-  public surface is unchanged.
-- Recapture the baseline again: the deploy created a new version.
-- An uncertain outcome follows the typed recovery
-  (`RECONCILE_TYPED_PRODUCTION_DEPLOYMENT`) in
-  `docs/runbooks/production-operations.md`; never retry with raw wrangler.
+- **Verify.** Check these:
+  - public health reports the deploy commit as `deployment.sourceCommit`;
+  - one version serves 100%, with the matching `DEPLOYMENT_SOURCE_COMMIT` and
+    `EDGE_UPSTREAM_MODE=worker` bindings;
+  - the public surface is unchanged.
+- **Recapture.** The deploy created a new version, so recapture the baseline
+  again.
+- **An uncertain outcome.** Follow the typed recovery
+  (`RECONCILE_TYPED_PRODUCTION_DEPLOYMENT`, section 4). Never retry with raw
+  Wrangler.
 
-From P1 on, `none` to `fenced` and `worker` to `gcp` are refused. The next
-edge step is the fence, at the cutover window. After the switch the only brake
-is gcp to fenced (owner decision, 2026-10-02).
+### 6. Put the edge secrets
+
+Follow section 5. Put them in worker mode, after P1 and before the fence:
+
+1. **`EDGE_INVOKER_KEY_JSON`.** One JSON key of the edge-invoker service
+   account.
+   - If organization policy blocks key creation, request the exception for
+     this account only (owner decision, 2026-10-02).
+   - Pipe the key into the put, then delete every local copy.
+   - Rotate it every 90 days.
+2. **`EDGE_CLIENT_KEY_SECRET`.** A fresh value of at least 32 characters,
+   generated inside the pipe. It must never equal `IDENTITY_LINK_SECRET`.
+
+Keep `SPARKLE_APPCAST_GUARD_TOKEN` and `DISTRIBUTION_ANALYTICS_API_TOKEN`.
+
+After each put:
+
+1. Confirm one version at 100%, unchanged `DEPLOYMENT_SOURCE_COMMIT` and
+   `EDGE_UPSTREAM_MODE` bindings, and unchanged public health.
+2. Recapture the baseline. Only the version id and the new `secret_text` name
+   may differ.
+3. Rerun the worker-mode reconciliation from step 3.
+
+Two behaviours stay unverified until the staging rehearsal (U-2):
+
+- that a put against this Worker copies the active version's bindings
+  unchanged;
+- that piping a key through stdin works.
+
+**The other order.** The code also accepts the secrets before P1, and that
+order is equally inert. If the key is ready earlier, the owner may put the
+secrets first. P1 must then use an inventory captured after the puts.
+
+PROD-5 is complete when steps 1 to 6 are done and the last baseline is
+recaptured. After that, `none` → `fenced` and `worker` → `gcp` are refused.
+The next edge step is the fence, at the cutover window. After the switch, the
+only brake is gcp → fenced (OWN-10).
 
 ## Open
 
-- STG-DRV, the typed staging-edge driver, does not exist; PROD-5's staging
+- **STG-DRV.** The typed staging-edge driver does not exist. PROD-5's staging
   rehearsal cannot run until it is built on this line.
-- The edge runbook and the production-operations pointer to it are still
-  GCP-line documents. Bring them to the production line with the cutover
-  documentation (decision record, section 16). The GCP line's copy of the
-  decision record still reads "proposed".
-- The GCP-line edge runbook puts the edge secrets after P1, while PROD-5 here
-  puts them before it. The code accepts both, because only a gcp deploy reads
-  them; reconcile the runbook when it moves.
-- OD-E6: the address probe from the `tibotattle.com` zone gates the first gcp
-  deploy; E10 does not check it.
-- The E12 harness keeps two cross-line limits: S0's "today's main" bundle and
-  the reference Worker's migrations and sanitized variables come from the GCP
-  line's tree. The worker-mode neutrality comparison above covers the first
-  for this tree.
-- Client-disconnect cancellation stays unproven, as on the GCP line.
+- **The E12 S0 fix.** `41bd9702` is not merged into
+  `claude/gcp-fastpath-final`. Until it is, E12 gates this port only from a
+  worktree that carries it.
+- **Two decision record copies.** This line's reads "accepted" and links this
+  line's runbook. The GCP line's reads "proposed". Reconcile them when the
+  lines merge. Reconcile the two runbook texts at the same time.
+- **The secret order.** This line's runbook and the owner steps follow OWN-6b:
+  after P1, before the fence. The GCP line's runbook says the same.
+- **OD-E6.** The owner's private receipt records a production-zone address
+  probe pass on 2026-10-02 (OWN-7). E10 does not check it, and the receipt
+  is not in this repository.
+- **E12's cross-line limits.**
+  - S0's "today's main" bundle comes from this tree only with the fix.
+  - The reference Worker's migrations and sanitized variables come from the
+    GCP line's tree.
+  - The worker-mode neutrality comparison above covers the first for this
+    tree.
+- **Client-disconnect cancellation.** It stays unproven, as on the GCP line.
+- **Node.js engines.** The root `engines` field still allows Node.js 22.13.
+  The Worker operator scripts need a release that strips types by default.
+  Narrowing `engines` is a repository-wide decision that this port does not
+  make.

@@ -25,6 +25,13 @@ For release-site coordination with GitHub, architecture feeds and Homebrew, use
 [publication reconciliation](./release-publication-reconciliation.md); it delegates
 website writes to this runbook's existing guarded deployment path.
 
+The production Worker's thin edge has its own runbook,
+[production edge modes](./production-edge-modes.md). It covers typed
+`--edge-mode` deploys, reconciliation and recovery, the release-guard D1, the
+edge secrets, the writer fence and the brake. That runbook is not operational
+until P1, the first typed worker-mode edge deploy. Until then this runbook
+governs every Cloudflare operation.
+
 
 ## Temporary migration liveness
 
@@ -822,10 +829,17 @@ production dry bundle is `npm run production:deploy:dry`; it does not mutate
 production and does not authorize a later deploy. Resolve every unexplained
 failure before proceeding.
 
-The production deploy wrapper itself rechecks endpoint configuration, workspace
-package copies, generated assets, release preflight, source cleanliness,
-dependency-tree integrity, public surface, pre-deploy health, post-deploy health,
-and exact source identity. Do not replace it with raw `wrangler deploy`.
+Several Worker operator scripts and their checks import TypeScript sources
+directly. Run these gates with a Node.js release that strips types by default:
+24.14.0 and 26.2.0 were verified, and Node.js documents the default from
+22.18.0. On Node.js 22.16.0, `npm run scripts:check` fails with
+`ERR_UNKNOWN_FILE_EXTENSION`.
+
+The production deploy wrapper itself rechecks endpoint configuration (including
+the edge public surface: apex and `www` public route hosts and a separate admin
+host), workspace package copies, generated assets, release preflight, source
+cleanliness, dependency-tree integrity, public surface, pre-deploy health,
+post-deploy health, and exact source identity. Do not replace it with raw `wrangler deploy`.
 
 ### Disposable local HTTP acceptance
 
@@ -1315,6 +1329,10 @@ lock only after every check passes and a final active-version read still matches
 A refusal preserves the lock for investigation; do not retry the deploy or use
 raw Wrangler to work around it. The `--executor-stopped` flag is an operator
 assertion, not a way to interrupt a running deploy.
+An operation pinned to an edge mode uses the same command. Its mode is pinned,
+so it takes no `--edge-mode`. A gcp operation adds
+`--edge-plan <the pinned private gcp plan>`. See
+[recovering an uncertain edge deploy](./production-edge-modes.md#recovering-an-uncertain-edge-deploy).
 A proven pre-mutation failure with no retained lock can be retried using a new
 `--operation <fresh-private-directory>`, preserving the old evidence. Cleanup
 warnings do not erase a verified deployment outcome. These are cooperative
