@@ -1,6 +1,6 @@
 {
   "schema": "staging-edge-inputs-v1",
-  "accountId": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+  "accountId": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
   "edgeWorkerName": "app-usagemonitor-staging-edge",
   "standInWorkerName": "app-usagemonitor-staging-edge-catchup",
   "publicHostname": "staging.synthetic-edge.example",

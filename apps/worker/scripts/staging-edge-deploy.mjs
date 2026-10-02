@@ -24,11 +24,15 @@
 //   endpoints  the per-mode public-surface matrix (--execute reads it);
 //   rehearsal  the R1/R2 sequence with each step's expected outcome.
 //
-// It refuses any production Worker name, hostname, D1, bucket or rate-limit
-// namespace, and any staging inventory that is not the staging Worker's. It
-// never reads a secret: CLOUDFLARE_API_TOKEN is passed to the read-only
-// provider and to Wrangler and never printed, and the genesis secrets file is
-// checked by metadata only and handed to Wrangler by path.
+// Render and deploy take the same production isolation inputs (the production
+// Worker's own inventory in the shared account, the optional pre-gcp baseline,
+// the production gcp plan or its explicit absence, and the production EP-8
+// fence plan) and refuse any production Worker name, hostname, D1, bucket,
+// rate-limit namespace or origin value they name, and any staging inventory
+// or operation target that is not the staging Worker's. It never reads a
+// secret: CLOUDFLARE_API_TOKEN is passed to the read-only reads and to
+// Wrangler and never printed, and the genesis secrets file is checked by
+// metadata only and handed to Wrangler by path.
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -82,6 +86,7 @@ import {
 import {
   STAGING_EDGE_WORKER_DIRECTORY,
   assertStagingEdgeTarget,
+  assertStagingOperationTarget,
   buildStagingFencePlan,
   buildStagingGcpPlan,
   createStagingEdgeOverlay,
@@ -89,6 +94,7 @@ import {
   parseStagingEdgeInputs,
   readStagingEdgeTemplate,
   readStagingEdgeTrackedConfigs,
+  renderStagingEdgeTarget,
   renderStagingEdgeTemplate,
   resolveStagingEdgeInputs,
   stagingEdgeInputsSha256,
@@ -110,6 +116,9 @@ const SITE_MANIFEST = "release-site-manifest.json";
 const SITE_MANIFEST_MAX_BYTES = 512 * 1024;
 const WRANGLER_ENVIRONMENT_OVERRIDES = Object.freeze(["CLOUDFLARE_API_BASE_URL", "CF_API_BASE_URL",
   "WRANGLER_API_ENVIRONMENT", "CLOUDFLARE_ENV"]);
+const CLOUDFLARE_API = "https://api.cloudflare.com/client/v4";
+/** Cloudflare's script-not-found error code (Wrangler's WORKER_NOT_FOUND_ERR_CODE). */
+export const CLOUDFLARE_WORKER_NOT_FOUND = 10007;
 
 const typedTools = Object.freeze({
   createSnapshot: createProductionLiveConfigSnapshot,
@@ -131,14 +140,6 @@ function stagingCode(error, fallback) {
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
-}
-
-function canonicalProduction(inventory, code = "STAGING_EDGE_PRODUCTION_INPUT_INVALID") {
-  try {
-    return createProductionLiveConfigSnapshot(inventory);
-  } catch {
-    return fail(code);
-  }
 }
 
 /** E10's typed schema inspector is never called for the JSON-topology staging Worker (U-4). */
@@ -191,6 +192,8 @@ function prepareGenesis({ mode, target, rendered, trackedConfig, overlay, source
  *
  * `trackedConfigs[0]` is the checked-in wrangler.jsonc. `productionPlan` is
  * the production gcp plan or an explicit null (EP-9); undefined is refused.
+ * `productionFencePlan` is the production EP-8 fence plan. All of them go
+ * through assertStagingEdgeTarget, as render's do.
  */
 export async function prepareStagingEdgeDeployment({
   mode,
@@ -201,6 +204,7 @@ export async function prepareStagingEdgeDeployment({
   productionInventory,
   productionBaselineInventory,
   productionPlan,
+  productionFencePlan,
   stagingInventory,
   expectedPreviousSourceCommit = null,
   workerDirectory = STAGING_EDGE_WORKER_DIRECTORY,
@@ -222,23 +226,21 @@ export async function prepareStagingEdgeDeployment({
         || typeof siteDirectory !== "string") {
       fail("STAGING_EDGE_INPUT_INVALID");
     }
-    if (productionPlan === undefined) fail("STAGING_EDGE_PRODUCTION_INPUT_INVALID");
-    const productionSnapshot = canonicalProduction(productionInventory);
-    const productionBaselineSnapshot = productionBaselineInventory === undefined
-      ? undefined
-      : canonicalProduction(productionBaselineInventory);
-    const target = assertStagingEdgeTarget({
+    const isolation = assertStagingEdgeTarget({
       inputs,
       template,
       trackedConfigs,
-      productionSnapshots: [productionSnapshot, ...(productionBaselineSnapshot ? [productionBaselineSnapshot] : [])],
+      productionInventory,
+      productionBaselineInventory,
       productionPlan,
+      productionFencePlan,
     });
+    const { target } = isolation;
     const rendered = renderStagingEdgeTemplate({ template, inputs: target, workerDirectory });
     const trackedConfig = trackedConfigs[0];
     const overlay = createStagingEdgeOverlay({
-      productionSnapshot,
-      productionBaselineSnapshot,
+      productionSnapshot: isolation.productionSnapshot,
+      productionBaselineSnapshot: isolation.productionBaselineSnapshot,
       productionPlan,
       expectedDomains: [target.publicHostname, target.adminHostname],
     });
@@ -412,6 +414,44 @@ export function stagingWranglerEnvironment(env = process.env) {
   };
 }
 
+/**
+ * Whether the staging Worker exists, from one read-only deployments read with
+ * the operator's token. Only a positive not-found is "absent": HTTP 404 whose
+ * errors are all Cloudflare's script-not-found code. A successful read is
+ * "present", whatever the deployments say (a split deployment is a Worker that
+ * exists). Anything else (a refused or rate-limited read, a network, redirect
+ * or parse failure) is STAGING_EDGE_GENESIS_EXISTENCE_UNKNOWN, so a genesis
+ * never runs over a Worker whose existence it could not read.
+ */
+export async function probeStagingWorkerExistence({ accountId, workerName, environment = process.env,
+  fetchImpl = globalThis.fetch, timeoutMs = 20_000 } = {}) {
+  if (!/^[0-9a-f]{32}$/u.test(accountId ?? "") || !/^[a-zA-Z0-9_-]{1,63}$/u.test(workerName ?? "")) {
+    fail("STAGING_EDGE_INPUT_INVALID");
+  }
+  const { CLOUDFLARE_API_TOKEN: token } = stagingWranglerEnvironment(environment);
+  let status;
+  let body;
+  try {
+    const response = await fetchImpl(`${CLOUDFLARE_API}/accounts/${accountId}/workers/scripts/${workerName}/deployments`, {
+      method: "GET",
+      headers: { authorization: `Bearer ${token}` },
+      redirect: "error",
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    status = response?.status;
+    body = JSON.parse(await boundedText(response, 256 * 1024) ?? "");
+  } catch {
+    return fail("STAGING_EDGE_GENESIS_EXISTENCE_UNKNOWN");
+  }
+  if (status === 200 && body?.success === true) return "present";
+  const errors = Array.isArray(body?.errors) ? body.errors : [];
+  if (status === 404 && body?.success === false && errors.length > 0
+      && errors.every((error) => error?.code === CLOUDFLARE_WORKER_NOT_FOUND)) {
+    return "absent";
+  }
+  return fail("STAGING_EDGE_GENESIS_EXISTENCE_UNKNOWN");
+}
+
 function singleVersion(snapshot) {
   return { versions: [{ version_id: snapshot.versionId, percentage: 100 }] };
 }
@@ -469,6 +509,7 @@ export async function runStagingEdgeDeployment({
   pendingD1Migrations = determinePendingD1Migrations,
   checkWorkspacePackages = checkLocalWorkspacePackages,
   createProvider = createProductionLiveProvider,
+  probeExistence = probeStagingWorkerExistence,
   environment = process.env,
   ...prepareOptions
 } = {}) {
@@ -543,13 +584,16 @@ export async function runStagingEdgeDeployment({
       accountId: prepared.target.accountId, workerName: prepared.target.edgeWorkerName, environment,
     });
     if (prepared.genesis) {
-      let exists = true;
+      let existence;
       try {
-        await provider.capture();
-      } catch {
-        exists = false;
+        existence = await probeExistence({
+          accountId: prepared.target.accountId, workerName: prepared.target.edgeWorkerName, environment,
+        });
+      } catch (error) {
+        return { ok: false, code: stagingCode(error, "STAGING_EDGE_GENESIS_EXISTENCE_UNKNOWN"), plan };
       }
-      if (exists) return { ok: false, code: "STAGING_EDGE_GENESIS_WORKER_EXISTS", plan };
+      if (existence === "present") return { ok: false, code: "STAGING_EDGE_GENESIS_WORKER_EXISTS", plan };
+      if (existence !== "absent") return { ok: false, code: "STAGING_EDGE_GENESIS_EXISTENCE_UNKNOWN", plan };
     } else {
       const current = createProductionLiveConfigSnapshot(await provider.capture());
       if (current.fingerprint !== prepared.baseline.fingerprint || current.versionId !== prepared.baseline.versionId
@@ -612,16 +656,27 @@ async function readOperationJson(directory, name) {
 }
 
 /**
+ * An operation directory's target.json, checked before any read with the
+ * operator's token: the staging Worker, never a reserved or checked-in one.
+ */
+export async function readStagingOperationTarget(operationDirectory, trackedConfigs) {
+  return assertStagingOperationTarget({
+    target: await readOperationJson(operationDirectory, "target.json"),
+    trackedConfigs: trackedConfigs ?? await readStagingEdgeTrackedConfigs(),
+  });
+}
+
+/**
  * Compare a captured staging inventory with a deploy's private plan:
  * `verified` when the live version is the deployed candidate, `not_deployed`
  * when the baseline version is still live, `drift` otherwise. Read-only.
  */
-export async function reconcileStagingEdgeDeployment({ operationDirectory, inventory } = {}) {
+export async function reconcileStagingEdgeDeployment({ operationDirectory, inventory, trackedConfigs } = {}) {
   try {
+    const target = await readStagingOperationTarget(operationDirectory, trackedConfigs);
     const plan = await readOperationJson(operationDirectory, "plan.json");
     const expected = await readOperationJson(operationDirectory, "expected-snapshot.json");
     const baseline = await readOperationJson(operationDirectory, "baseline-snapshot.json");
-    const target = await readOperationJson(operationDirectory, "target.json");
     const candidateConfig = await readOperationJson(operationDirectory, STAGING_EDGE_CANDIDATE_FILE);
     if (plan?.schema !== STAGING_EDGE_PLAN_SCHEMA || !object(inventory)
         || inventory.workerName !== target.edgeWorkerName || inventory.accountId !== target.accountId) {
@@ -783,7 +838,8 @@ export async function verifyStagingEdgeEndpoints({ mode, inputs, expectedSourceC
 
 const DEPLOY = ["npm", "run", "staging-edge", "--", "deploy"];
 const COMMON = ["--inputs", "<inputs.json>", "--production-inventory", "<production-inventory.json>",
-  "--production-inventory-sha256", "<sha256>", "--production-plan-absent", "--site", "<candidate-site>"];
+  "--production-inventory-sha256", "<sha256>", "--production-plan-absent", "--production-fence-plan",
+  "<production-fence-plan.json>", "--production-fence-plan-sha256", "<sha256>", "--site", "<candidate-site>"];
 const LIVE = ["--inventory", "<fresh staging inventory>", "--inventory-sha256", "<sha256>",
   "--expected-previous-source", "<live DEPLOYMENT_SOURCE_COMMIT>"];
 const OUT = ["--output-directory", "<new private directory>"];
@@ -872,9 +928,10 @@ export function stagingEdgeRehearsalSequence() {
     fenceStep({ id: "R2.4", cycle: "R2", subcommand: "verify", receipts: r2, extra: ["--fence=<R2 plan receipt sha256>"],
       expect: ok, note: "After the quiet window" }),
     deployStep({ id: "R2.5", cycle: "R2", from: "fenced", to: "gcp", extra: [...GCP, "--candidate-site"],
-      inputs: "<inputs naming an unmigrated throwaway guard D1>", site: marked,
+      inputs: "<inputs naming the throwaway guard D1>", site: marked,
       expect: refused("EDGE_MODE_RELEASE_GUARD_MIGRATIONS_PENDING"),
-      note: "N2: the staging origin ready and the secrets present, but the named guard D1 is unmigrated" }),
+      note: "N2: the staging origin ready and the secrets present, but the named throwaway guard D1 has only an "
+        + "empty migration ledger (phase B: created, then `d1 migrations list`, never applied), so 0001 is pending" }),
     deployStep({ id: "R2.6", cycle: "R2", from: "fenced", to: "gcp", extra: GCP,
       expect: refused("EDGE_PRIVACY_PAGE_NOT_CUTOVER"), note: "N4: the first gcp deploy needs the marked candidate site" }),
     deployStep({ id: "R2.7", cycle: "R2", from: "fenced", to: "gcp", extra: [...GCP, "--candidate-site"], site: marked,
@@ -913,6 +970,8 @@ const VALUE_FLAGS = Object.freeze({
   "--production-baseline-inventory": "productionBaselineInventoryPath",
   "--production-baseline-inventory-sha256": "productionBaselineInventorySha256",
   "--production-plan": "productionPlanPath",
+  "--production-fence-plan": "productionFencePlanPath",
+  "--production-fence-plan-sha256": "productionFencePlanSha256",
   "--inventory": "inventoryPath",
   "--inventory-sha256": "inventorySha256",
   "--expected-previous-source": "expectedPreviousSourceCommit",
@@ -935,10 +994,13 @@ const SWITCH_FLAGS = Object.freeze({
   "--execute": "execute",
   "--write": "write",
 });
+/** The production isolation inputs render and deploy both take, with the same rules. */
+const ISOLATION_FLAGS = Object.freeze(["productionInventoryPath", "productionInventorySha256",
+  "productionBaselineInventoryPath", "productionBaselineInventorySha256", "productionPlanPath", "productionPlanAbsent",
+  "productionFencePlanPath", "productionFencePlanSha256"]);
 const SUBCOMMAND_FLAGS = Object.freeze({
-  render: ["inputsPath", "outputDirectory", "write", "productionInventoryPath", "productionInventorySha256"],
-  deploy: ["edgeMode", "inputsPath", "productionInventoryPath", "productionInventorySha256",
-    "productionBaselineInventoryPath", "productionBaselineInventorySha256", "productionPlanPath", "productionPlanAbsent",
+  render: ["inputsPath", "outputDirectory", "write", ...ISOLATION_FLAGS],
+  deploy: ["edgeMode", "inputsPath", ...ISOLATION_FLAGS,
     "inventoryPath", "inventorySha256", "expectedPreviousSourceCommit", "fenceReceiptPath", "fenceReceiptSha256",
     "originCommit", "originVerifierAccount", "siteDirectory", "candidateSite", "outputDirectory", "secretsFile",
     "genesis", "execute", "confirmation", "expectedCandidateSha256"],
@@ -955,6 +1017,19 @@ function pairs(result, names) {
   const present = names.filter((name) => result[name] !== undefined);
   if (present.length !== 0 && present.length !== names.length) argumentsInvalid();
   return present.length === names.length;
+}
+
+/**
+ * The isolation flags of render and deploy: the production inventory and the
+ * production fence plan, each with its sha256, are required; the pre-gcp
+ * baseline is an optional pair; exactly one of --production-plan and
+ * --production-plan-absent.
+ */
+function isolationArguments(result) {
+  if (!pairs(result, ["productionInventoryPath", "productionInventorySha256"])) argumentsInvalid();
+  pairs(result, ["productionBaselineInventoryPath", "productionBaselineInventorySha256"]);
+  if ((result.productionPlanPath !== undefined) === (result.productionPlanAbsent === true)) argumentsInvalid();
+  if (!pairs(result, ["productionFencePlanPath", "productionFencePlanSha256"])) argumentsInvalid();
 }
 
 /** Closed argument parser: each subcommand takes exactly its flags and combinations. */
@@ -980,18 +1055,16 @@ export function parseStagingEdgeArguments(argv) {
   const sha = (name) => result[name] === undefined || SHA.test(result[name]) || argumentsInvalid();
   const sha256Value = (name) => result[name] === undefined || SHA256.test(result[name]) || argumentsInvalid();
   for (const name of ["expectedPreviousSourceCommit", "originCommit", "expectedSourceCommit"]) sha(name);
-  for (const name of ["productionInventorySha256", "productionBaselineInventorySha256", "inventorySha256",
-    "fenceReceiptSha256", "expectedCandidateSha256"]) sha256Value(name);
+  for (const name of ["productionInventorySha256", "productionBaselineInventorySha256", "productionFencePlanSha256",
+    "inventorySha256", "fenceReceiptSha256", "expectedCandidateSha256"]) sha256Value(name);
   if (result.edgeMode !== undefined && parseEdgeUpstreamMode(result.edgeMode) === null) argumentsInvalid();
   if (subcommand === "render") {
     if (!result.inputsPath || (result.write === true) !== (result.outputDirectory !== undefined)) argumentsInvalid();
-    pairs(result, ["productionInventoryPath", "productionInventorySha256"]);
+    isolationArguments(result);
   }
   if (subcommand === "deploy") {
     if (!result.edgeMode || !result.inputsPath || !result.siteDirectory || !result.outputDirectory) argumentsInvalid();
-    if (!pairs(result, ["productionInventoryPath", "productionInventorySha256"])) argumentsInvalid();
-    pairs(result, ["productionBaselineInventoryPath", "productionBaselineInventorySha256"]);
-    if ((result.productionPlanPath !== undefined) === (result.productionPlanAbsent === true)) argumentsInvalid();
+    isolationArguments(result);
     const live = pairs(result, ["inventoryPath", "inventorySha256", "expectedPreviousSourceCommit"]);
     if (result.genesis === true) {
       if (live || result.edgeMode !== "worker" || result.fenceReceiptPath !== undefined
@@ -1066,6 +1139,19 @@ async function productionPlanOption(options) {
   return readEdgeModePlan(resolve(options.productionPlanPath));
 }
 
+/** The owner-private production isolation inputs, each pinned by its sha256 (the plan by EP-9's reader). */
+async function readProductionIsolation(options) {
+  const read = (path, sha256Value) => readPrivateProductionInventory(resolve(path), sha256Value);
+  return {
+    productionInventory: await read(options.productionInventoryPath, options.productionInventorySha256),
+    productionBaselineInventory: options.productionBaselineInventoryPath === undefined
+      ? undefined
+      : await read(options.productionBaselineInventoryPath, options.productionBaselineInventorySha256),
+    productionPlan: await productionPlanOption(options),
+    productionFencePlan: await read(options.productionFencePlanPath, options.productionFencePlanSha256),
+  };
+}
+
 function migrationFile(role) {
   return `migrations-${role.replace(/[A-Z]/gu, (letter) => `-${letter.toLowerCase()}`)}.wrangler.json`;
 }
@@ -1074,10 +1160,11 @@ async function cliRender(options) {
   const inputs = await readInputs(options.inputsPath);
   const template = await readStagingEdgeTemplate();
   const trackedConfigs = await readStagingEdgeTrackedConfigs();
-  const productionSnapshots = options.productionInventoryPath === undefined ? [] : [canonicalProduction(
-    await readPrivateProductionInventory(resolve(options.productionInventoryPath), options.productionInventorySha256))];
-  const target = assertStagingEdgeTarget({ inputs, template, trackedConfigs, productionSnapshots });
-  const rendered = renderStagingEdgeTemplate({ template, inputs: target });
+  const isolation = assertStagingEdgeTarget({
+    inputs, template, trackedConfigs, ...(await readProductionIsolation(options)),
+  });
+  const { target } = isolation;
+  const rendered = renderStagingEdgeTarget({ template, isolation, trackedConfigs });
   const fence = buildStagingFencePlan(target);
   const gcp = buildStagingGcpPlan(target);
   const files = [
@@ -1090,7 +1177,11 @@ async function cliRender(options) {
   const summary = {
     schema: STAGING_EDGE_RENDER_SCHEMA,
     dryRun: options.write !== true,
-    productionInventoryChecked: productionSnapshots.length > 0,
+    productionIsolation: {
+      baselineInventory: isolation.productionBaselineSnapshot !== undefined,
+      productionPlan: isolation.productionPlan !== null,
+      productionFencePlanSha256: isolation.productionFencePlanSha256,
+    },
     inputsSha256: stagingEdgeInputsSha256(target),
     fencePlanSha256: fence.planSha256,
     gcpPlanOverlaySha256: gcp?.overlaySha256 ?? null,
@@ -1112,12 +1203,7 @@ async function cliRender(options) {
 async function cliDeploy(options) {
   const workerDirectory = STAGING_EDGE_WORKER_DIRECTORY;
   const inputs = await readInputs(options.inputsPath);
-  const productionInventory = await readPrivateProductionInventory(
-    resolve(options.productionInventoryPath), options.productionInventorySha256);
-  const productionBaselineInventory = options.productionBaselineInventoryPath === undefined
-    ? undefined
-    : await readPrivateProductionInventory(resolve(options.productionBaselineInventoryPath),
-      options.productionBaselineInventorySha256);
+  const isolation = await readProductionIsolation(options);
   const stagingInventory = options.inventoryPath === undefined
     ? undefined
     : await readPrivateProductionInventory(resolve(options.inventoryPath), options.inventorySha256);
@@ -1135,9 +1221,7 @@ async function cliDeploy(options) {
     inputs,
     template: await readStagingEdgeTemplate(),
     trackedConfigs: await readStagingEdgeTrackedConfigs(workerDirectory),
-    productionInventory,
-    productionBaselineInventory,
-    productionPlan: await productionPlanOption(options),
+    ...isolation,
     stagingInventory,
     expectedPreviousSourceCommit: options.expectedPreviousSourceCommit ?? null,
     workerDirectory,
@@ -1162,7 +1246,7 @@ async function cliReconcile(options) {
   const directory = resolve(options.operationDirectory);
   let inventory;
   if (options.execute === true) {
-    const target = await readOperationJson(directory, "target.json");
+    const target = await readStagingOperationTarget(directory);
     inventory = await createProductionLiveProvider({ accountId: target.accountId, workerName: target.edgeWorkerName })
       .capture();
   } else {
@@ -1184,12 +1268,13 @@ async function cliEndpoints(options) {
   return verifyStagingEdgeEndpoints(request);
 }
 
-const USAGE = "Usage: staging-edge-deploy.mjs <render|deploy|reconcile|endpoints|rehearsal> [flags]\n"
-  + "  render --inputs PRIVATE_JSON [--production-inventory PRIVATE_JSON --production-inventory-sha256 SHA256] "
-  + "[--write --output-directory NEW_PRIVATE_DIR]\n"
-  + "  deploy --edge-mode worker|fenced|gcp --inputs PRIVATE_JSON --production-inventory PRIVATE_JSON "
-  + "--production-inventory-sha256 SHA256 (--production-plan PRIVATE_JSON | --production-plan-absent) "
+const ISOLATION_USAGE = "--production-inventory PRIVATE_JSON --production-inventory-sha256 SHA256 "
+  + "(--production-plan PRIVATE_JSON | --production-plan-absent) "
   + "[--production-baseline-inventory PRIVATE_JSON --production-baseline-inventory-sha256 SHA256] "
+  + "--production-fence-plan PRIVATE_JSON --production-fence-plan-sha256 SHA256";
+const USAGE = "Usage: staging-edge-deploy.mjs <render|deploy|reconcile|endpoints|rehearsal> [flags]\n"
+  + `  render --inputs PRIVATE_JSON ${ISOLATION_USAGE} [--write --output-directory NEW_PRIVATE_DIR]\n`
+  + `  deploy --edge-mode worker|fenced|gcp --inputs PRIVATE_JSON ${ISOLATION_USAGE} `
   + "(--genesis [--secrets-file PRIVATE_0600] | --inventory PRIVATE_JSON --inventory-sha256 SHA256 "
   + "--expected-previous-source FULL_SHA) [--fence-receipt PRIVATE_JSON --fence-receipt-sha256 SHA256] "
   + "[--origin-commit FULL_SHA --origin-verifier-account EMAIL] --site DIR [--candidate-site] "

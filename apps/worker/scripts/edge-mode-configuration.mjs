@@ -685,8 +685,19 @@ function namespaceKey(value) {
   return typeof value === "number" ? String(value) : value;
 }
 
-function productionSnapshots({ productionSnapshot, productionBaselineSnapshot }) {
+/**
+ * The production evidence must be the production Worker's, in the account the
+ * staging Worker shares with it (its Custom Domains sit in the production
+ * zone). Another Worker's capture would empty the refused set of every live
+ * production reference without a sign, so it is refused, as is a capture from
+ * another account.
+ */
+function productionSnapshots({ productionSnapshot, productionBaselineSnapshot, stagingAccountId }) {
   const snapshots = [canonicalSnapshot(productionSnapshot, "STAGING_INPUT_INVALID")];
+  if (snapshots[0].workerName !== EDGE_MODE_PRODUCTION_WORKER_NAME || typeof stagingAccountId !== "string"
+      || snapshots[0].accountId !== stagingAccountId) {
+    fail("STAGING_INPUT_INVALID");
+  }
   if (productionBaselineSnapshot !== undefined) {
     const baseline = canonicalSnapshot(productionBaselineSnapshot, "STAGING_INPUT_INVALID");
     if (baseline.workerName !== snapshots[0].workerName || baseline.accountId !== snapshots[0].accountId) {
@@ -727,7 +738,7 @@ function productionGcpPlan(productionPlan, snapshots) {
   }
 }
 
-function stagingReferences({ productionSnapshot, productionBaselineSnapshot, productionPlan, trackedConfig }) {
+function stagingReferences({ productionSnapshot, productionBaselineSnapshot, productionPlan, trackedConfig, stagingAccountId }) {
   const references = {
     workerNames: new Set([EDGE_MODE_PRODUCTION_WORKER_NAME]),
     databaseIds: new Set(),
@@ -737,7 +748,7 @@ function stagingReferences({ productionSnapshot, productionBaselineSnapshot, pro
     hosts: new Set(EDGE_MODE_PRODUCTION_HOSTNAMES),
     rateLimitNamespaces: new Set(),
   };
-  const snapshots = productionSnapshots({ productionSnapshot, productionBaselineSnapshot });
+  const snapshots = productionSnapshots({ productionSnapshot, productionBaselineSnapshot, stagingAccountId });
   const plan = productionGcpPlan(productionPlan, snapshots);
   if (plan !== null) {
     references.databaseIds.add(plan.releaseGuardDatabase.id);
@@ -765,6 +776,7 @@ function stagingReferences({ productionSnapshot, productionBaselineSnapshot, pro
   }
   // The tracked production environment names the unbound legacy primary D1 and
   // the checked-in rate-limit namespaces, which no live snapshot carries.
+  if (!object(trackedConfig) || !object(trackedConfig.env?.production)) fail("STAGING_INPUT_INVALID");
   const tracked = trackedConfig.env.production;
   if (typeof tracked.name === "string") references.workerNames.add(tracked.name);
   for (const entry of Array.isArray(tracked.d1_databases) ? tracked.d1_databases : []) {
@@ -858,7 +870,10 @@ function assertStagingIsolation({ snapshot, environment, plan, references }) {
  * creates those resources, or an explicit null before then. Production binds
  * them only at its gcp switch, so between creation and that switch the plan is
  * the only evidence of them; pass it for every rehearsal in that window. A
- * null is refused once a production snapshot carries gcp values.
+ * null is refused once a production snapshot carries gcp values. Both
+ * production snapshots must be captures of EDGE_MODE_PRODUCTION_WORKER_NAME in
+ * the staging snapshot's account, which production shares (the staging Custom
+ * Domains sit in the production zone); any other capture is refused.
  *
  * A staging gcp rehearsal has the production gcp prerequisites: the staging
  * Worker must bind its own SPARKLE_RELEASES bucket and hold the four
@@ -873,10 +888,10 @@ export function applyEdgeModeStagingOverlay({
   const edgeMode = requiredMode(mode);
   const normalizedPlan = normalizeEdgeModePlan({ mode: edgeMode, plan });
   const trackedDatabases = trackedDataDatabases(trackedConfig, "STAGING_INPUT_INVALID");
-  const references = stagingReferences({
-    productionSnapshot, productionBaselineSnapshot, productionPlan, trackedConfig,
-  });
   const staging = canonicalSnapshot(snapshot, "STAGING_INPUT_INVALID");
+  const references = stagingReferences({
+    productionSnapshot, productionBaselineSnapshot, productionPlan, trackedConfig, stagingAccountId: staging.accountId,
+  });
   if (!object(renderedConfig)) fail("CONFIG_INVALID");
   const config = cloneJson(renderedConfig, "CONFIG_INVALID");
   const nested = object(config.env?.production);
@@ -897,10 +912,28 @@ export function applyEdgeModeStagingSnapshotDelta({
   const edgeMode = requiredMode(mode);
   const normalizedPlan = normalizeEdgeModePlan({ mode: edgeMode, plan });
   const trackedDatabases = trackedDataDatabases(trackedConfig, "STAGING_INPUT_INVALID");
-  const references = stagingReferences({
-    productionSnapshot, productionBaselineSnapshot, productionPlan, trackedConfig,
-  });
   const staging = canonicalSnapshot(snapshot, "STAGING_INPUT_INVALID");
+  const references = stagingReferences({
+    productionSnapshot, productionBaselineSnapshot, productionPlan, trackedConfig, stagingAccountId: staging.accountId,
+  });
   assertStagingIsolation({ snapshot: staging, environment: undefined, plan: normalizedPlan, references });
   return deltaSnapshot(staging, edgeMode, normalizedPlan, trackedDatabases);
+}
+
+/**
+ * The production references the staging variant refuses, from the same
+ * isolation inputs and with the same input rules (the production Worker's own
+ * capture in the staging account, the pre-gcp baseline after the switch, the
+ * production gcp plan or an explicit null). A caller that must refuse them
+ * before any staging config or snapshot exists (the staging driver's render)
+ * uses this instead of a copy of the rules. Returns fresh sets.
+ */
+export function edgeModeStagingProductionReferences({
+  productionSnapshot, productionBaselineSnapshot, productionPlan, trackedConfig, stagingAccountId,
+} = {}) {
+  trackedDataDatabases(trackedConfig, "STAGING_INPUT_INVALID");
+  const references = stagingReferences({
+    productionSnapshot, productionBaselineSnapshot, productionPlan, trackedConfig, stagingAccountId,
+  });
+  return Object.fromEntries(Object.entries(references).map(([key, values]) => [key, new Set(values)]));
 }

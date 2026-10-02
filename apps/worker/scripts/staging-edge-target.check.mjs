@@ -8,24 +8,31 @@ import { validateCloudflareWriterFencePlan } from "./cloudflare-writer-fence.mjs
 import { edgeModeOverlaySha256 } from "./edge-mode-configuration.mjs";
 import { renderProductionLiveConfig, verifyProductionLiveConfig } from "./production-live-config.mjs";
 import {
+  STAGING_DRY_RUN_PRODUCTION_CATCHUP_ID,
+  stagingDryRunProductionFencePlan,
+} from "./staging-edge-dry-run.mjs";
+import {
   STAGING_EDGE_D1_ROLES,
   STAGING_EDGE_GENESIS_VERSION_ID,
   STAGING_EDGE_INPUTS_EXAMPLE_PATH,
   STAGING_EDGE_TEMPLATE_PATH,
   STAGING_EDGE_WORKER_DIRECTORY,
   assertStagingEdgeTarget,
+  assertStagingOperationTarget,
   buildStagingFencePlan,
   buildStagingGcpPlan,
   createStagingGenesisSnapshot,
   parseStagingEdgeInputs,
   parseStagingEdgeTemplate,
+  renderStagingEdgeTarget,
   renderStagingEdgeTemplate,
+  resolveStagingEdgeIsolation,
   stagingEdgeInventoryOf,
-  stagingEdgeRefusedReferences,
 } from "./staging-edge-target.mjs";
 
-// Synthetic inputs only: the committed example and EP-9's synthetic
-// production snapshot. Nothing here reads a secret or reaches a network.
+// Synthetic inputs only: the committed example, EP-9's synthetic production
+// snapshot and a synthetic production fence plan that matches it. Nothing
+// here reads a secret or reaches a network.
 const FIXTURE = JSON.parse(readFileSync(new URL("./fixtures/edge-mode-live-snapshot.synthetic.json", import.meta.url), "utf8"));
 const TEMPLATE_TEXT = readFileSync(STAGING_EDGE_TEMPLATE_PATH, "utf8");
 const RAW_INPUTS = JSON.parse(readFileSync(STAGING_EDGE_INPUTS_EXAMPLE_PATH, "utf8"));
@@ -51,10 +58,57 @@ function refused(fn, code) {
   assert.throws(fn, (error) => error?.code === code, code);
 }
 
+/** The production isolation inputs: a production capture, its matching fence plan, no production gcp plan. */
+function isolation({ production = FIXTURE, baseline, ...options } = {}) {
+  return {
+    productionInventory: stagingEdgeInventoryOf(production),
+    ...(baseline === undefined ? {} : { productionBaselineInventory: stagingEdgeInventoryOf(baseline) }),
+    productionPlan: null,
+    productionFencePlan: stagingDryRunProductionFencePlan(baseline ?? production),
+    ...options,
+  };
+}
+
 function target(change, options = {}) {
-  return assertStagingEdgeTarget({
-    inputs: raw(change), template: template(), trackedConfigs: TRACKED, productionSnapshots: [FIXTURE], ...options,
-  });
+  return assertStagingEdgeTarget({ inputs: raw(change), template: template(), trackedConfigs: TRACKED, ...isolation(options) });
+}
+
+function references(options = {}) {
+  return resolveStagingEdgeIsolation({ inputs: raw(), trackedConfigs: TRACKED, ...isolation(options) }).references;
+}
+
+/** The production Worker after its gcp switch: the data D1s and buckets gone, the guard D1 and origin values bound. */
+const PRODUCTION_GUARD = Object.freeze({ id: "7a000005-0000-4000-8000-0000000000aa", name: "tibotattle-release-guard" });
+const PRODUCTION_PLAN = Object.freeze({
+  upstreamOrigin: "https://tibotattle-origin-synthetic.a.run.app",
+  originAudience: "synthetic-production-audience",
+  invokerServiceAccount: "edge-invoker@synthetic-project.iam.gserviceaccount.com",
+  releaseGuardDatabase: PRODUCTION_GUARD,
+});
+const DATA_BINDINGS = new Set(["USAGE_MONITOR_DB", "ANALYTICS_DB", "DELETION_LEDGER", "QUARANTINE"]);
+const PRODUCTION_GCP = Object.freeze({ ...FIXTURE, versionId: "0e000000-0000-4000-8000-000000000999", bindings: [
+  ...FIXTURE.bindings.filter((binding) => !DATA_BINDINGS.has(binding.name)),
+  { name: "RELEASE_GUARD_DB", type: "d1", database_id: PRODUCTION_GUARD.id, database_name: PRODUCTION_GUARD.name },
+  { name: "EDGE_UPSTREAM_MODE", type: "plain_text", text: "gcp" },
+  { name: "EDGE_UPSTREAM_ORIGIN", type: "plain_text", text: PRODUCTION_PLAN.upstreamOrigin },
+  { name: "EDGE_ORIGIN_AUDIENCE", type: "plain_text", text: PRODUCTION_PLAN.originAudience },
+  { name: "EDGE_INVOKER_SERVICE_ACCOUNT", type: "plain_text", text: PRODUCTION_PLAN.invokerServiceAccount },
+] });
+
+/** Another Worker's capture in production's place: the old staging Worker, its own D1s, no domains. */
+function otherWorker(snapshot = FIXTURE, workerName = "app-usagemonitor-staging") {
+  let index = 0;
+  return {
+    ...snapshot,
+    workerName,
+    domains: [],
+    namespaces: snapshot.namespaces.map((namespace) => ({ ...namespace, name: `${workerName}_${namespace.class}`, script: workerName })),
+    bindings: snapshot.bindings.map((binding) => {
+      if (binding.type !== "d1") return binding;
+      index += 1;
+      return { ...binding, database_id: `6b00000${index}-0000-4000-8000-00000000000${index}`, database_name: `other-${index}` };
+    }),
+  };
 }
 
 test("the template keeps env.staging's vars and changes only the plan's section 3.2", () => {
@@ -166,25 +220,27 @@ test("the inputs schema is closed and requires staging names", () => {
 test("every production Worker name is refused", () => {
   refused(() => target((value) => ({ ...value, edgeWorkerName: "app-usagemonitor-staging" })), "STAGING_EDGE_PRODUCTION_WORKER");
   refused(() => target((value) => ({ ...value, standInWorkerName: "app-usagemonitor-staging" })), "STAGING_EDGE_PRODUCTION_WORKER");
-  const renamed = { ...FIXTURE, workerName: RAW_INPUTS.edgeWorkerName };
-  refused(() => target(undefined, { productionSnapshots: [renamed] }), "STAGING_EDGE_PRODUCTION_WORKER");
-  const references = stagingEdgeRefusedReferences({ trackedConfigs: TRACKED, productionSnapshots: [FIXTURE] });
+  const refusedNames = references().workerNames;
   for (const name of ["app-usagemonitor", "app-usagemonitor-staging", "app-usagemonitor-synthetic",
-    "tibotattle-dogfood-release-guard"]) {
-    assert.ok(references.workerNames.has(name), name);
+    "tibotattle-dogfood-release-guard", "tibotattle-analytics-catchup-synthetic"]) {
+    assert.ok(refusedNames.has(name), name);
   }
+  // Every script the production fence plan names is refused, here an out-of-scope one with a staging-like name.
+  const fence = stagingDryRunProductionFencePlan(FIXTURE);
+  fence.outOfScopeScripts = [{ name: RAW_INPUTS.standInWorkerName, reason: "synthetic production consumer" }];
+  refused(() => target(undefined, { productionFencePlan: fence }), "STAGING_EDGE_PRODUCTION_WORKER");
 });
 
 test("every production hostname is refused", () => {
-  const references = stagingEdgeRefusedReferences({ trackedConfigs: TRACKED, productionSnapshots: [FIXTURE] });
+  const hostnames = references().hostnames;
   for (const host of ["tibotattle.com", "www.tibotattle.com", "admin.tibotattle.com", "updates.tibotattle.com",
     "dogfood-release.tibotattle.com"]) {
-    assert.ok(references.hostnames.has(host), host);
+    assert.ok(hostnames.has(host), host);
   }
   const zoned = { ...FIXTURE, domains: [...FIXTURE.domains, { hostname: RAW_INPUTS.publicHostname }] };
-  refused(() => target(undefined, { productionSnapshots: [zoned] }), "STAGING_EDGE_PRODUCTION_HOSTNAME");
+  refused(() => target(undefined, { production: zoned }), "STAGING_EDGE_PRODUCTION_HOSTNAME");
   const admin = { ...FIXTURE, routes: [{ pattern: `admin.${RAW_INPUTS.publicHostname}/*` }] };
-  refused(() => target(undefined, { productionSnapshots: [admin] }), "STAGING_EDGE_PRODUCTION_HOSTNAME");
+  refused(() => target(undefined, { production: admin }), "STAGING_EDGE_PRODUCTION_HOSTNAME");
 });
 
 test("every production D1 id or name is refused", () => {
@@ -205,14 +261,12 @@ test("every production D1 id or name is refused", () => {
   ]) {
     refused(() => target(withD1(role, entry)), "STAGING_EDGE_PRODUCTION_DATABASE");
   }
-  const productionPlan = {
-    upstreamOrigin: "https://tibotattle-origin-synthetic.a.run.app",
-    originAudience: "synthetic-production-audience",
-    invokerServiceAccount: "edge-invoker@synthetic-project.iam.gserviceaccount.com",
-    releaseGuardDatabase: { id: RAW_INPUTS.d1.releaseGuard.id, name: "tibotattle-release-guard" },
-  };
+  const productionPlan = { ...PRODUCTION_PLAN, releaseGuardDatabase: { id: RAW_INPUTS.d1.releaseGuard.id, name: "tibotattle-release-guard" } };
   refused(() => target(undefined, { productionPlan }), "STAGING_EDGE_PRODUCTION_DATABASE");
-  refused(() => target(undefined, { productionPlan: { invalid: true } }), "STAGING_EDGE_PRODUCTION_INPUT_INVALID");
+  refused(() => target(undefined, { productionPlan: { invalid: true } }), "EDGE_MODE_STAGING_INPUT_INVALID");
+  // The catch-up control D1 only another production Worker binds, from the production fence plan.
+  refused(() => target(withD1("catchupControl", { id: STAGING_DRY_RUN_PRODUCTION_CATCHUP_ID })), "STAGING_EDGE_PRODUCTION_DATABASE");
+  assert.ok(references().databaseIds.has(STAGING_DRY_RUN_PRODUCTION_CATCHUP_ID));
 });
 
 test("every production bucket and rate-limit namespace is refused", () => {
@@ -220,11 +274,102 @@ test("every production bucket and rate-limit namespace is refused", () => {
     "STAGING_EDGE_PRODUCTION_BUCKET");
   const bucket = { ...FIXTURE, bindings: [...FIXTURE.bindings.filter((binding) => binding.name !== "QUARANTINE"),
     { name: "QUARANTINE", type: "r2_bucket", bucket_name: RAW_INPUTS.r2.quarantine }] };
-  refused(() => target(undefined, { productionSnapshots: [bucket] }), "STAGING_EDGE_PRODUCTION_BUCKET");
+  refused(() => target(undefined, { production: bucket }), "STAGING_EDGE_PRODUCTION_BUCKET");
   const clashing = template();
   clashing.rateLimitProfiles.rehearsal[0] = { ...clashing.rateLimitProfiles.rehearsal[0], namespace_id: "3001" };
-  refused(() => assertStagingEdgeTarget({ inputs: raw(), template: clashing, trackedConfigs: TRACKED }),
+  refused(() => assertStagingEdgeTarget({ inputs: raw(), template: clashing, trackedConfigs: TRACKED, ...isolation() }),
     "STAGING_EDGE_PRODUCTION_RATE_LIMIT");
+});
+
+test("the production inventory must be the production Worker's own, in the shared account", () => {
+  const analytics = FIXTURE.bindings.find((binding) => binding.name === "ANALYTICS_DB").database_id;
+  const leaking = (value) => {
+    value.d1.analytics.id = analytics;
+    return value;
+  };
+  refused(() => target(leaking), "STAGING_EDGE_PRODUCTION_DATABASE");
+  // Another Worker's capture in production's place would drop the production ANALYTICS_DB from the refused set.
+  for (const production of [otherWorker(), otherWorker(FIXTURE, RAW_INPUTS.edgeWorkerName)]) {
+    refused(() => target(leaking, { production, productionFencePlan: stagingDryRunProductionFencePlan(FIXTURE) }),
+      "STAGING_EDGE_PRODUCTION_INVENTORY_NOT_PRODUCTION");
+    refused(() => target(leaking, { production: PRODUCTION_GCP, productionPlan: PRODUCTION_PLAN, baseline: production,
+      productionFencePlan: stagingDryRunProductionFencePlan(FIXTURE) }), "STAGING_EDGE_PRODUCTION_INVENTORY_NOT_PRODUCTION");
+  }
+  const otherAccount = { ...FIXTURE, accountId: "0b".repeat(16) };
+  refused(() => target(undefined, { production: otherAccount }), "STAGING_EDGE_PRODUCTION_ACCOUNT_MISMATCH");
+  refused(() => target(undefined, { production: PRODUCTION_GCP, productionPlan: PRODUCTION_PLAN, baseline: otherAccount }),
+    "STAGING_EDGE_PRODUCTION_ACCOUNT_MISMATCH");
+  refused(() => target(undefined, { productionInventory: undefined }), "STAGING_EDGE_PRODUCTION_INPUT_INVALID");
+  refused(() => target(undefined, { productionPlan: undefined }), "STAGING_EDGE_PRODUCTION_INPUT_INVALID");
+});
+
+test("after the production gcp switch the pre-gcp baseline keeps every data D1 refused", () => {
+  const analytics = FIXTURE.bindings.find((binding) => binding.name === "ANALYTICS_DB").database_id;
+  const leaking = (value) => {
+    value.d1.analytics.id = analytics;
+    return value;
+  };
+  // EP-9's rules: the live gcp capture alone no longer binds the data D1s, and it binds gcp values, so the plan is required.
+  refused(() => target(leaking, { production: PRODUCTION_GCP, productionPlan: PRODUCTION_PLAN }), "EDGE_MODE_STAGING_INPUT_INVALID");
+  refused(() => target(leaking, { production: PRODUCTION_GCP, baseline: FIXTURE }), "EDGE_MODE_STAGING_INPUT_INVALID");
+  const afterSwitch = { production: PRODUCTION_GCP, productionPlan: PRODUCTION_PLAN, baseline: FIXTURE };
+  assert.equal(target(undefined, afterSwitch).target.edgeWorkerName, RAW_INPUTS.edgeWorkerName);
+  refused(() => target(leaking, afterSwitch), "STAGING_EDGE_PRODUCTION_DATABASE");
+  refused(() => target((value) => {
+    value.d1.releaseGuard.id = PRODUCTION_GUARD.id;
+    return value;
+  }, afterSwitch), "STAGING_EDGE_PRODUCTION_DATABASE");
+  for (const key of ["upstreamOrigin", "originAudience", "invokerServiceAccount"]) {
+    refused(() => target((value) => ({ ...value, origin: { ...value.origin, [key]: PRODUCTION_PLAN[key] } }), afterSwitch),
+      "STAGING_EDGE_PRODUCTION_ORIGIN");
+  }
+});
+
+test("the production fence plan is validated by EP-8 and bound to the production capture", () => {
+  const fence = () => stagingDryRunProductionFencePlan(FIXTURE);
+  refused(() => target(undefined, { productionFencePlan: undefined }), "STAGING_EDGE_PRODUCTION_FENCE_PLAN_INVALID");
+  refused(() => target(undefined, { productionFencePlan: { ...fence(), extra: true } }), "STAGING_EDGE_PRODUCTION_FENCE_PLAN_INVALID");
+  // The staging fence plan in production's place, another account, or ids production does not bind.
+  refused(() => target(undefined, { productionFencePlan: buildStagingFencePlan(raw()).plan }), "STAGING_EDGE_PRODUCTION_FENCE_PLAN_MISMATCH");
+  refused(() => target(undefined, { productionFencePlan: { ...fence(), accountId: "0b".repeat(16) } }),
+    "STAGING_EDGE_PRODUCTION_FENCE_PLAN_MISMATCH");
+  for (const [index, change] of [
+    [0, { id: "6b000001-0000-4000-8000-000000000001" }],
+    [1, { id: "6b000002-0000-4000-8000-000000000002" }],
+    [4, { bucket: "synthetic-other-quarantine" }],
+  ]) {
+    const plan = fence();
+    plan.dataResources[index] = { ...plan.dataResources[index], ...change };
+    refused(() => target(undefined, { productionFencePlan: plan }), "STAGING_EDGE_PRODUCTION_FENCE_PLAN_MISMATCH");
+  }
+  // After the switch the baseline is what proves the plan's labels.
+  assert.ok(target(undefined, { production: PRODUCTION_GCP, productionPlan: PRODUCTION_PLAN, baseline: FIXTURE }));
+});
+
+test("render runs the same isolation as deploy, then EP-9 on the rendered edge config", () => {
+  const resolved = target();
+  const rendered = renderStagingEdgeTarget({ template: template(), isolation: resolved, trackedConfigs: TRACKED });
+  assert.equal(rendered.edgeTracked.env.production.name, RAW_INPUTS.edgeWorkerName);
+  // A template whose edge config names a production host passes the target checks but not EP-9's.
+  const hosted = template();
+  hosted.edgeWorker.env.production.vars.PUBLIC_ORIGIN = "https://tibotattle.com";
+  refused(() => renderStagingEdgeTarget({ template: hosted, isolation: resolved, trackedConfigs: TRACKED }),
+    "EDGE_MODE_STAGING_PRODUCTION_REFERENCE");
+});
+
+test("an operation's target.json must name the staging Worker and staging domains only", () => {
+  const good = { accountId: RAW_INPUTS.accountId, edgeWorkerName: RAW_INPUTS.edgeWorkerName,
+    expectedDomains: [`admin.${RAW_INPUTS.publicHostname}`, RAW_INPUTS.publicHostname] };
+  assert.deepEqual(assertStagingOperationTarget({ target: good, trackedConfigs: TRACKED }), good);
+  for (const [change, code] of [
+    [{ edgeWorkerName: "app-usagemonitor" }, "STAGING_EDGE_NAME_NOT_STAGING"],
+    [{ edgeWorkerName: "app-usagemonitor-staging" }, "STAGING_EDGE_PRODUCTION_WORKER"],
+    [{ expectedDomains: ["tibotattle.com"] }, "STAGING_EDGE_HOSTNAME_NOT_STAGING"],
+    [{ accountId: "x" }, "STAGING_EDGE_OPERATION_TARGET_INVALID"],
+    [{ extra: true }, "STAGING_EDGE_OPERATION_TARGET_INVALID"],
+  ]) {
+    refused(() => assertStagingOperationTarget({ target: { ...good, ...change }, trackedConfigs: TRACKED }), code);
+  }
 });
 
 test("the EP-8 fence plan is the staging Worker, its stand-in and the staging resources", () => {

@@ -18,6 +18,7 @@ import {
   applyEdgeModeStagingSnapshotDelta,
   assertEdgeModeTransition,
   edgeModeOverlaySha256,
+  edgeModeStagingProductionReferences,
   liveEdgeMode,
   normalizeEdgeModePlan,
   serializeEdgeModeConfig,
@@ -1022,6 +1023,32 @@ test("the staging variant needs its inputs, a pre-gcp production baseline after 
   const afterSwitch = { ...common, productionSnapshot: productionGcp, productionBaselineSnapshot: production, productionPlan: GCP_PLAN };
   // A production snapshot that binds gcp values contradicts "no production plan".
   invalid({ ...afterSwitch, productionPlan: null });
+  // The production evidence is the production Worker's own capture, in the
+  // staging Worker's account. Another Worker's capture (here the old staging
+  // Worker's, with its own D1s and no domains) would drop every live production
+  // reference from the refused set, so it is refused as the live snapshot and
+  // as the baseline, as is a capture from another account.
+  const otherD1 = (binding, index) => (binding.type === "d1"
+    ? { ...binding, database_id: `6b00000${index % 10}-0000-4000-8000-00000000000${index % 10}`, database_name: `other-${index}` }
+    : binding);
+  const otherWorker = resnapshot(stagingRename(production, "app-usagemonitor-staging"), {
+    domains: [], bindings: production.bindings.map(otherD1),
+  });
+  invalid({ ...common, productionSnapshot: otherWorker });
+  invalid({ ...afterSwitch, productionBaselineSnapshot: otherWorker });
+  invalid({ ...common, productionSnapshot: resnapshot(production, { accountId: "0b".repeat(16) }) });
+  invalid({ ...afterSwitch, productionSnapshot: resnapshot(productionGcp, { accountId: "0b".repeat(16) }) });
+  // The exported references apply the same rules to a caller with no staging snapshot yet.
+  const references = edgeModeStagingProductionReferences({ ...common, stagingAccountId: production.accountId });
+  for (const binding of production.bindings.filter((entry) => entry.type === "d1")) {
+    assert.ok(references.databaseIds.has(binding.database_id), binding.name);
+  }
+  assert.ok(references.workerNames.has("app-usagemonitor"));
+  for (const input of [{ productionSnapshot: otherWorker }, { stagingAccountId: "0b".repeat(16) },
+    { productionPlan: undefined }, { ...afterSwitch, productionBaselineSnapshot: undefined }]) {
+    throwsCode(() => edgeModeStagingProductionReferences({ ...common, stagingAccountId: production.accountId, ...input }),
+      "EDGE_MODE_STAGING_INPUT_INVALID");
+  }
   applyEdgeModeStagingSnapshotDelta({ snapshot: staging, mode: "gcp", plan: STAGING_PLAN, ...afterSwitch });
   const refused = (snapshot, overrides) => throwsCode(() => applyEdgeModeStagingSnapshotDelta({
     snapshot, mode: "gcp", plan: STAGING_PLAN, ...afterSwitch, ...overrides,

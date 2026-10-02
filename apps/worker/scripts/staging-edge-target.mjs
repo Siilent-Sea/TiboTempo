@@ -12,20 +12,24 @@ import {
   applyEdgeModeStagingOverlay,
   applyEdgeModeStagingSnapshotDelta,
   edgeModeOverlaySha256,
+  edgeModeStagingProductionReferences,
   normalizeEdgeModePlan,
 } from "./edge-mode-configuration.mjs";
 import {
+  FENCE_D1_LABELS,
   FENCE_MIN_QUIET_WINDOW_MINUTES,
   FENCE_PLAN_SCHEMA,
+  FENCE_R2_BINDING,
   validateCloudflareWriterFencePlan,
 } from "./cloudflare-writer-fence.mjs";
 import { createProductionLiveConfigSnapshot } from "./production-live-config.mjs";
 
 /**
  * The staging edge target (STG-DRV): the committed template and its private,
- * non-secret inputs, the production-reference refusals, the genesis snapshot,
- * the EP-9 staging overlay bound to its isolation inputs, and the EP-8 fence
- * plan and gcp plan wrappers.
+ * non-secret inputs, the production isolation inputs and the refusals they
+ * drive (one set of rules for render and deploy), the genesis snapshot, the
+ * EP-9 staging overlay bound to its isolation inputs, the operation-target
+ * check, and the EP-8 fence plan and gcp plan wrappers.
  *
  * Inputs carry staging resource identifiers, an Access AUD and an email; they
  * are owner-private. Nothing here logs, writes a file or puts a value into an
@@ -197,16 +201,9 @@ function addAll(set, values) {
   for (const value of values) if (typeof value === "string" && value.length > 0) set.add(value);
 }
 
-/**
- * Every production (or otherwise reserved) reference a staging target must
- * not name: the checked-in configs (every environment of wrangler.jsonc and
- * the dogfood guard Worker), the production snapshots (live, and pre-gcp
- * baseline), the production gcp plan, and the fixed production names.
- */
-export function stagingEdgeRefusedReferences({ trackedConfigs, productionSnapshots = [], productionPlan = null } = {}) {
-  if (!Array.isArray(trackedConfigs) || trackedConfigs.length === 0 || !Array.isArray(productionSnapshots)) {
-    fail("TRACKED_CONFIG_INVALID");
-  }
+/** The fixed reserved names and every environment of the checked-in configs. */
+function trackedReferences(trackedConfigs) {
+  if (!Array.isArray(trackedConfigs) || trackedConfigs.length === 0) fail("TRACKED_CONFIG_INVALID");
   const references = {
     workerNames: new Set(STAGING_EDGE_REFUSED_WORKER_NAMES),
     hostnames: new Set(EDGE_MODE_PRODUCTION_HOSTNAMES),
@@ -214,6 +211,7 @@ export function stagingEdgeRefusedReferences({ trackedConfigs, productionSnapsho
     databaseNames: new Set([EDGE_MODE_PRODUCTION_RELEASE_GUARD_DATABASE_NAME]),
     bucketNames: new Set(),
     rateLimitNamespaces: new Set(),
+    values: new Set(),
   };
   for (const config of trackedConfigs) {
     for (const environment of environments(config)) {
@@ -236,42 +234,137 @@ export function stagingEdgeRefusedReferences({ trackedConfigs, productionSnapsho
       }
     }
   }
-  for (const snapshot of productionSnapshots) {
-    if (!object(snapshot) || !Array.isArray(snapshot.bindings)) fail("PRODUCTION_INPUT_INVALID");
-    addAll(references.workerNames, [snapshot.workerName]);
-    for (const binding of snapshot.bindings) {
-      if (binding.type === "d1") {
-        addAll(references.databaseIds, [binding.database_id]);
-        addAll(references.databaseNames, [binding.database_name]);
-      }
-      if (binding.type === "r2_bucket") addAll(references.bucketNames, [binding.bucket_name]);
-      if (binding.type === "ratelimit") addAll(references.rateLimitNamespaces, [binding.namespace_id]);
-    }
-    addAll(references.hostnames, snapshot.domains.map((domain) => domain.hostname));
-    addAll(references.hostnames, snapshot.routes.map(routeHost));
-  }
-  if (productionPlan !== null) {
-    let plan;
-    try {
-      plan = normalizeEdgeModePlan({ mode: "gcp", plan: productionPlan });
-    } catch {
-      return fail("PRODUCTION_INPUT_INVALID");
-    }
-    addAll(references.databaseIds, [plan.releaseGuardDatabase.id]);
-    addAll(references.databaseNames, [plan.releaseGuardDatabase.name]);
-  }
   return references;
 }
 
 /**
- * Refuse a staging target that names any production reference, before
- * anything is rendered. EP-9's overlay repeats the check on the rendered
- * config, the live staging snapshot and the gcp plan; this one also covers
- * the stand-in Worker, the catch-up and guard D1s and the rate-limit profile.
+ * A production capture: the production Worker's own, in the account the
+ * staging edge shares with production (its Custom Domains sit in the
+ * production zone). Another Worker's or another account's capture would empty
+ * the refused set of every live production reference, so it is refused.
  */
-export function assertStagingEdgeTarget({ inputs, template, trackedConfigs, productionSnapshots = [], productionPlan = null } = {}) {
+function productionCapture(inventory, accountId) {
+  let snapshot;
+  try {
+    snapshot = createProductionLiveConfigSnapshot(inventory);
+  } catch {
+    return fail("PRODUCTION_INPUT_INVALID");
+  }
+  if (snapshot.workerName !== EDGE_MODE_PRODUCTION_WORKER_NAME) fail("PRODUCTION_INVENTORY_NOT_PRODUCTION");
+  if (snapshot.accountId !== accountId) fail("PRODUCTION_ACCOUNT_MISMATCH");
+  return snapshot;
+}
+
+/**
+ * The owner-private production EP-8 fence plan, validated by the fence's own
+ * validator. It is the only evidence of the production data resources that
+ * the production Worker does not bind (the catch-up control D1) and of the
+ * other production writers. Its production Worker and account must be
+ * production's, and every label production binds (ingestion, analytics,
+ * deletion-ledger, the quarantine bucket) must be what the production
+ * captures bind, which is EP-8's own label rule.
+ */
+function productionFencePlan(plan, accountId, snapshots) {
+  let validated;
+  try {
+    validated = validateCloudflareWriterFencePlan(plan);
+  } catch {
+    return fail("PRODUCTION_FENCE_PLAN_INVALID");
+  }
+  if (validated.productionWorker !== EDGE_MODE_PRODUCTION_WORKER_NAME || validated.accountId !== accountId) {
+    fail("PRODUCTION_FENCE_PLAN_MISMATCH");
+  }
+  const proven = new Set();
+  for (const snapshot of snapshots) {
+    for (const binding of snapshot.bindings) {
+      const label = Object.keys(FENCE_D1_LABELS).find((key) => FENCE_D1_LABELS[key].owner === "production"
+        && FENCE_D1_LABELS[key].binding === binding.name);
+      if (binding.type === "d1" && label !== undefined) {
+        if (binding.database_id !== validated.d1[label]) fail("PRODUCTION_FENCE_PLAN_MISMATCH");
+        proven.add(label);
+      }
+      if (binding.type === "r2_bucket" && binding.name === FENCE_R2_BINDING) {
+        if (binding.bucket_name !== validated.r2.bucket) fail("PRODUCTION_FENCE_PLAN_MISMATCH");
+        proven.add(FENCE_R2_BINDING);
+      }
+    }
+  }
+  const required = [...Object.keys(FENCE_D1_LABELS).filter((key) => FENCE_D1_LABELS[key].owner === "production"),
+    FENCE_R2_BINDING];
+  if (required.some((label) => !proven.has(label))) fail("PRODUCTION_FENCE_PLAN_MISMATCH");
+  return validated;
+}
+
+/**
+ * The production isolation inputs every render and every deploy take, under
+ * one set of rules, and the references a staging target must not name:
+ *
+ * - the fixed reserved names and every environment of the checked-in configs;
+ * - EP-9's references (edgeModeStagingProductionReferences): the production
+ *   capture and the optional pre-gcp baseline, each the production Worker's in
+ *   the staging account, with EP-9's own rules (a baseline after the gcp
+ *   switch, the production gcp plan or an explicit null, refused once
+ *   production binds gcp values);
+ * - the production EP-8 fence plan: its four D1s (including the catch-up
+ *   control D1 only another production Worker binds), its bucket and every
+ *   script it names.
+ */
+export function resolveStagingEdgeIsolation({
+  inputs, trackedConfigs, productionInventory, productionBaselineInventory, productionPlan, productionFencePlan: fencePlan,
+} = {}) {
   const target = parsedInputs(inputs);
-  const references = stagingEdgeRefusedReferences({ trackedConfigs, productionSnapshots, productionPlan });
+  const references = trackedReferences(trackedConfigs);
+  const productionSnapshot = productionCapture(productionInventory, target.accountId);
+  const productionBaselineSnapshot = productionBaselineInventory === undefined
+    ? undefined
+    : productionCapture(productionBaselineInventory, target.accountId);
+  if (productionPlan === undefined) fail("PRODUCTION_INPUT_INVALID");
+  const production = edgeModeStagingProductionReferences({
+    productionSnapshot, productionBaselineSnapshot, productionPlan, trackedConfig: trackedConfigs[0],
+    stagingAccountId: target.accountId,
+  });
+  addAll(references.workerNames, production.workerNames);
+  addAll(references.hostnames, production.hosts);
+  addAll(references.databaseIds, production.databaseIds);
+  addAll(references.databaseNames, production.databaseNames);
+  addAll(references.bucketNames, production.bucketNames);
+  addAll(references.rateLimitNamespaces, production.rateLimitNamespaces);
+  addAll(references.values, production.values);
+  const fence = productionFencePlan(fencePlan, target.accountId,
+    [productionSnapshot, ...(productionBaselineSnapshot === undefined ? [] : [productionBaselineSnapshot])]);
+  addAll(references.workerNames, [fence.productionWorker, ...fence.fencedScripts.map((script) => script.name),
+    ...fence.outOfScopeScripts.map((script) => script.name)]);
+  addAll(references.databaseIds, Object.values(fence.d1));
+  addAll(references.bucketNames, [fence.r2.bucket]);
+  return Object.freeze({
+    target,
+    productionSnapshot,
+    productionBaselineSnapshot,
+    productionPlan,
+    productionFencePlanSha256: fence.planSha256,
+    references,
+  });
+}
+
+function originHost(value) {
+  try {
+    return new URL(value).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Refuse a staging target that names any production reference, before
+ * anything is rendered, and return its resolved isolation. Render and deploy
+ * both run it with the same inputs. EP-9's overlay repeats the check on the
+ * rendered config, the live staging snapshot and the gcp plan; this one also
+ * covers the stand-in Worker, the catch-up and guard D1s, the rate-limit
+ * profile and the origin values before any of them is written.
+ */
+export function assertStagingEdgeTarget({ inputs, template, trackedConfigs, ...production } = {}) {
+  const isolation = resolveStagingEdgeIsolation({ inputs, trackedConfigs, ...production });
+  const { target, references } = isolation;
   if ([target.edgeWorkerName, target.standInWorkerName].some((name) => references.workerNames.has(name))) {
     fail("PRODUCTION_WORKER");
   }
@@ -285,10 +378,34 @@ export function assertStagingEdgeTarget({ inputs, template, trackedConfigs, prod
   if ([target.r2.quarantine, target.r2.sparkleReleases].some((bucket) => references.bucketNames.has(bucket))) {
     fail("PRODUCTION_BUCKET");
   }
+  if (target.origin !== null) {
+    const values = [target.origin.upstreamOrigin, target.origin.originAudience, target.origin.invokerServiceAccount];
+    if (values.some((value) => references.values.has(value))
+        || [target.origin.upstreamOrigin, target.origin.originAudience].some((value) => references.hostnames.has(originHost(value)))) {
+      fail("PRODUCTION_ORIGIN");
+    }
+  }
   if (template !== undefined) {
     const profile = templateProfile(template, target.rateLimitProfile);
     if (profile.some((entry) => references.rateLimitNamespaces.has(entry.namespace_id))) fail("PRODUCTION_RATE_LIMIT");
   }
+  return isolation;
+}
+
+/**
+ * The checks an executed operation's own target.json must pass before any
+ * read with the operator's token: a staging-named Worker in a valid account
+ * that is not a reserved or checked-in Worker, with staging domains only.
+ */
+export function assertStagingOperationTarget({ target, trackedConfigs } = {}) {
+  exactKeys(target, ["accountId", "edgeWorkerName", "expectedDomains"], "OPERATION_TARGET_INVALID");
+  if (!HEX32.test(target.accountId ?? "") || !Array.isArray(target.expectedDomains)
+      || target.expectedDomains.length > 2) {
+    fail("OPERATION_TARGET_INVALID");
+  }
+  const references = trackedReferences(trackedConfigs);
+  if (references.workerNames.has(stagingName(target.edgeWorkerName, "NAME_NOT_STAGING"))) fail("PRODUCTION_WORKER");
+  if (target.expectedDomains.some((host) => references.hostnames.has(hostname(host)))) fail("PRODUCTION_HOSTNAME");
   return target;
 }
 
@@ -544,6 +661,31 @@ export function createStagingEdgeOverlay({ productionSnapshot, productionBaselin
       snapshot, mode, plan, trackedConfig, ...isolation,
     }),
   });
+}
+
+/**
+ * Render for the render subcommand, with the isolation the genesis deploy
+ * applies: assertStagingEdgeTarget's isolation (its result), then EP-9's own
+ * guard on the snapshot the rendered edge config declares. Render --write
+ * therefore refuses what deploy refuses before any file is written.
+ */
+export function renderStagingEdgeTarget({ template, isolation, trackedConfigs, workerDirectory = STAGING_EDGE_WORKER_DIRECTORY } = {}) {
+  if (!object(isolation) || !Array.isArray(trackedConfigs) || trackedConfigs.length === 0) fail("TRACKED_CONFIG_INVALID");
+  const { target } = isolation;
+  const rendered = renderStagingEdgeTemplate({ template, inputs: target, workerDirectory });
+  const overlay = createStagingEdgeOverlay({
+    productionSnapshot: isolation.productionSnapshot,
+    productionBaselineSnapshot: isolation.productionBaselineSnapshot,
+    productionPlan: isolation.productionPlan,
+    expectedDomains: [target.publicHostname, target.adminHostname],
+  });
+  overlay.expected({
+    snapshot: createStagingGenesisSnapshot({ edgeTracked: rendered.edgeTracked, inputs: target }),
+    mode: "worker",
+    plan: null,
+    trackedConfig: trackedConfigs[0],
+  });
+  return rendered;
 }
 
 /** The EP-8 fence plan for the staging edge (plan Phase G), validated by the fence's own validator. */

@@ -10,9 +10,16 @@
 //    every deploy step runs E10's gates with the staging overlay and must give
 //    its expected outcome. The live staging Worker is simulated by applying
 //    each ok step's expected snapshot as the next live version; the origin
-//    verifier, identity token, git blobs, fence history and release-guard
-//    ledger are synthetic readers. EP-8's own steps are covered by
-//    cloudflare-writer-fence.check.mjs and only move the simulated fence here.
+//    verifier, identity token, git blobs and fence history are synthetic
+//    readers. The release-guard gate is production's own
+//    determinePendingD1Migrations over a synthetic Wrangler that answers the
+//    ledger read as Wrangler does: rows for a migrated guard D1, no rows for
+//    the throwaway (its ledger initialised by `d1 migrations list`), and a
+//    failed "no such table: d1_migrations" for a D1 whose ledger was never
+//    created. The production isolation inputs are EP-9's synthetic production
+//    capture and a synthetic production EP-8 fence plan that matches it.
+//    EP-8's own steps are covered by cloudflare-writer-fence.check.mjs and
+//    only move the simulated fence here.
 // 3. Bundles the worker, fenced, gcp and brake candidates the walk wrote,
 //    exactly as the owner would deploy them, and the stand-in Worker, with
 //    `wrangler deploy --dry-run` under PATH and HOME only, so wrangler
@@ -21,6 +28,7 @@
 // Prints one JSON line per rehearsal step and per bundle.
 
 import { execFile } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,8 +40,10 @@ import {
   dryRunViolations,
   wranglerEnvironment,
 } from "./edge-mode-dry-run.mjs";
-import { EDGE_MODE_GCP_REQUIRED_SECRETS } from "./edge-mode-configuration.mjs";
-import { EDGE_PRIVACY_TOPOLOGY_MARKER } from "./production-edge-mode.mjs";
+import { FENCE_PLAN_SCHEMA } from "./cloudflare-writer-fence.mjs";
+import { EDGE_MODE_GCP_REQUIRED_SECRETS, EDGE_MODE_PRODUCTION_WORKER_NAME } from "./edge-mode-configuration.mjs";
+import { determinePendingD1Migrations } from "./production-deploy.mjs";
+import { EDGE_PRIVACY_TOPOLOGY_MARKER, EDGE_MODE_RELEASE_GUARD_DATABASE } from "./production-edge-mode.mjs";
 import { createProductionLiveConfigSnapshot } from "./production-live-config.mjs";
 import {
   STAGING_EDGE_CANDIDATE_FILE,
@@ -66,10 +76,66 @@ export const STAGING_DRY_RUN_READERS = Object.freeze({
 });
 export const STAGING_DRY_RUN_FIXTURE = FIXTURE;
 const THROWAWAY_GUARD = Object.freeze({ id: "5a00000f-0000-4000-8000-00000000000f", name: "tibotattle-staging-release-guard-throwaway" });
+/** The synthetic production catch-up control D1, bound only by a production consumer other than the edge Worker. */
+export const STAGING_DRY_RUN_PRODUCTION_CATCHUP_ID = "0c000004-0000-4000-8000-0000000000c4";
+const RELEASE_GUARD_MIGRATION = "0001_sparkle_appcast_guard_nonces.sql";
 const VERIFIER = "tibotattle-staging-verifier@synthetic-project.iam.gserviceaccount.com";
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+/**
+ * The synthetic production EP-8 fence plan: the production Worker, a cron
+ * catch-up consumer, the production capture's three D1s and quarantine
+ * bucket, and a catch-up control D1 only that consumer binds.
+ */
+export function stagingDryRunProductionFencePlan(productionSnapshot) {
+  const d1 = (name) => productionSnapshot.bindings.find((binding) => binding.type === "d1" && binding.name === name)?.database_id;
+  return {
+    schema: FENCE_PLAN_SCHEMA,
+    accountId: productionSnapshot.accountId,
+    productionWorker: EDGE_MODE_PRODUCTION_WORKER_NAME,
+    fencedScripts: [{ name: "tibotattle-analytics-catchup-synthetic", kind: "cron", expectedCrons: ["*/5 * * * *"] }],
+    dataResources: [
+      { kind: "d1", id: d1("USAGE_MONITOR_DB"), label: "ingestion" },
+      { kind: "d1", id: d1("ANALYTICS_DB"), label: "analytics" },
+      { kind: "d1", id: d1("DELETION_LEDGER"), label: "deletion-ledger" },
+      { kind: "d1", id: STAGING_DRY_RUN_PRODUCTION_CATCHUP_ID, label: "catchup-control" },
+      { kind: "r2", bucket: productionSnapshot.bindings.find((binding) => binding.name === "QUARANTINE")?.bucket_name },
+    ],
+    outOfScopeScripts: [],
+    quietWindowMinutes: 15,
+  };
+}
+
+/**
+ * A synthetic Wrangler for the release-guard ledger read only. It answers
+ * `d1 execute RELEASE_GUARD_DB ... --json` for the D1 the candidate config
+ * binds as Wrangler 4.114.0 does: the rows of an initialised ledger (from
+ * `ledgers`, by database name), or exit 1 with "no such table: d1_migrations"
+ * for a D1 whose ledger was never created.
+ */
+export function stagingDryRunLedgerSpawn(ledgers) {
+  return (command, args) => {
+    const config = args.indexOf("--config");
+    if (args[0] !== "d1" || args[1] !== "execute" || args[2] !== EDGE_MODE_RELEASE_GUARD_DATABASE.binding || config < 0) {
+      return { status: 1, stdout: "", stderr: "synthetic wrangler: unexpected command" };
+    }
+    const environment = JSON.parse(readFileSync(args[config + 1], "utf8")).env.production;
+    const database = environment.d1_databases.find((entry) => entry.binding === EDGE_MODE_RELEASE_GUARD_DATABASE.binding);
+    const rows = ledgers.get(database?.database_name);
+    if (rows === undefined) {
+      return { status: 1, stdout: `${JSON.stringify({ error: { text: "no such table: d1_migrations: SQLITE_ERROR" } })}\n`, stderr: "" };
+    }
+    const results = rows.map((name, index) => ({ id: index + 1, name }));
+    return { status: 0, stdout: JSON.stringify([{ results, success: true, meta: {} }]), stderr: "" };
+  };
+}
+
+/** The release-guard ledgers of the rehearsal: the staging guard migrated, the throwaway initialised and empty. */
+export function stagingDryRunLedgers(inputs) {
+  return new Map([[inputs.d1.releaseGuard.name, [RELEASE_GUARD_MIGRATION]], [THROWAWAY_GUARD.name, []]]);
 }
 
 /** The example inputs, and the three variants the rehearsal's negative steps name. */
@@ -82,7 +148,7 @@ export async function stagingDryRunInputs() {
     "<inputs with a placeholder origin>": variant((value) => ({
       ...value, origin: { ...value.origin, upstreamOrigin: "https://staging-origin-placeholder.a.run.app" },
     })),
-    "<inputs naming an unmigrated throwaway guard D1>": variant((value) => ({
+    "<inputs naming the throwaway guard D1>": variant((value) => ({
       ...value, d1: { ...value.d1, releaseGuard: { ...THROWAWAY_GUARD } },
     })),
   };
@@ -129,7 +195,10 @@ export async function simulateStagingEdgeRehearsal({ directory }) {
   const template = await readStagingEdgeTemplate();
   const trackedConfigs = await readStagingEdgeTrackedConfigs();
   const inputsByName = await stagingDryRunInputs();
-  const productionInventory = stagingEdgeInventoryOf(JSON.parse(await readFile(FIXTURE, "utf8")));
+  const productionSnapshot = JSON.parse(await readFile(FIXTURE, "utf8"));
+  const productionInventory = stagingEdgeInventoryOf(productionSnapshot);
+  const productionFencePlan = stagingDryRunProductionFencePlan(productionSnapshot);
+  const ledgerSpawn = stagingDryRunLedgerSpawn(stagingDryRunLedgers(inputsByName["<inputs.json>"]));
   const sites = {
     "<candidate-site>": await writeStagingDryRunSite(join(directory, "site-unmarked"), false),
     "<marker-bearing site>": await writeStagingDryRunSite(join(directory, "site-marked"), true),
@@ -164,10 +233,8 @@ export async function simulateStagingEdgeRehearsal({ directory }) {
     const result = await runStagingEdgeDeployment({
       outputDirectory,
       sourceState: () => ({ commit: STAGING_DRY_RUN_SOURCE, clean: true }),
-      pendingD1Migrations: async ({ databases }) => ({
-        ok: true, code: null,
-        pending: inputs.d1.releaseGuard.name === THROWAWAY_GUARD.name ? [`${databases[0].binding}:0001`] : [],
-      }),
+      pendingD1Migrations: determinePendingD1Migrations,
+      spawn: ledgerSpawn,
       mode: step.to,
       genesis: step.command.includes("--genesis"),
       inputs,
@@ -175,6 +242,7 @@ export async function simulateStagingEdgeRehearsal({ directory }) {
       trackedConfigs,
       productionInventory,
       productionPlan: null,
+      productionFencePlan,
       stagingInventory: live === null ? undefined : stagingEdgeInventoryOf(live),
       expectedPreviousSourceCommit: live === null ? null : live.sourceCommit,
       siteDirectory,

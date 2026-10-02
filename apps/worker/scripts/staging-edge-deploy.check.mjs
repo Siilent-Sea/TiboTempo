@@ -1,5 +1,7 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -24,16 +26,21 @@ import {
   STAGING_DRY_RUN_SOURCE,
   stagingDryRunAdvance,
   stagingDryRunInputs,
+  stagingDryRunLedgerSpawn,
+  stagingDryRunLedgers,
+  stagingDryRunProductionFencePlan,
   stagingDryRunWithGcpSecrets,
   writeStagingDryRunSite,
 } from "./staging-edge-dry-run.mjs";
 import {
+  CLOUDFLARE_WORKER_NOT_FOUND,
   STAGING_EDGE_CANDIDATE_FILE,
   STAGING_EDGE_DEPLOY_CONFIRMATION,
   assertPrivateSecretsFile,
   createStagingOutputDirectory,
   parseStagingEdgeArguments,
   prepareStagingEdgeDeployment,
+  probeStagingWorkerExistence,
   reconcileStagingEdgeDeployment,
   rehearsalStepAgreesWithMatrix,
   runStagingEdgeDeployment,
@@ -54,7 +61,10 @@ import {
 // token below must never appear in any file, result or code this suite sees.
 const SYNTHETIC_API_TOKEN = "synthetic-cloudflare-token-0123456789";
 const SECRETS_SENTINEL = "SYNTHETIC_SECRET_VALUE_NEVER_READ";
-const PRODUCTION_INVENTORY = stagingEdgeInventoryOf(JSON.parse(readFileSync(STAGING_DRY_RUN_FIXTURE, "utf8")));
+const PRODUCTION_SNAPSHOT = JSON.parse(readFileSync(STAGING_DRY_RUN_FIXTURE, "utf8"));
+const PRODUCTION_INVENTORY = stagingEdgeInventoryOf(PRODUCTION_SNAPSHOT);
+const PRODUCTION_FENCE_PLAN = stagingDryRunProductionFencePlan(PRODUCTION_SNAPSHOT);
+const DRIVER = new URL("./staging-edge-deploy.mjs", import.meta.url).pathname;
 const temporary = [];
 after(async () => {
   for (const directory of temporary) await rm(directory, { recursive: true, force: true });
@@ -89,6 +99,7 @@ async function base(overrides = {}) {
     trackedConfigs: ctx.trackedConfigs,
     productionInventory: PRODUCTION_INVENTORY,
     productionPlan: null,
+    productionFencePlan: PRODUCTION_FENCE_PLAN,
     siteDirectory: ctx.unmarked,
     sourceCommit: STAGING_DRY_RUN_SOURCE,
     readBlob: STAGING_DRY_RUN_READERS.readBlob,
@@ -157,6 +168,39 @@ function fakeSpawn(status = 0) {
 
 const ENVIRONMENT = Object.freeze({ PATH: "/usr/bin:/bin", HOME: "/home/synthetic", CLOUDFLARE_API_TOKEN: SYNTHETIC_API_TOKEN });
 
+/** The old staging Worker's inventory, with its own D1 ids and no domains, in production's place. */
+function otherWorkerInventory() {
+  const other = structuredClone(PRODUCTION_INVENTORY);
+  other.workerName = "app-usagemonitor-staging";
+  for (const namespace of other.namespaces) {
+    namespace.script = other.workerName;
+    namespace.name = `${other.workerName}_${namespace.class}`;
+  }
+  other.domains = [];
+  for (const list of [other.version.resources.bindings, other.settings.bindings]) {
+    for (const [index, binding] of list.filter((entry) => entry.type === "d1").entries()) {
+      binding.id = `6b00000${index + 1}-0000-4000-8000-00000000000${index + 1}`;
+      binding.database_id = binding.id;
+      binding.database_name = `other-${binding.name.toLowerCase()}`;
+    }
+  }
+  return other;
+}
+
+/** A fake Cloudflare API answering the deployments read only. */
+function fakeApi(respond) {
+  const requests = [];
+  return {
+    requests,
+    fetchImpl: async (url, init) => {
+      requests.push({ url, init });
+      return respond(url, init);
+    },
+  };
+}
+
+const json = (status, body) => ({ status, text: async () => JSON.stringify(body) });
+
 async function filesUnder(directory) {
   const out = [];
   for (const entry of await readdir(directory, { withFileTypes: true })) {
@@ -205,6 +249,21 @@ test("the staging deploy refuses production inputs and a production inventory", 
   assert.deepEqual(await prepare({ productionPlan: undefined }), { ok: false, code: "STAGING_EDGE_PRODUCTION_INPUT_INVALID" });
   assert.deepEqual(await prepare({ productionInventory: { workerName: "app-usagemonitor" } }),
     { ok: false, code: "STAGING_EDGE_PRODUCTION_INPUT_INVALID" });
+  assert.deepEqual(await prepare({ productionFencePlan: undefined }), { ok: false, code: "STAGING_EDGE_PRODUCTION_FENCE_PLAN_INVALID" });
+  // Another Worker's inventory as the production inventory (the reviewer's case: the old staging
+  // Worker's, its own D1s, no domains) no longer drops production's ANALYTICS_DB from the refused set.
+  const analytics = PRODUCTION_INVENTORY.version.resources.bindings.find((binding) => binding.name === "ANALYTICS_DB");
+  const leakingInputs = structuredClone(JSON.parse(readFileSync(new URL("../ops/staging-edge/staging-edge-inputs.example.json", import.meta.url), "utf8")));
+  leakingInputs.d1.analytics.id = analytics.database_id;
+  const other = otherWorkerInventory();
+  for (const genesis of [true, false]) {
+    const live = genesis ? { genesis: true, stagingInventory: undefined, expectedPreviousSourceCommit: null } : {};
+    assert.deepEqual(await prepare({ ...live, inputs: leakingInputs }), { ok: false, code: "STAGING_EDGE_PRODUCTION_DATABASE" });
+    assert.deepEqual(await prepare({ ...live, inputs: leakingInputs, productionInventory: other }),
+      { ok: false, code: "STAGING_EDGE_PRODUCTION_INVENTORY_NOT_PRODUCTION" });
+  }
+  assert.deepEqual(await prepare({ productionInventory: { ...structuredClone(PRODUCTION_INVENTORY), accountId: "0b".repeat(16) } }),
+    { ok: false, code: "STAGING_EDGE_PRODUCTION_ACCOUNT_MISMATCH" });
   // A live staging version that binds a production D1 is refused by EP-9's isolation guard.
   const primary = PRODUCTION_INVENTORY.version.resources.bindings.find((binding) => binding.name === "USAGE_MONITOR_DB");
   const leaking = structuredClone(stagingEdgeInventoryOf(worker));
@@ -298,25 +357,41 @@ test("an executed genesis deploys the reviewed candidate with the secrets file b
   const secrets = join(await tempDirectory("staging-edge-secrets-"), "secrets.env");
   await writeFile(secrets, `${SECRETS_SENTINEL}\n`, { mode: 0o600 });
   const live = stagingDryRunAdvance(JSON.parse(await readFile(join(directory, "expected-snapshot.json"), "utf8")), ++versions);
-  const existing = fakeProvider([stagingEdgeInventoryOf(live)]);
-  const second = await outputDirectory();
-  const exists = await runStagingEdgeDeployment({
-    ...options, outputDirectory: second, execute: true, confirmation: STAGING_EDGE_DEPLOY_CONFIRMATION,
+  const execute = async (overrides) => runStagingEdgeDeployment({
+    ...options, outputDirectory: await outputDirectory(), execute: true, confirmation: STAGING_EDGE_DEPLOY_CONFIRMATION,
     expectedCandidateSha256: dry.plan.candidateConfigSha256, secretsFile: secrets,
-    sourceState: () => ({ commit: STAGING_DRY_RUN_SOURCE, clean: true }), spawn: fakeSpawn().spawn,
-    createProvider: existing.create, environment: ENVIRONMENT, checkWorkspacePackages: async () => {},
+    sourceState: () => ({ commit: STAGING_DRY_RUN_SOURCE, clean: true }), environment: ENVIRONMENT,
+    checkWorkspacePackages: async () => {}, ...overrides,
   });
-  assert.equal(exists.code, "STAGING_EDGE_GENESIS_WORKER_EXISTS");
+  // Only a positive not-found lets genesis run. A Worker that exists, or one whose existence
+  // could not be read (refused, rate-limited, unreachable), never reaches Wrangler.
+  for (const [probe, code] of [
+    [async () => "present", "STAGING_EDGE_GENESIS_WORKER_EXISTS"],
+    [async () => { throw Object.assign(new Error("x"), { code: "STAGING_EDGE_GENESIS_EXISTENCE_UNKNOWN" }); },
+      "STAGING_EDGE_GENESIS_EXISTENCE_UNKNOWN"],
+    [async () => { throw new Error("not found"); }, "STAGING_EDGE_GENESIS_EXISTENCE_UNKNOWN"],
+    [async () => undefined, "STAGING_EDGE_GENESIS_EXISTENCE_UNKNOWN"],
+  ]) {
+    const refusedSpawn = fakeSpawn();
+    const provider = fakeProvider([]);
+    const refusedRun = await execute({ probeExistence: probe, spawn: refusedSpawn.spawn, createProvider: provider.create });
+    assert.equal(refusedRun.code, code);
+    assert.equal(refusedSpawn.calls.length, 0, code);
+    assert.equal(provider.calls.capture, 0, code);
+  }
 
-  const provider = fakeProvider([new Error("not found"), stagingEdgeInventoryOf(live)]);
+  const provider = fakeProvider([stagingEdgeInventoryOf(live)]);
   const wrangler = fakeSpawn();
   const third = await outputDirectory();
+  const probed = [];
   const result = await runStagingEdgeDeployment({
     ...options, outputDirectory: third, execute: true, confirmation: STAGING_EDGE_DEPLOY_CONFIRMATION,
     expectedCandidateSha256: dry.plan.candidateConfigSha256, secretsFile: secrets,
     sourceState: () => ({ commit: STAGING_DRY_RUN_SOURCE, clean: true }), spawn: wrangler.spawn,
     createProvider: provider.create, environment: ENVIRONMENT, checkWorkspacePackages: async () => {},
+    probeExistence: async (identity) => { probed.push({ accountId: identity.accountId, workerName: identity.workerName }); return "absent"; },
   });
+  assert.deepEqual(probed, [{ accountId: options.inputs.accountId, workerName: "app-usagemonitor-staging-edge" }]);
   assert.equal(result.ok, true, result.code);
   assert.equal(result.outcome, "verified");
   assert.deepEqual(provider.calls.identity, { accountId: options.inputs.accountId, workerName: "app-usagemonitor-staging-edge" });
@@ -392,6 +467,159 @@ test("reconcile reads a captured inventory against the deploy's plan", async () 
   assert.equal((await reconcile(PRODUCTION_INVENTORY)).code, "STAGING_EDGE_INVENTORY_TARGET_MISMATCH");
 });
 
+test("the genesis existence read is absent only on Cloudflare's script-not-found", async () => {
+  const identity = { accountId: "0a".repeat(16), workerName: "app-usagemonitor-staging-edge", environment: ENVIRONMENT };
+  const probe = (respond) => {
+    const api = fakeApi(respond);
+    return { api, result: probeStagingWorkerExistence({ ...identity, fetchImpl: api.fetchImpl }) };
+  };
+  const absent = probe(() => json(404, { success: false, errors: [{ code: CLOUDFLARE_WORKER_NOT_FOUND, message: "not found" }] }));
+  assert.equal(await absent.result, "absent");
+  const [request] = absent.api.requests;
+  assert.equal(request.url,
+    `https://api.cloudflare.com/client/v4/accounts/${identity.accountId}/workers/scripts/${identity.workerName}/deployments`);
+  assert.equal(request.init.method, "GET");
+  assert.equal(request.init.redirect, "error");
+  assert.equal(request.init.headers.authorization, `Bearer ${SYNTHETIC_API_TOKEN}`);
+  assert.equal(await probe(() => json(200, { success: true, result: { deployments: [] } })).result, "present");
+  // A split deployment (the provider's DEPLOYMENT_AMBIGUOUS) is a Worker that exists.
+  assert.equal(await probe(() => json(200, { success: true, result: { deployments: [{ versions: [
+    { version_id: "5e000000-0000-4000-8000-000000000001", percentage: 50 },
+    { version_id: "5e000000-0000-4000-8000-000000000002", percentage: 50 }] }] } })).result, "present");
+  for (const respond of [
+    () => json(403, { success: false, errors: [{ code: 10000, message: "Authentication error" }] }),
+    () => json(429, { success: false, errors: [{ code: 971, message: "rate limited" }] }),
+    () => json(404, { success: false, errors: [{ code: 7003, message: "no route" }] }),
+    () => json(404, { success: false, errors: [{ code: CLOUDFLARE_WORKER_NOT_FOUND }, { code: 10000 }] }),
+    () => json(404, { success: false, errors: [] }),
+    () => json(404, { success: true, errors: [{ code: CLOUDFLARE_WORKER_NOT_FOUND }] }),
+    () => json(500, { success: false, errors: [{ code: CLOUDFLARE_WORKER_NOT_FOUND }] }),
+    () => ({ status: 404, text: async () => "<html>not json</html>" }),
+    () => { throw new TypeError("synthetic network failure"); },
+  ]) {
+    await assert.rejects(probe(respond).result, (error) => error.code === "STAGING_EDGE_GENESIS_EXISTENCE_UNKNOWN");
+  }
+  await assert.rejects(probeStagingWorkerExistence({ ...identity, environment: { PATH: "/bin" } }),
+    (error) => error.code === "STAGING_EDGE_CREDENTIAL_REQUIRED");
+  await assert.rejects(probeStagingWorkerExistence({ ...identity, workerName: "../x" }),
+    (error) => error.code === "STAGING_EDGE_INPUT_INVALID");
+});
+
+test("the release-guard gate refuses a pending ledger and an absent one, as Wrangler reports them", async () => {
+  const { fenced } = await states();
+  const ctx = await context();
+  const secrets = stagingDryRunWithGcpSecrets(fenced, ++versions);
+  const run = async (inputs, ledgers) => runStagingEdgeDeployment({
+    ...(await base({
+      mode: "gcp", inputs, stagingInventory: stagingEdgeInventoryOf(secrets), expectedPreviousSourceCommit: secrets.sourceCommit,
+      siteDirectory: ctx.marked, candidatePublicManifestSha256: "a".repeat(64), originCommit: STAGING_DRY_RUN_ORIGIN_COMMIT,
+      obtainOriginIdentityToken: STAGING_DRY_RUN_READERS.obtainOriginIdentityToken,
+    })),
+    outputDirectory: await outputDirectory(),
+    sourceState: () => ({ commit: STAGING_DRY_RUN_SOURCE, clean: true }),
+    spawn: stagingDryRunLedgerSpawn(ledgers),
+  });
+  const migrated = ctx.inputs["<inputs.json>"];
+  const throwaway = ctx.inputs["<inputs naming the throwaway guard D1>"];
+  const ledgers = stagingDryRunLedgers(migrated);
+  const ok = await run(migrated, ledgers);
+  assert.equal(ok.ok, true, ok.code);
+  assert.equal(ok.plan.releaseGuardPendingMigrations, 0);
+  // N2 as rehearsed: the throwaway's ledger exists (phase B ran `d1 migrations list`) and is empty.
+  assert.equal((await run(throwaway, ledgers)).code, "EDGE_MODE_RELEASE_GUARD_MIGRATIONS_PENDING");
+  // A guard D1 whose ledger was never created: Wrangler exits 1 with "no such table: d1_migrations".
+  const uninitialised = new Map([...ledgers].filter(([name]) => name !== throwaway.d1.releaseGuard.name));
+  assert.equal((await run(throwaway, uninitialised)).code, "PRODUCTION_MIGRATION_STATE_UNKNOWN");
+});
+
+test("reconcile refuses an operation target that is not the staging Worker before any read", async () => {
+  const { worker } = await states();
+  const directory = await outputDirectory();
+  const dry = await runStagingEdgeDeployment({
+    ...(await base({ mode: "fenced", stagingInventory: stagingEdgeInventoryOf(worker), expectedPreviousSourceCommit: worker.sourceCommit })),
+    outputDirectory: directory, sourceState: () => ({ commit: STAGING_DRY_RUN_SOURCE, clean: true }),
+  });
+  assert.equal(dry.ok, true, dry.code);
+  const targetPath = join(directory, "target.json");
+  const target = JSON.parse(await readFile(targetPath, "utf8"));
+  await rm(targetPath);
+  await writeFile(targetPath, `${JSON.stringify({ ...target, edgeWorkerName: "app-usagemonitor" })}\n`, { mode: 0o600 });
+  assert.equal((await reconcileStagingEdgeDeployment({ operationDirectory: directory, inventory: PRODUCTION_INVENTORY })).code,
+    "STAGING_EDGE_NAME_NOT_STAGING");
+  // The CLI's --execute refuses the same target.json before it builds a provider or reads a token.
+  const cli = runDriver(["reconcile", "--operation", directory, "--execute"]);
+  assert.equal(cli.status, 1);
+  assert.equal(JSON.parse(cli.stdout).code, "STAGING_EDGE_NAME_NOT_STAGING");
+  await rm(targetPath);
+  await writeFile(targetPath, `${JSON.stringify({ ...target, edgeWorkerName: "app-usagemonitor-staging" })}\n`, { mode: 0o600 });
+  assert.equal(JSON.parse(runDriver(["reconcile", "--operation", directory, "--execute"]).stdout).code,
+    "STAGING_EDGE_PRODUCTION_WORKER");
+});
+
+/** Run the driver CLI with PATH and HOME only: no token, so any remote read would fail on its credential. */
+function runDriver(args) {
+  return spawnSync(process.execPath, [DRIVER, ...args], {
+    cwd: STAGING_EDGE_WORKER_DIRECTORY, encoding: "utf8", env: { PATH: process.env.PATH, HOME: process.env.HOME },
+  });
+}
+
+async function privateJson(directory, name, value) {
+  const path = join(directory, name);
+  const bytes = `${JSON.stringify(value, null, 2)}\n`;
+  await writeFile(path, bytes, { mode: 0o600 });
+  return { path, sha256: createHash("sha256").update(bytes).digest("hex") };
+}
+
+test("render takes deploy's isolation inputs and refuses what deploy refuses before writing", async () => {
+  const directory = await tempDirectory("staging-edge-render-");
+  const raw = JSON.parse(readFileSync(new URL("../ops/staging-edge/staging-edge-inputs.example.json", import.meta.url), "utf8"));
+  const inputs = await privateJson(directory, "inputs.json", raw);
+  const production = await privateJson(directory, "production.json", PRODUCTION_INVENTORY);
+  const fence = await privateJson(directory, "production-fence-plan.json", PRODUCTION_FENCE_PLAN);
+  const isolation = (inventory = production) => ["--production-inventory", inventory.path, "--production-inventory-sha256",
+    inventory.sha256, "--production-plan-absent", "--production-fence-plan", fence.path, "--production-fence-plan-sha256",
+    fence.sha256];
+  const render = (args) => {
+    const result = runDriver(["render", ...args]);
+    return { status: result.status, output: JSON.parse(result.stdout) };
+  };
+  const dry = render(["--inputs", inputs.path, ...isolation()]);
+  assert.equal(dry.status, 0, JSON.stringify(dry.output));
+  assert.equal(dry.output.productionIsolation.productionPlan, false);
+  const out = join(directory, "rendered");
+  assert.equal(render(["--inputs", inputs.path, ...isolation(), "--write", "--output-directory", out]).status, 0);
+  assert.ok((await readdir(out)).includes("migrations-analytics.wrangler.json"));
+  // Without the isolation inputs render does not run.
+  assert.equal(runDriver(["render", "--inputs", inputs.path]).status, 2);
+  assert.equal(runDriver(["render", "--inputs", inputs.path, ...isolation().slice(0, 5)]).status, 2);
+
+  // The production ANALYTICS_DB id in the inputs, with the true production inventory and with another Worker's.
+  const analytics = PRODUCTION_INVENTORY.version.resources.bindings.find((binding) => binding.name === "ANALYTICS_DB");
+  const leaking = await privateJson(directory, "leaking.json", { ...raw, d1: { ...raw.d1, analytics: { ...raw.d1.analytics, id: analytics.database_id } } });
+  const other = await privateJson(directory, "other.json", otherWorkerInventory());
+  const leakOut = join(directory, "leak");
+  assert.deepEqual(render(["--inputs", leaking.path, ...isolation(), "--write", "--output-directory", leakOut]),
+    { status: 1, output: { ok: false, code: "STAGING_EDGE_PRODUCTION_DATABASE" } });
+  assert.deepEqual(render(["--inputs", leaking.path, ...isolation(other), "--write", "--output-directory", leakOut]),
+    { status: 1, output: { ok: false, code: "STAGING_EDGE_PRODUCTION_INVENTORY_NOT_PRODUCTION" } });
+  // The production catch-up control D1, known only from the production fence plan.
+  const catchup = await privateJson(directory, "catchup.json", { ...raw, d1: { ...raw.d1,
+    catchupControl: { ...raw.d1.catchupControl, id: PRODUCTION_FENCE_PLAN.dataResources[3].id } } });
+  assert.deepEqual(render(["--inputs", catchup.path, ...isolation(), "--write", "--output-directory", leakOut]),
+    { status: 1, output: { ok: false, code: "STAGING_EDGE_PRODUCTION_DATABASE" } });
+  // The production gcp plan's guard D1, which only the plan names before production binds it.
+  const plan = await privateJson(directory, "production-plan.json", {
+    upstreamOrigin: "https://tibotattle-origin-synthetic.a.run.app", originAudience: "synthetic-production-audience",
+    invokerServiceAccount: "edge-invoker@synthetic-project.iam.gserviceaccount.com",
+    releaseGuardDatabase: { id: raw.d1.releaseGuard.id, name: "tibotattle-release-guard" },
+  });
+  const withPlan = isolation().map((value) => (value === "--production-plan-absent" ? "--production-plan" : value));
+  withPlan.splice(withPlan.indexOf("--production-plan") + 1, 0, plan.path);
+  assert.deepEqual(render(["--inputs", inputs.path, ...withPlan, "--write", "--output-directory", leakOut]),
+    { status: 1, output: { ok: false, code: "STAGING_EDGE_PRODUCTION_DATABASE" } });
+  await assert.rejects(lstat(leakOut));
+});
+
 test("Wrangler gets the token only through its environment, never an endpoint override", () => {
   assert.throws(() => stagingWranglerEnvironment({ PATH: "/bin" }), (error) => error.code === "STAGING_EDGE_CREDENTIAL_REQUIRED");
   assert.throws(() => stagingWranglerEnvironment({ ...ENVIRONMENT, CLOUDFLARE_API_BASE_URL: "https://example.invalid" }),
@@ -411,8 +639,10 @@ test("the output directory must be new, private and outside the repository", asy
 
 test("the argument parser accepts exactly each subcommand's combinations", () => {
   const hex = (n) => "a".repeat(n);
-  const deploy = ["deploy", "--edge-mode", "worker", "--inputs", "i.json", "--production-inventory", "p.json",
-    "--production-inventory-sha256", hex(64), "--production-plan-absent", "--site", "site", "--output-directory", "out"];
+  const isolation = ["--production-inventory", "p.json", "--production-inventory-sha256", hex(64), "--production-plan-absent",
+    "--production-fence-plan", "f.json", "--production-fence-plan-sha256", hex(64)];
+  const deploy = ["deploy", "--edge-mode", "worker", "--inputs", "i.json", ...isolation, "--site", "site",
+    "--output-directory", "out"];
   const live = ["--inventory", "s.json", "--inventory-sha256", hex(64), "--expected-previous-source", hex(40)];
   const ok = (argv) => assert.equal(parseStagingEdgeArguments(argv).subcommand, argv[0]);
   const bad = (argv) => assert.throws(() => parseStagingEdgeArguments(argv), (error) => error.code === "STAGING_EDGE_ARGUMENTS_INVALID", argv.join(" "));
@@ -440,10 +670,25 @@ test("the argument parser accepts exactly each subcommand's combinations", () =>
   bad([...deploy, ...live, "--env", "production"]);
   bad(["deploy", "--edge-mode", "auto", "--inputs", "i"]);
   bad(["publish"]);
-  ok(["render", "--inputs", "i.json"]);
-  ok(["render", "--inputs", "i.json", "--write", "--output-directory", "out"]);
-  bad(["render", "--inputs", "i.json", "--write"]);
-  bad(["render", "--inputs", "i.json", "--execute"]);
+  const withoutFencePlan = deploy.filter((value) => !["--production-fence-plan", "f.json", "--production-fence-plan-sha256"].includes(value)
+    && value !== hex(64));
+  assert.equal(withoutFencePlan.includes("--production-inventory-sha256"), true);
+  bad([...withoutFencePlan.flatMap((value) => (value === "--production-inventory-sha256" ? [value, hex(64)] : [value])), "--genesis"]);
+  ok([...deploy, "--genesis"]);
+  bad([...deploy.map((value, index) => (deploy[index - 1] === "--production-fence-plan-sha256" ? "HEAD" : value)), "--genesis"]);
+  ok(["render", "--inputs", "i.json", ...isolation]);
+  ok(["render", "--inputs", "i.json", ...isolation, "--write", "--output-directory", "out"]);
+  ok(["render", "--inputs", "i.json", ...isolation, "--production-baseline-inventory", "b.json",
+    "--production-baseline-inventory-sha256", hex(64)]);
+  ok(["render", "--inputs", "i.json", ...isolation.map((value) => (value === "--production-plan-absent" ? "--production-plan" : value))
+    .flatMap((value) => (value === "--production-plan" ? [value, "plan.json"] : [value]))]);
+  bad(["render", "--inputs", "i.json"]);
+  bad(["render", "--inputs", "i.json", "--write", "--output-directory", "out"]);
+  bad(["render", "--inputs", "i.json", ...isolation.slice(0, 5)]);
+  bad(["render", "--inputs", "i.json", ...isolation, "--production-plan", "plan.json"]);
+  bad(["render", "--inputs", "i.json", ...isolation, "--production-baseline-inventory", "b.json"]);
+  bad(["render", "--inputs", "i.json", ...isolation, "--write"]);
+  bad(["render", "--inputs", "i.json", ...isolation, "--execute"]);
   ok(["reconcile", "--operation", "op", "--inventory", "s.json", "--inventory-sha256", hex(64)]);
   ok(["reconcile", "--operation", "op", "--execute"]);
   bad(["reconcile", "--operation", "op"]);
@@ -457,8 +702,8 @@ test("the argument parser accepts exactly each subcommand's combinations", () =>
 
 test("every rehearsal command parses and every expected outcome agrees with the matrix", () => {
   const sequence = stagingEdgeRehearsalSequence();
-  const sha256Flags = new Set(["--production-inventory-sha256", "--inventory-sha256", "--fence-receipt-sha256",
-    "--expected-candidate-sha256"]);
+  const sha256Flags = new Set(["--production-inventory-sha256", "--production-fence-plan-sha256", "--inventory-sha256",
+    "--fence-receipt-sha256", "--expected-candidate-sha256"]);
   const shaFlags = new Set(["--expected-previous-source", "--origin-commit"]);
   for (const step of sequence) {
     assert.ok(rehearsalStepAgreesWithMatrix(step), step.id);
