@@ -595,7 +595,11 @@ npm run production:deploy -- --confirm DEPLOY_PRODUCTION \
   else changes.
 - **The public site.** The retained public release tree must be the exact live
   site. A privacy page that carries the gcp marker is refused
-  (`EDGE_PRIVACY_PAGE_PREMATURE`).
+  (`EDGE_PRIVACY_PAGE_PREMATURE`). Build or restore the tree on this line: it
+  stages through this line's asset allowlist, which differs from the fast-path
+  line's ([Changing the public site](../runbooks/production-edge-modes.md#changing-the-public-site)).
+  Keep this deploy's operation journal directory unmodified: it is the
+  evidence a later website rollback to this site names.
 - **Verify.** Check these:
   - public health reports the deploy commit as `deployment.sourceCommit`;
   - one version serves 100%, with the matching `DEPLOYMENT_SOURCE_COMMIT` and
