@@ -222,19 +222,84 @@ It uses:
 
 - the live inventory and its pinned sha256;
 - the reviewed previous source;
-- the retained public source;
-- the live manifest sha256.
+- the retained public source and the live manifest sha256, or, for a changed
+  site, the candidate flags in
+  [Changing the public site](#changing-the-public-site).
 
 E10 adds the flags below. Each flag also accepts the `--name=value` form.
 
 | Mode | Added flags | Typical use |
 |---|---|---|
-| `worker` | `--edge-mode worker`. After a fence, also `--fence-receipt <verified fence receipt> --fence-receipt-sha256 <its sha256>` | P1, the first edge-entry deploy; any later worker-mode redeploy; the abort |
+| `worker` | `--edge-mode worker`. After a fence, also `--fence-receipt <verified fence receipt> --fence-receipt-sha256 <its sha256>` | P1, the first edge-entry deploy; any later worker-mode redeploy, including web-only releases before the fence; the abort |
 | `fenced` | `--edge-mode fenced` | Starting the fence; the brake from gcp |
-| `gcp` | `--edge-mode gcp --edge-plan <private gcp plan> --origin-commit <origin commit> --origin-verifier-account <verifier account>` | The switch; gcp redeploys, including web-only releases |
+| `gcp` | `--edge-mode gcp --edge-plan <private gcp plan> --origin-commit <origin commit> --origin-verifier-account <verifier account>` | The switch, with the privacy-marker candidate site; gcp redeploys, including web-only releases and website rollbacks |
 
 The parser accepts exactly these combinations. It refuses any other
-combination before anything runs: the command prints its usage and exits 2.
+combination before anything runs: the command prints its refusal code and
+usage, and exits 2.
+
+**Without `--edge-mode`.** Once the live version carries an
+`EDGE_UPSTREAM_MODE` binding (from P1 on), a typed deploy without
+`--edge-mode` is refused before any snapshot or journal
+(`EDGE_MODE_REQUIRED_FOR_EDGE_LIVE`). Its plain render would install the
+checked-in entry in place of the edge entry and skip every edge gate,
+including the privacy-page rule. This also refuses
+`product:web-release:deploy` with typed pins from P1 on; see
+[Changing the public site](#changing-the-public-site).
+
+### Changing the public site
+
+A typed deploy pins the public site in one of two closed ways. They never mix.
+
+| Site | Flags | Before the upload | After the upload |
+|---|---|---|---|
+| Kept | `--retained-public-source <live site's source sha> --expected-live-manifest-sha256 <live manifest sha256>` | The live manifest is the pinned one. The staged site is exactly that manifest, built from the retained source | The live manifest is still the pinned one |
+| Changed | `--candidate-public-manifest-sha256 <candidate sha256>`, one of `--web-release-receipt <receipt>` or `--rollback-web-release-receipt <receipt>`, and `--replaced-public-source <live site's source sha> --replaced-live-manifest-sha256 <live manifest sha256>` | The live manifest is the replaced one. The staged site is exactly the candidate manifest, built from the receipt's source commit | The live manifest is the candidate |
+
+A changed site needs `--edge-mode worker` or `--edge-mode gcp`, so the
+privacy-page rule always runs. The receipt is the one
+`product:web-release:prepare` writes
+([web-only release lane](./2026-08-17-web-only-release.md)); its path must be
+absolute, under the checkout's `.release-build`, and outside the generated
+site. Before the inventory is read or anything remote runs, the deploy
+re-verifies the receipt with the lane's own checks (scope, catalogue proofs,
+and the generated site in `.release-build/public-release-site`), then:
+
+- **A release (`--web-release-receipt`).** The receipt must be fresh: its
+  source is the checked-out commit, which becomes the deploy source, and its
+  base is `--expected-previous-source`, the live commit the shared lock
+  rechecks.
+- **A rollback (`--rollback-web-release-receipt`).** The receipt is a
+  previously released site, with that release's generated site restored into
+  `.release-build/public-release-site`. Its source must be the live commit or
+  an ancestor of it. The deploy source stays the checked-out commit, and the
+  staged site is pinned to the receipt's source commit, which must also be an
+  ancestor of the deploy source.
+- **Either way** the receipt's manifest must be the candidate, and the
+  operation journal records the candidate (and, for a rollback, its source
+  commit) so typed recovery rechecks the right site.
+
+Refusals, all before any upload:
+
+| Code | Cause |
+|---|---|
+| `PRODUCTION_CANDIDATE_SITE_EDGE_MODE_REQUIRED` | A candidate without `--edge-mode` |
+| `PRODUCTION_CANDIDATE_SITE_FENCED` | A candidate with `--edge-mode fenced`. Releases pause while fenced; the brake keeps the live site |
+| `PRODUCTION_CANDIDATE_SITE_RETAINED_PIN_CONFLICT` | A candidate with `--retained-public-source` or `--expected-live-manifest-sha256` |
+| `PRODUCTION_CANDIDATE_SITE_UNCHANGED` | The candidate equals the replaced live manifest. A deploy that keeps the site uses the retained pair |
+| `PRODUCTION_ARGUMENTS_INVALID` | No receipt, both receipts, a relative receipt path, a missing replaced pin, no inventory, `--confirm-migrations`, or a malformed value |
+| `PRODUCTION_CANDIDATE_RECEIPT_INVALID` | The lane refuses the receipt: wrong shape, scope or catalogue proof, or the generated site no longer matches it |
+| `PRODUCTION_CANDIDATE_RECEIPT_MISMATCH` | The receipt's manifest is not the candidate |
+| `PRODUCTION_CANDIDATE_RECEIPT_STALE` | A release receipt whose source is not the checked-out commit, or whose base is not the live commit |
+| `PRODUCTION_ROLLBACK_RECEIPT_NOT_ON_LIVE_LINE` | A rollback receipt whose source is not the live commit or one of its ancestors |
+| `PRODUCTION_CANDIDATE_PUBLIC_SOURCE_NOT_ANCESTOR` | A rollback site's source commit is not in the deploy source |
+| `PRODUCTION_PUBLIC_ASSETS_INVALID` | The staged site is not exactly the candidate manifest from its pinned commit |
+| `PRODUCTION_TYPED_PUBLIC_RELEASE_MANIFEST_INVALID` | The live manifest is not the replaced one before the upload, or not the candidate after it |
+
+The privacy-page rule then applies to the candidate as to any site:
+`EDGE_PRIVACY_PAGE_PREMATURE` for a marked candidate in worker mode or before
+the switch, and `EDGE_PRIVACY_PAGE_NOT_CUTOVER` for an unmarked candidate in
+gcp mode, including a rollback to a site from before the switch.
 
 The gcp plan is EP-9's closed plan. It holds:
 
@@ -520,20 +585,84 @@ origin, the verifier may only make plain `GET /api/health` and
 
 ## 8. Releases and deploys in gcp mode
 
+### The switch's site
+
+The switch (EP-10) is the first changed-site deploy in gcp mode: the
+privacy-marker site ships in the same deploy as the mode. Build it as a
+web-only candidate of the fenced commit:
+
+1. The switch commit differs from the live fenced commit only inside the
+   [web-only closure](./2026-08-17-web-only-release.md#1-establish-the-source-boundary):
+   the privacy page, the browser localization, the paired i18n catalogue and
+   mirror, and their focused tests. Every other change, including edge code
+   and repository documentation, lands before P1 or after the switch.
+2. Prepare it with `product:web-release:prepare --base <live fenced commit>`.
+3. Deploy, from `apps/worker` on the switch commit:
+
+   ```bash
+   npm run production:deploy -- --confirm DEPLOY_PRODUCTION \
+     --expected-previous-source <live fenced commit> \
+     --inventory <fresh-private-inventory.json> \
+     --inventory-sha256 <fresh-inventory-sha256> \
+     --candidate-public-manifest-sha256 <the receipt's site.manifestSha256> \
+     --web-release-receipt <absolute path of .release-build/web-release-receipt.json> \
+     --replaced-public-source <live site's source sha> \
+     --replaced-live-manifest-sha256 <live manifest sha256> \
+     --edge-mode gcp \
+     --edge-plan <private gcp plan> \
+     --origin-commit <origin commit> \
+     --origin-verifier-account <verifier account>
+   ```
+
+Without the candidate the switch is refused `EDGE_PRIVACY_PAGE_NOT_CUTOVER`;
+with the retained pair added it is refused
+`PRODUCTION_CANDIDATE_SITE_RETAINED_PIN_CONFLICT`.
+
 ### Web-only releases
 
-Web-only releases in gcp mode use the existing
-[web-only release lane](./2026-08-17-web-only-release.md) on this line. They
-need no Cloud Run redeploy. The deploy keeps the pinned gcp mode and plan, and
-E10 applies the gcp rules:
+From P1 on, a web-only release is a changed-site deploy through
+`production:deploy` with the live mode (`--edge-mode worker` before the
+fence, `--edge-mode gcp` after the switch; the owner's round 12 decision).
+`product:web-release:deploy` has no edge mode and is refused
+(`EDGE_MODE_REQUIRED_FOR_EDGE_LIVE`).
 
-- The predecessor and post-deploy identity come from the Cloudflare bindings.
-- The contract blob at the release commit must equal the blob at the live
-  origin commit.
-- The candidate's privacy page must carry the marker.
+1. Prepare the candidate with the
+   [web-only release lane](./2026-08-17-web-only-release.md), with the live
+   commit as `--base`.
+2. Deploy it as in [the switch's site](#the-switchs-site), with the live
+   commit as `--expected-previous-source`. In gcp mode keep the gcp plan,
+   `--origin-commit` (the live origin commit) and the verifier account; in
+   worker mode use `--edge-mode worker` alone.
 
-Before the switch, a web-only release must not carry the marker. While the
-fence is up, web-only releases pause.
+E10 applies the mode's rules. In gcp mode no Cloud Run redeploy is needed;
+the predecessor and post-deploy identity come from the Cloudflare bindings,
+the contract blob at the release commit must equal the blob at the live
+origin commit, and the candidate's privacy page must carry the marker. Before
+the switch, a candidate must not carry the marker. While the fence is up,
+web-only releases pause.
+
+### Website rollback
+
+Roll the site back by re-deploying a previously released site by its
+receipt, not by deploying an old checkout:
+
+1. Keep each release's receipt and its generated
+   `.release-build/public-release-site` directory privately after the release
+   (they carry private Git SHAs).
+2. On a clean checkout of the live commit, or a descendant of it, restore that
+   release's generated directory into `.release-build/public-release-site`
+   and its receipt anywhere under `.release-build` outside that directory.
+3. Deploy as in [the switch's site](#the-switchs-site), with
+   `--rollback-web-release-receipt <restored receipt>` in place of
+   `--web-release-receipt`, the receipt's `site.manifestSha256` as the
+   candidate, and the live site as the replaced pair. On a checkout of the
+   live commit itself, also pass a fresh, absolute private `--operation`
+   directory: the default one for that commit holds the earlier deploy's
+   journal (`RELEASE_OPERATION_EXISTS_USE_RESUME`).
+
+In gcp mode a rollback past the switch is refused
+(`EDGE_PRIVACY_PAGE_NOT_CUTOVER`): the restored site must carry the marker.
+Rolling the edge back is the brake, not a site rollback.
 
 ### Cloud Run deploys
 
