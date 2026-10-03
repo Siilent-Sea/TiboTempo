@@ -603,7 +603,12 @@ npm run production:deploy -- --confirm DEPLOY_PRODUCTION \
   (`npm run production:release-archive`; see
   [Archive the release](../runbooks/2026-08-17-web-only-release.md#5-archive-the-release)):
   the archived journal is the evidence a later website rollback to this site
-  names.
+  names. Before P1, find that receipt: its source is the retained source, its
+  manifest the live one, and this line's lane must still accept it (the
+  archive re-verifies it). No one has yet checked that it exists. Without
+  one, or if the archive refuses it, the kept site is not a rollback target:
+  keep and record the journal, and restore that site, if needed, with a
+  revert commit. P1 does not depend on the archive.
 - **Verify.** Check these:
   - public health reports the deploy commit as `deployment.sourceCommit`;
   - one version serves 100%, with the matching `DEPLOYMENT_SOURCE_COMMIT` and
