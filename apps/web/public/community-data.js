@@ -314,11 +314,13 @@ const PUBLIC_ALLOWANCE_ROSTER_IDS = new Set(PUBLIC_ALLOWANCE_ROSTER.map(([modelI
 // Roster models with no card until a served publication carries an estimate
 // for them (owner rounds 5 and 11). GPT-6.1 Sol is on the OpenAI release-line
 // catalog only, and the page must not name it before the served catalog adds
-// it. A valid `modelConfig` block is the served catalog's public roster: while
-// a block does not name it, its tuples are skipped and counted like a newer
-// model's. A block that names it places it at the block's order.
-// Without a valid block it keeps its roster slot (second) and stays known: a
-// producer publishes tuples only for models in its own reviewed catalog.
+// it. On v1.3 the `modelConfig` block is the served catalog's public roster and
+// the only authority that can name it (owner round 12, W-WEB-HIDE2): unless a
+// valid block names it, its tuples are skipped and counted like a newer model's,
+// and a rejected block names nothing. A block that names it places it at the
+// block's order. v1.0 and v1.1 cannot carry a block, so there it keeps its
+// roster slot (second) and stays known: a producer publishes tuples only for
+// models in its own reviewed catalog.
 const PUBLIC_ALLOWANCE_ROSTER_UNTIL_PUBLISHED = new Set(["gpt-6.1-sol"]);
 // The owner chose a selected comparison, not the whole historical vocabulary
 // (2d6cfbc8, "six requested public allowance models"): older generations stay
@@ -460,9 +462,11 @@ export function chartedModelsWith(published = []) {
 // is a second thing that can drift.
 //
 // v1.3 is v1.1's meaning (the Pro 20x basis, with `combined`) plus the closed
-// model-metadata block, so it is read on the same basis as v1.1. Only v1.3 may
-// carry the block: a v1.0 or v1.1 envelope that has one is outside its own
-// contract and is refused whole, as d43c8f92 refuses it. Any other version,
+// model-metadata block, so it is read on the same basis as v1.1. The block is a
+// required member of v1.3 (the KM-V13 producer always appends it), and only
+// v1.3 may carry it: a v1.3 envelope without one, or a v1.0 or v1.1 envelope
+// with one, is outside its own contract and is refused whole, as d43c8f92
+// refuses the second. Any other version,
 // v1.2 and v1.4 included, is refused whole until this reader is changed to
 // understand it.
 export const COMMUNITY_ALLOWANCE_BREAKDOWN_SCHEMA_VERSIONS = Object.freeze([
@@ -507,9 +511,10 @@ function retainedUnrecognizedCounts(value) {
  * kept off the primary comparison (a separate allowance track, or another
  * provider) are producer faults that refuse the block, exactly as for a known
  * id. The tuple's numbers must still be valid, the id is never retained or
- * rendered, and every other part of the contract stays closed. A roster model
- * held back until publication is known under a valid block only if the block
- * names it; otherwise its tuple is skipped and counted the same way.
+ * rendered, and every other part of the contract stays closed. On v1.3, a
+ * roster model held back until publication is known only if a valid block
+ * names it; otherwise, a rejected block included, its tuple is skipped and
+ * counted the same way.
  *
  * `retained` is true only for a payload this browser stored itself. Its
  * projection leaves the skipped tuples out and records how many as
@@ -517,10 +522,12 @@ function retainedUnrecognizedCounts(value) {
  * payload carrying that key is not on the wire contract and is refused. */
 export function normalizePublicAllowanceBreakdowns(value, publishedDays, nowMs = Date.now(), { retained = false } = {}) {
   const isRecord = value !== null && typeof value === "object" && !Array.isArray(value);
-  // The block is a member of v1.3 only. On any other version the key is an
-  // unknown member, so the closed envelope check below refuses the payload.
-  const hasMetadataBlock = isRecord
-    && value.schemaVersion === COMMUNITY_ALLOWANCE_BREAKDOWN_MODEL_METADATA_VERSION
+  // The block is a required member of v1.3 and a member of v1.3 only. On any
+  // other version the key is an unknown member, so the closed envelope check
+  // below refuses the payload; a v1.3 envelope without it is refused there too.
+  const isMetadataVersion = isRecord
+    && value.schemaVersion === COMMUNITY_ALLOWANCE_BREAKDOWN_MODEL_METADATA_VERSION;
+  const hasMetadataBlock = isMetadataVersion
     && Object.prototype.hasOwnProperty.call(value, "modelConfig");
   const hasRetainedCounts = retained && isRecord
     && Object.prototype.hasOwnProperty.call(value, "retainedUnrecognizedModels");
@@ -532,6 +539,7 @@ export function normalizePublicAllowanceBreakdowns(value, publishedDays, nowMs =
     ...(hasRetainedCounts ? ["retainedUnrecognizedModels"] : []),
   ])
       || !COMMUNITY_ALLOWANCE_BREAKDOWN_SCHEMA_VERSIONS.includes(value.schemaVersion)
+      || isMetadataVersion !== hasMetadataBlock
       || value.basis !== COMMUNITY_ALLOWANCE_BASIS || value.referencePlanType !== "pro"
       || value.normalization !== COMMUNITY_ALLOWANCE_NORMALIZATION
       || value.modelBasis !== COMMUNITY_ALLOWANCE_MODEL_BASIS
@@ -552,18 +560,19 @@ export function normalizePublicAllowanceBreakdowns(value, publishedDays, nowMs =
   const hasCombined = value.schemaVersion === COMMUNITY_ALLOWANCE_BREAKDOWN_COMBINED_VERSION
     || value.schemaVersion === COMMUNITY_ALLOWANCE_BREAKDOWN_MODEL_METADATA_VERSION;
   // A malformed block is ignored whole and reported, never partly trusted: the
-  // page then draws exactly what it would have drawn without one.
+  // page then draws only this build's own list, minus any held-back model.
   const metadata = hasMetadataBlock ? publicModelMetadata(value.modelConfig) : null;
   const modelMetadata = !hasMetadataBlock ? "absent" : metadata === null ? "rejected" : "applied";
   const modelConfig = chartedModelsWith([...(metadata ?? [])].map(
     ([modelId, entry]) => ({ modelId, ...entry })));
   const knownModelIds = new Set([...PUBLIC_ALLOWANCE_MODELS.known, ...modelConfig.map(model => model.modelId)]);
-  // A valid block is the served catalog's public roster. A held-back roster
-  // model it does not name is one the served catalog has not added, so its
-  // tuples are not this page's to draw. A rejected block is no evidence at all.
-  if (metadata !== null) {
+  // On v1.3 the block is the served catalog's public roster, and the only
+  // authority that can name a held-back roster model. A model a valid block
+  // does not name is one the served catalog has not added, and a rejected block
+  // names nothing, so in both cases its tuples are not this page's to draw.
+  if (hasMetadataBlock) {
     for (const modelId of PUBLIC_ALLOWANCE_ROSTER_UNTIL_PUBLISHED) {
-      if (!metadata.has(modelId)) knownModelIds.delete(modelId);
+      if (!metadata?.has(modelId)) knownModelIds.delete(modelId);
     }
   }
   let unrecognizedModelTuples = 0;
@@ -983,8 +992,10 @@ function cachedAllowanceBlock(allowance) {
 function cachedBreakdowns(breakdowns) {
   return {
     // A copy that keeps an applied metadata block is stored as v1.3, the only
-    // version allowed to carry one. Without an applied block, v1.3 means
-    // exactly v1.1, so it is stored under v1.1.
+    // version allowed to carry one, and the version that requires one. A v1.3
+    // read whose block was rejected keeps only v1.1's members (any held-back
+    // model's tuples already left out and counted below), so it is stored
+    // under v1.1.
     schemaVersion: breakdowns.modelMetadata === "applied"
       ? COMMUNITY_ALLOWANCE_BREAKDOWN_MODEL_METADATA_VERSION
       : breakdowns.hasCombined

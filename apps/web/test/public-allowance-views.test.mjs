@@ -633,7 +633,7 @@ test("an unknown model id is skipped and counted, never stored or rendered, and 
   assert.doesNotMatch(accumulating.text, /gpt-7/u);
 });
 
-test("breakdowns v1.3 applies a valid closed modelConfig block and only v1.3 may carry one", () => {
+test("breakdowns v1.3 applies a valid closed modelConfig block, requires one, and only v1.3 may carry one", () => {
   assert.deepEqual(COMMUNITY_ALLOWANCE_BREAKDOWN_SCHEMA_VERSIONS, ["community-allowance-breakdowns-v1.0",
     "community-allowance-breakdowns-v1.1", "community-allowance-breakdowns-v1.3"]);
   // The KM-V13 block names exactly the six models the page already charts, in
@@ -657,18 +657,16 @@ test("breakdowns v1.3 applies a valid closed modelConfig block and only v1.3 may
   assert.match(novaRender.cards.at(-1).className, /allowance-series-\d/u, "an unthemed family keeps the generic colours");
   assert.doesNotMatch(novaRender.text, NEWER_MODELS);
 
-  // v1.3 without a block means exactly v1.1.
-  const bare = normalizeCommunityDailySeries(v13Fixture(null), { nowMs: NOW });
-  assert.equal(bare.breakdowns.modelMetadata, "absent");
-  assert.deepEqual(bare.breakdowns.days, v13.breakdowns.days);
   // v1.3 keeps v1.1's combined rows.
   const noCombined = v13Fixture();
   delete noCombined.allowanceBreakdowns.days[0].combined;
   assert.equal(normalizeCommunityDailySeries(noCombined, { nowMs: NOW }).breakdowns, null);
 
-  // The block is a v1.3 member only; v1.0 and v1.1 envelopes carrying it are
+  // The block is a required v1.3 member and a v1.3 member only: v1.3 without it
+  // is off its own contract, and v1.0 and v1.1 envelopes carrying it are
   // refused whole, as d43c8f92 refuses them. v1.2 and v1.4 stay refused.
   const refusals = [
+    payload => { delete payload.allowanceBreakdowns.modelConfig; },
     payload => { payload.allowanceBreakdowns.schemaVersion = "community-allowance-breakdowns-v1.1"; },
     payload => {
       payload.allowanceBreakdowns.schemaVersion = "community-allowance-breakdowns-v1.0";
@@ -696,7 +694,7 @@ test("breakdowns v1.3 applies a valid closed modelConfig block and only v1.3 may
   }
 });
 
-test("a malformed modelConfig block is rejected whole and the page draws what it draws without one", () => {
+test("a malformed modelConfig block is rejected whole and the page draws only its own list", () => {
   const entry = { id: "gpt-7-nova", label: "GPT-7 Nova", family: "nova", order: 6 };
   const malformed = [
     {},
@@ -733,8 +731,8 @@ test("a malformed modelConfig block is rejected whole and the page draws what it
   }
 });
 
-test("GPT-6.1 Sol is kept without a block, charted once it has an estimate, and skipped under a block that does not name it", () => {
-  // No block: the roster knows it, so its tuples are kept and it gets a card.
+test("GPT-6.1 Sol is kept on v1.1, charted once it has an estimate, and on v1.3 shown only when a valid block names it", () => {
+  // v1.1 cannot carry a block: the roster knows it, so its tuples are kept and it gets a card.
   const kept = addTuples(v11Fixture(), "gpt-6.1-sol", 3, 2500, 2);
   const normalized = normalizeCommunityDailySeries(kept, { nowMs: NOW });
   assert.equal(normalized.breakdowns.unrecognizedModelTuples, 0);
@@ -757,6 +755,41 @@ test("GPT-6.1 Sol is kept without a block, charted once it has an estimate, and 
   assert.deepEqual(skippedRender.cards.map(card => card.label), SIX_CARDS);
   assert.match(skippedRender.text, NEWER_MODELS);
   assert.doesNotMatch(skippedRender.text, /GPT-6\.1 Sol|gpt-6\.1-sol/u);
+
+  // On v1.3 the block is the only authority that can name it (owner round 12,
+  // W-WEB-HIDE2: the server decides). A rejected block names nothing, so its
+  // tuples are skipped and counted exactly as under a valid block without it,
+  // and the page never falls back to its own roster label.
+  const solBlock = { id: "gpt-6.1-sol", label: "GPT-6.1 Sol", family: "sol", order: 1 };
+  for (const block of [
+    [{ ...SIX_MODEL_BLOCK[0], family: "Astra" }],
+    [...SIX_MODEL_BLOCK, solBlock, { ...solBlock, id: "gpt-5.3-codex-spark", order: 7 }],
+    [...SIX_MODEL_BLOCK, { ...solBlock, label: "<b>GPT-6.1 Sol</b>" }],
+    Array.from({ length: 129 }, (_, index) => ({ ...solBlock, id: `gpt-7-nova-${index}`, order: index })),
+    { "gpt-6.1-sol": solBlock },
+  ]) {
+    const label = JSON.stringify(block).slice(0, 80);
+    const payload = addTuples(v13Fixture(), "gpt-6.1-sol", 3, 2500, 2);
+    payload.allowanceBreakdowns.modelConfig = structuredClone(block);
+    const rejected = normalizeCommunityDailySeries(payload, { nowMs: NOW });
+    assert.equal(rejected.breakdowns.modelMetadata, "rejected", label);
+    assert.equal(rejected.breakdowns.unrecognizedModelTuples, 3, label);
+    assert.equal(rejected.breakdowns.unrecognizedModelCount, 1, label);
+    assert.deepEqual(rejected.breakdowns.days, withoutSol.breakdowns.days, label);
+    const rejectedRender = renderView(payload);
+    assert.deepEqual(rejectedRender.cards.map(card => card.label), SIX_CARDS, label);
+    assert.match(rejectedRender.text, NEWER_MODELS, label);
+    assert.doesNotMatch(rejectedRender.text, /GPT-6\.1 Sol|gpt-6\.1-sol/u, label);
+  }
+  // v1.3 with no block at all is off its contract: its breakdowns are refused
+  // whole, the daily activity still draws, and Sol is never named.
+  const bare = addTuples(v13Fixture(null), "gpt-6.1-sol", 3, 2500, 2);
+  const bareSeries = normalizeCommunityDailySeries(bare, { nowMs: NOW });
+  assert.equal(bareSeries.breakdowns, null);
+  assert.equal(bareSeries.state, "published");
+  const bareRender = renderView(bare);
+  assert.equal(bareRender.state, "breakdowns_unavailable");
+  assert.doesNotMatch(bareRender.text, /GPT-6\.1 Sol|gpt-6\.1-sol/u);
 
   // A block that names it places it at the block's order with its family theme.
   const block = [...SIX_MODEL_BLOCK.map(entry => ({ ...entry, order: entry.order === 0 ? 0 : entry.order + 1 })),
@@ -841,7 +874,8 @@ test("the stored copy keeps an applied v1.3 block under v1.3 and never stores a 
   assert.match(solRender.text, NEWER_MODELS);
   assert.doesNotMatch(solRender.text, /GPT-6\.1 Sol/u);
 
-  // Rejected: never stored. v1.3 without an applied block means v1.1.
+  // Rejected: never stored. With no applied block the copy holds only v1.1's
+  // members, so it is stored under v1.1.
   const rejected = addTuples(v13Fixture([{ ...SIX_MODEL_BLOCK[0], order: -1 }]), "gpt-7-nova", 2);
   const liveRejected = normalizeCommunityDailySeries(rejected, { nowMs: NOW }).breakdowns;
   const storedRejected = projectCommunityDailyPayloadForCache(rejected, { nowMs: NOW });
@@ -851,6 +885,21 @@ test("the stored copy keeps an applied v1.3 block under v1.3 and never stores a 
   assert.equal(liveRejected.modelMetadata, "rejected");
   assert.equal(reread.modelMetadata, "absent");
   assert.deepEqual({ ...reread, modelMetadata: null }, { ...liveRejected, modelMetadata: null });
+
+  // A rejected block with GPT-6.1 Sol tuples: the stored v1.1 copy leaves them
+  // out and keeps the gap, so the cached render cannot name Sol from v1.1's roster.
+  const rejectedSol = addTuples(v13Fixture([{ ...SIX_MODEL_BLOCK[0], order: -1 }]), "gpt-6.1-sol", 3);
+  const storedSol = projectCommunityDailyPayloadForCache(rejectedSol, { nowMs: NOW });
+  assert.equal(storedSol.allowanceBreakdowns.schemaVersion, "community-allowance-breakdowns-v1.1");
+  assert.deepEqual(storedSol.allowanceBreakdowns.retainedUnrecognizedModels, { tuples: 3, models: 1 });
+  assert.doesNotMatch(JSON.stringify(storedSol), /gpt-6\.1-sol/u);
+  const rereadSol = normalizeCommunityDailySeries(storedSol, { nowMs: NOW, retained: true }).breakdowns;
+  assert.deepEqual({ ...rereadSol, modelMetadata: null },
+    { ...normalizeCommunityDailySeries(rejectedSol, { nowMs: NOW }).breakdowns, modelMetadata: null });
+  const cachedSol = renderView(storedSol, { cache: RETAINED });
+  assert.deepEqual(cachedSol.cards.map(card => card.label), SIX_CARDS);
+  assert.match(cachedSol.text, NEWER_MODELS);
+  assert.doesNotMatch(cachedSol.text, /GPT-6\.1 Sol/u);
 });
 
 test("a later catalog's primary model is charted without a page edit, while hidden and off-track ones are not", () => {
