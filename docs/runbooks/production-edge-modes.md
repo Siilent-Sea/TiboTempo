@@ -552,8 +552,10 @@ orders.
    node scripts/cloudflare-writer-fence.mjs plan --plan=<private fence plan> --receipts=<private receipts directory>
    node scripts/cloudflare-writer-fence.mjs apply --plan=<private fence plan> --receipts=<private receipts directory> \
      --confirm=<plan receipt sha256> --analytics-drain-complete
-   node scripts/cloudflare-writer-fence.mjs verify --plan=<private fence plan> --receipts=<private receipts directory> \
+   node scripts/cloudflare-writer-fence.mjs observe --plan=<private fence plan> --receipts=<private receipts directory> \
      --fence=<plan receipt sha256>
+   node scripts/cloudflare-writer-fence.mjs verify --plan=<private fence plan> --receipts=<private receipts directory> \
+     --fence=<plan receipt sha256> --observation=<observation receipt sha256>
    ```
 
    - `inventory` and `plan` are read-only. Review the writer set. `plan` prints
@@ -561,9 +563,23 @@ orders.
    - `--analytics-drain-complete` is the operator's statement that every
      in-flight Cloudflare erasure and analytics-delivery job has finished.
      EP-8 records the statement; it does not prove it.
-   - Run `verify` after the plan's quiet window, at least 15 minutes after
-     `apply`. Its fence receipt pins the D1 bookmarks and the R2 digest that
-     the export must use.
+   - Run read-only `observe` after the apply cooldown (the plan's quiet window,
+     at least 15 minutes). It captures all four current-mode D1 bookmarks under
+     unchanged fenced inventory and source/history checks, and the original
+     apply R2 baseline. Its private observation receipt is not a verified fence.
+     The completion time after all reads owns the prospective window start.
+   - Wait a full quiet window plus the five-minute analytics lag after observation
+     completion, then run `verify` with its pinned digest. Verification compares
+     current-mode bookmarks literally, retaining the complete writer inventory,
+     source/history, paused schedule/queue, apply R2 and zero-write/invocation
+     analytics gates. `--window-start` is refused; historical timestamp bookmarks
+     cannot substitute for a captured current-mode baseline. Existing diagnostic
+     samples cannot be reconstructed into observations.
+   - The v2 fence receipt binds the observation digest and explicit bookmark mode.
+     Consumers reopen the observation, apply and original plan receipts and check
+     exact times, account, targets, source and bookmarks. Legacy v1 receipts retain
+     only their original strict validation; they are never reinterpreted as v2
+     prospective evidence. A changed or released fence requires a fresh observation.
 
 **The fence plan.** It is a closed, owner-private file. It names:
 
