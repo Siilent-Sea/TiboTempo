@@ -1065,7 +1065,11 @@ clean checkout of the deploy line. Keep every plan, journal and output under one
    describes. Run `npm run check` from `apps/worker` and write its owning-gate
    receipt. Then run `node scripts/d1-storage-qualify-role.mjs --role analytics
    --qualify ...`. Keep the printed `qualificationSha256` and the mirror it
-   returns (`<directory>/worker`).
+   returns (`<directory>/worker`). `npm run check` includes `deploy:dry` and
+   `staging:check`, which stage `.release-build/public-release-site`, so a
+   fresh worktree without a generated public release site fails there
+   (`Generated public release manifest is missing`) after the Vitest suite
+   passes. Provide the site first; a failing gate is never a qualification.
 2. **Plan.** Run `npm run staging-edge -- storage-plan --role analytics
    --inputs <inputs> <isolation inputs> --qualified-worker-root <mirror>
    --qualification-sha256 <sha> --plan-output <new file>`. It refuses a dirty
