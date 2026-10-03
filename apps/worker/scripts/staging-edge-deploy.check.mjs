@@ -407,6 +407,55 @@ test("an executed genesis deploys the reviewed candidate with the secrets file b
   await assertPrivateAndTokenFree(third, result);
 });
 
+// Cloudflare's settings API expands a declared { enabled: true, head_sampling_rate: 1 }
+// (the 2026-10-03 staging-edge genesis capture). Only the pinned defaults compare equal.
+const CAPTURED_OBSERVABILITY = Object.freeze({
+  enabled: true,
+  head_sampling_rate: 1,
+  redact_query_string: false,
+  logs: { enabled: true, head_sampling_rate: 1, persist: true, invocation_logs: true },
+  traces: { enabled: false, persist: true, head_sampling_rate: 1 },
+});
+
+test("a genesis verifies against Cloudflare's expanded observability and refuses a changed default", async () => {
+  const directory = await outputDirectory();
+  const options = { ...(await base({ mode: "worker", genesis: true })), outputDirectory: directory };
+  const dry = await runStagingEdgeDeployment({ ...options, sourceState: () => ({ commit: STAGING_DRY_RUN_SOURCE, clean: true }) });
+  assert.equal(dry.ok, true, dry.code);
+  const secrets = join(await tempDirectory("staging-edge-secrets-"), "secrets.env");
+  await writeFile(secrets, `${SECRETS_SENTINEL}\n`, { mode: 0o600 });
+  const live = stagingDryRunAdvance(JSON.parse(await readFile(join(directory, "expected-snapshot.json"), "utf8")), ++versions);
+  const captured = (mutate = () => {}) => {
+    const inventory = stagingEdgeInventoryOf(live);
+    inventory.settings.observability = structuredClone(CAPTURED_OBSERVABILITY);
+    mutate(inventory.settings.observability);
+    return inventory;
+  };
+  const execute = async (inventory) => runStagingEdgeDeployment({
+    ...options, outputDirectory: await outputDirectory(), execute: true, confirmation: STAGING_EDGE_DEPLOY_CONFIRMATION,
+    expectedCandidateSha256: dry.plan.candidateConfigSha256, secretsFile: secrets,
+    sourceState: () => ({ commit: STAGING_DRY_RUN_SOURCE, clean: true }), spawn: fakeSpawn().spawn,
+    createProvider: fakeProvider([inventory]).create, environment: ENVIRONMENT, checkWorkspacePackages: async () => {},
+    probeExistence: async () => "absent",
+  });
+  const verified = await execute(captured());
+  assert.equal(verified.ok, true, verified.code);
+  assert.equal(verified.outcome, "verified");
+  for (const mutate of [
+    (value) => { value.traces.enabled = true; },
+    (value) => { value.logs.persist = false; },
+    (value) => { value.redact_query_string = true; },
+  ]) {
+    const refused = await execute(captured(mutate));
+    assert.equal(refused.ok, false);
+    assert.equal(refused.code, "PRODUCTION_LIVE_CONFIG_CONFIG_SETTINGS_DRIFT");
+    assert.equal(refused.outcome, "deployed_unverified");
+  }
+  const unknown = await execute(captured((value) => { value.traces.unexpected = true; }));
+  assert.equal(unknown.ok, false);
+  assert.equal(unknown.code, "PRODUCTION_LIVE_CONFIG_SETTINGS_INVALID");
+});
+
 test("an executed redeploy checks the predecessor before Wrangler and the live version after it", async () => {
   const { worker } = await states();
   const options = {

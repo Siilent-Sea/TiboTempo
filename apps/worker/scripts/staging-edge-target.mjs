@@ -627,7 +627,10 @@ export function stagingEdgeInventoryOf(snapshot) {
  * genesis version id and Durable Object namespace and no
  * DEPLOYMENT_SOURCE_COMMIT or EDGE_UPSTREAM_MODE (so its live mode is null and
  * only null -> worker reaches it). It carries the declared secret names; the
- * genesis deploy installs them from the owner's --secrets-file.
+ * genesis deploy installs them from the owner's --secrets-file. Observability
+ * stays the declared form: the genesis live check compares the candidate
+ * config with the capture, where only Cloudflare's pinned observability
+ * defaults (production-live-config.mjs) fill an undeclared field.
  */
 export function createStagingGenesisInventory({ edgeTracked, inputs } = {}) {
   const target = parsedInputs(inputs);
