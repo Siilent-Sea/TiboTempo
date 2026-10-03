@@ -898,6 +898,10 @@ staging Worker.
 | `reconcile` | Compares a captured private staging inventory with a deploy's plan: `verified`, `not_deployed` or `drift` | Checks the operation's `target.json` names the staging Worker, then captures the inventory itself, read-only |
 | `endpoints` | Prints the per-mode public-surface matrix | Reads it, with GET only and no credentials |
 | `rehearsal` | Prints the R1 and R2 sequence with each step's expected outcome | Not accepted |
+| `storage-plan` | Takes render's isolation inputs and refusals, then writes the analytics D1's reviewed d1-storage plan (a new 0600 file outside the repository) and prints its digest | Not accepted |
+| `storage-retire-wrangler-ledger` | Validates the plan and qualification locally | Also needs `--confirm RETIRE_STAGING_WRANGLER_LEDGER`, `--approved-plan-sha256` and a new `--output-directory`. Checks the database's name and ID against the server's list and info, then drops a stray `d1_migrations` only while it is empty and the database's only object |
+| `storage-apply` | The d1-storage runner's own plan validation | Also needs `--confirm EXECUTE_REVIEWED_D1_STORAGE_PLAN`, `--approved-plan-sha256` and a new `--operation` directory. Applies the qualified analytics migrations through the runner |
+| `storage-verify` | Validates the plan and qualification locally | Also needs a new `--output-directory`. Reads, read-only, the ledger, the schema fingerprint and the absence of `d1_migrations` |
 
 ### Inputs and refusals
 
@@ -992,7 +996,9 @@ It writes these files, each mode 0600:
 
 - `staging-edge.tracked.json`: the rendered staging config, for review;
 - `standin.wrangler.json`: the stand-in fenced cron Worker;
-- one `migrations-<role>.wrangler.json` for each D1;
+- one `migrations-<role>.wrangler.json` for each Wrangler-ledger D1:
+  `ingestion`, `deletion-ledger`, `catchup-control` and `release-guard`.
+  Analytics gets none (see "Analytics: the storage runner" below);
 - `fence-plan.json`: the EP-8 plan, validated by the fence's own validator;
 - `gcp-plan.json`: the staging gcp plan, validated by EP-9, once the inputs
   name the origin.
@@ -1004,10 +1010,109 @@ fence's quiescence proof real writes and invocations to see stop. Apply its
 migration, then deploy it with `wrangler deploy --config
 <directory>/standin.wrangler.json --strict`.
 
-**The D1 migrations.** Apply each with `wrangler d1 migrations apply
+**The D1 migrations.** Each role has one ledger, and render refuses the other
+tool (`STAGING_EDGE_MIGRATION_REQUIRES_STORAGE_RUNNER`,
+`STAGING_EDGE_MIGRATION_REQUIRES_WRANGLER`):
+
+| Role | Ledger | Applied by |
+|---|---|---|
+| `ingestion` | `d1_migrations` | `wrangler d1 migrations apply` |
+| `analytics` | `d1_storage_migrations` | the d1-storage runner (`storage-*` subcommands) |
+| `deletion-ledger`, `catchup-control`, `release-guard` | `d1_migrations` | `wrangler d1 migrations apply` |
+
+For a Wrangler-ledger role, apply with `wrangler d1 migrations apply
 <database name> --remote --config <directory>/migrations-<role>.wrangler.json`,
 then list them to confirm that nothing is pending. Mark the data D1s pre-P
 until the owner names P's migration tail.
+
+Ingestion keeps Wrangler's ledger on purpose. Production's ingestion D1 holds
+the typed restore base (`ingestion-restore-base-v1`, 13 `d1_storage_migrations`
+rows), which the JSON-topology staging Worker (D-S7) cannot run. Staging
+ingestion carries the `migrations/` chain the JSON Worker needs. What the
+rehearsal proves (section 11, top) needs only the binding and a writer, so no
+staging receipt may claim ingestion ledger parity. The release-guard gate reads
+Wrangler's ledger, so the guard D1s keep it too.
+
+**Analytics: the storage runner.** Production's analytics D1 was built by the
+d1-storage runner and records `d1_storage_migrations` (32 rows, `0001` to
+`0033` with no `0027`), with no `d1_migrations`. Wrangler cannot apply this
+directory: `migrations apply --remote` fails on `0001_delivery_state.sql` with
+`incomplete input: SQLITE_ERROR [code: 7500]`, because its statement splitting
+ends the trigger at the first `CASE ... END;`. The runner submits each
+migration and its ledger row as one whole-file import, so triggers stay whole.
+The staging analytics D1 is applied the same way, with two differences from a
+production storage operation:
+
+- the plan targets the D1's created name, `tibotattle-staging-edge-analytics`,
+  by its existing ID. The storage plan admits that exact name only for a
+  staging `migrate` plan;
+- coordination is a local owner-only lock file,
+  `staging-edge-storage.lock`, in the private parent of the operation
+  directory. It never takes the shared production deployment lock, which is a
+  git ref pushed to the repository's remote.
+
+Wrangler runs only inside the runner's adapter: its pinned CLI, private
+one-database config and closed environment. Executed `storage-*` runs refuse
+an API token in the environment (`STAGING_EDGE_STORAGE_OAUTH_LOGIN_REQUIRED`),
+so they use the operator's Wrangler OAuth login. They also refuse unless
+`WRANGLER_WRITE_LOGS=false` is set
+(`STAGING_EDGE_STORAGE_WRANGLER_WRITE_LOGS_REQUIRED_FALSE`). Run them from a
+clean checkout of the deploy line. Keep every plan, journal and output under one
+0700 directory outside the repository, for example `$P/storage`.
+
+1. **Qualify the analytics role** at the checkout's commit, as the
+   [role qualification runbook](2026-09-12-d1-storage-role-qualification.md)
+   describes. Run `npm run check` from `apps/worker` and write its owning-gate
+   receipt. Then run `node scripts/d1-storage-qualify-role.mjs --role analytics
+   --qualify ...`. Keep the printed `qualificationSha256` and the mirror it
+   returns (`<directory>/worker`). `npm run check` includes `deploy:dry` and
+   `staging:check`, which stage `.release-build/public-release-site`, so a
+   fresh worktree without a generated public release site fails there
+   (`Generated public release manifest is missing`) after the Vitest suite
+   passes. Provide the site first; a failing gate is never a qualification.
+2. **Plan.** Run `npm run staging-edge -- storage-plan --role analytics
+   --inputs <inputs> <isolation inputs> --qualified-worker-root <mirror>
+   --qualification-sha256 <sha> --plan-output <new file>`. It refuses a dirty
+   checkout, and a mirror whose SQL differs from the checkout's
+   `analytics-migrations/`. The plan expires after 120 minutes by default
+   (`--ttl-minutes`, at most 1440). Review it, then keep the printed
+   `planSha256`.
+3. **Retire a stray Wrangler ledger.** A `wrangler d1 migrations` command
+   (`apply` or `list`) creates an empty `d1_migrations` before it does
+   anything else. Production's analytics D1 has none, and the seal refuses
+   one, so the staging D1 must not keep it. Run `storage-retire-wrangler-ledger
+   ... --execute --confirm RETIRE_STAGING_WRANGLER_LEDGER
+   --approved-plan-sha256 <planSha256> --output-directory <new dir>`. It
+   first reads the server's `d1 list` and `d1 info`, as the runner does, and
+   refuses (`D1_STORAGE_RESOURCE_IDENTITY_OR_CAPACITY_MISMATCH`) unless exactly
+   one database carries the plan's name and ID. It then drops the table only
+   while it is empty and is the database's only application object. The single import carries its own guard rows, so a
+   non-empty ledger or a neighbouring object fails the import before either
+   `DROP`. An absent ledger is a no-op (`absent`). A non-empty ledger
+   (`D1_STORAGE_WRANGLER_LEDGER_NOT_EMPTY`) is a stop: report it and do not
+   remove rows by hand. If the import fails without rolling back, its guard
+   table `tibotattle_wrangler_ledger_retirement` can remain beside the ledger.
+   Every later retirement then refuses, and that is also a stop to report.
+4. **Apply.** Run `storage-apply ... --execute --confirm
+   EXECUTE_REVIEWED_D1_STORAGE_PLAN --approved-plan-sha256 <planSha256>
+   --operation <new dir>`. It first reads, read-only, whether `d1_migrations`
+   is present, and refuses before any journal or lock if it is
+   (`STAGING_EDGE_STORAGE_WRANGLER_LEDGER_PRESENT`). The runner itself would
+   also refuse, because the schema fingerprint no longer matches the empty
+   qualified start (`D1_STORAGE_SCHEMA_RECEIPT_MISMATCH`). That read uses a
+   new `<operation>-preflight` directory, so after a refused or failed
+   preflight, rerun with a new `--operation`; reusing it refuses
+   (`STAGING_EDGE_STORAGE_PREFLIGHT_DIRECTORY_EXISTS`). The runner's
+   intent, journal and uncertain-outcome rules apply unchanged. After an
+   uncertain outcome, rerun with `--resume` and the same `--operation`. Never
+   fall back to Wrangler.
+5. **Verify.** Run `storage-verify ... --execute --output-directory <new dir>`
+   (read-only). It expects `status: verified`, `ledger: d1_storage_migrations`,
+   `applied` equal to `expected` (32 at P), and `wranglerLedgerPresent:
+   false`.
+
+Never run a `wrangler d1 migrations` command, including `list`, against the
+analytics D1: it recreates the ledger.
 
 **The throwaway guard D1 (for R2.5, N2).** Phase B also creates a sixth D1,
 for example `tibotattle-staging-release-guard-throwaway`. Never apply a
@@ -1202,4 +1307,9 @@ Record each cycle in a content-free receipt, as the plan's section 10 says.
    worker, fenced, gcp and the brake.
 
 `npm run staging-edge:scripts-check` runs the driver's checks and then that dry
-run.
+run. `scripts/staging-edge-storage.check.mjs` covers the analytics path. It
+applies the real `0001_delivery_state.sql` and a synthetic trigger with
+`CASE ... END;` through the runner and its whole-file import, over in-memory
+SQLite, and checks the `d1_storage_migrations` rows. It also checks that render
+refuses Wrangler for analytics, and that a stray `d1_migrations` is refused by
+the runner and retired only while it is empty and alone.

@@ -22,7 +22,11 @@
 //   reconcile  compares a captured staging inventory with a deploy's plan
 //              (--execute captures it read-only instead);
 //   endpoints  the per-mode public-surface matrix (--execute reads it);
-//   rehearsal  the R1/R2 sequence with each step's expected outcome.
+//   rehearsal  the R1/R2 sequence with each step's expected outcome;
+//   storage-plan, storage-retire-wrangler-ledger, storage-apply, storage-verify
+//              the analytics D1's migrations through the d1-storage runner
+//              (production's `d1_storage_migrations` ledger), never Wrangler's
+//              `migrations apply` (staging-edge-storage.mjs).
 //
 // Render and deploy take the same production isolation inputs (the production
 // Worker's own inventory in the shared account, the optional pre-gcp baseline,
@@ -37,7 +41,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, open, readFile, realpath, rename } from "node:fs/promises";
+import { lstat, open, readFile, realpath, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
@@ -78,6 +82,17 @@ import {
   verifyProductionLiveConfig,
 } from "./production-live-config.mjs";
 import { createProductionLiveProvider } from "./production-live-provider.mjs";
+import { prepareStoragePlan } from "./d1-storage-plan.mjs";
+import { readIngestionRoleInputs } from "./d1-storage-role.mjs";
+import {
+  assertQualifiedMirrorMatchesCheckout,
+  assertStagingEdgeStorageEnvironment,
+  assertStagingEdgeStoragePlan,
+  buildStagingEdgeStoragePlan,
+  retireStagingEdgeWranglerLedger,
+  runStagingEdgeStorageMigration,
+  verifyStagingEdgeStorage,
+} from "./staging-edge-storage.mjs";
 import { readMaintenanceFile } from "./production-maintenance.mjs";
 import {
   createPrivateReconciliationOutputDirectory,
@@ -98,6 +113,7 @@ import {
   renderStagingEdgeTemplate,
   resolveStagingEdgeInputs,
   stagingEdgeInputsSha256,
+  stagingEdgeMigrationTool,
 } from "./staging-edge-target.mjs";
 
 export const STAGING_EDGE_DEPLOY_CONFIRMATION = "DEPLOY_STAGING_EDGE";
@@ -111,7 +127,7 @@ export const STAGING_EDGE_CANDIDATE_FILE = "candidate.wrangler.json";
 export const STAGING_EDGE_TYPED_SCHEMA_INSPECTION = "not_applicable_staging_json_topology";
 const SHA = /^[0-9a-f]{40}$/u;
 const SHA256 = /^[0-9a-f]{64}$/u;
-const CODE = /^(?:STAGING_EDGE|EDGE|PRODUCTION_LIVE|PRODUCTION_TYPED|PRODUCTION_RECONCILE|PRODUCTION_MIGRATION|PRODUCTION_EDGE_HEALTH|FENCE|RELEASE_OPERATION|MAINTENANCE)_[A-Z0-9_]+$/u;
+const CODE = /^(?:STAGING_EDGE|EDGE|PRODUCTION_LIVE|PRODUCTION_TYPED|PRODUCTION_RECONCILE|PRODUCTION_MIGRATION|PRODUCTION_EDGE_HEALTH|FENCE|RELEASE_OPERATION|MAINTENANCE|D1_STORAGE)_[A-Z0-9_]+$/u;
 const SITE_MANIFEST = "release-site-manifest.json";
 const SITE_MANIFEST_MAX_BYTES = 512 * 1024;
 const WRANGLER_ENVIRONMENT_OVERRIDES = Object.freeze(["CLOUDFLARE_API_BASE_URL", "CF_API_BASE_URL",
@@ -986,6 +1002,14 @@ const VALUE_FLAGS = Object.freeze({
   "--expected-candidate-sha256": "expectedCandidateSha256",
   "--operation": "operationDirectory",
   "--expected-source": "expectedSourceCommit",
+  "--role": "role",
+  "--qualified-worker-root": "qualifiedWorkerRoot",
+  "--qualification-sha256": "qualificationSha256",
+  "--plan": "planPath",
+  "--plan-output": "planOutput",
+  "--ttl-minutes": "ttlMinutes",
+  "--approved-plan-sha256": "approvedPlanSha256",
+  "--cli": "cliPath",
 });
 const SWITCH_FLAGS = Object.freeze({
   "--genesis": "genesis",
@@ -993,6 +1017,7 @@ const SWITCH_FLAGS = Object.freeze({
   "--production-plan-absent": "productionPlanAbsent",
   "--execute": "execute",
   "--write": "write",
+  "--resume": "resume",
 });
 /** The production isolation inputs render and deploy both take, with the same rules. */
 const ISOLATION_FLAGS = Object.freeze(["productionInventoryPath", "productionInventorySha256",
@@ -1007,6 +1032,13 @@ const SUBCOMMAND_FLAGS = Object.freeze({
   reconcile: ["operationDirectory", "inventoryPath", "inventorySha256", "execute"],
   endpoints: ["edgeMode", "inputsPath", "expectedSourceCommit", "originCommit", "execute"],
   rehearsal: [],
+  "storage-plan": ["inputsPath", ...ISOLATION_FLAGS, "role", "qualifiedWorkerRoot", "qualificationSha256", "planOutput",
+    "ttlMinutes"],
+  "storage-retire-wrangler-ledger": ["planPath", "approvedPlanSha256", "qualifiedWorkerRoot", "cliPath", "outputDirectory",
+    "execute", "confirmation"],
+  "storage-apply": ["planPath", "approvedPlanSha256", "qualifiedWorkerRoot", "cliPath", "operationDirectory", "execute",
+    "confirmation", "resume"],
+  "storage-verify": ["planPath", "qualifiedWorkerRoot", "cliPath", "outputDirectory", "execute"],
 });
 
 function argumentsInvalid() {
@@ -1056,7 +1088,9 @@ export function parseStagingEdgeArguments(argv) {
   const sha256Value = (name) => result[name] === undefined || SHA256.test(result[name]) || argumentsInvalid();
   for (const name of ["expectedPreviousSourceCommit", "originCommit", "expectedSourceCommit"]) sha(name);
   for (const name of ["productionInventorySha256", "productionBaselineInventorySha256", "productionFencePlanSha256",
-    "inventorySha256", "fenceReceiptSha256", "expectedCandidateSha256"]) sha256Value(name);
+    "inventorySha256", "fenceReceiptSha256", "expectedCandidateSha256", "qualificationSha256", "approvedPlanSha256"]) {
+    sha256Value(name);
+  }
   if (result.edgeMode !== undefined && parseEdgeUpstreamMode(result.edgeMode) === null) argumentsInvalid();
   if (subcommand === "render") {
     if (!result.inputsPath || (result.write === true) !== (result.outputDirectory !== undefined)) argumentsInvalid();
@@ -1089,6 +1123,28 @@ export function parseStagingEdgeArguments(argv) {
   if (subcommand === "endpoints") {
     if (!result.edgeMode || !result.inputsPath || !result.expectedSourceCommit) argumentsInvalid();
     if ((result.originCommit !== undefined) !== (result.edgeMode === "gcp")) argumentsInvalid();
+  }
+  if (subcommand === "storage-plan") {
+    if (!result.inputsPath || !result.role || !result.qualifiedWorkerRoot || !result.qualificationSha256 || !result.planOutput) {
+      argumentsInvalid();
+    }
+    isolationArguments(result);
+    if (result.ttlMinutes !== undefined) {
+      if (!/^[1-9][0-9]{0,3}$/u.test(result.ttlMinutes)) argumentsInvalid();
+      result.ttlMinutes = Number(result.ttlMinutes);
+    }
+  }
+  if (subcommand.startsWith("storage-") && subcommand !== "storage-plan") {
+    if (!result.planPath || !result.qualifiedWorkerRoot || !result.cliPath) argumentsInvalid();
+    // The private directory (journal, pinned Wrangler configs) is written only by an executed run.
+    const directory = subcommand === "storage-apply" ? result.operationDirectory : result.outputDirectory;
+    if ((directory !== undefined) !== (result.execute === true)) argumentsInvalid();
+    if (subcommand !== "storage-verify") {
+      // A mutation needs its confirmation and the reviewed plan digest; the dry run takes neither.
+      const approved = pairs(result, ["confirmation", "approvedPlanSha256"]);
+      if (approved !== (result.execute === true)) argumentsInvalid();
+    }
+    if (result.resume === true && result.execute !== true) argumentsInvalid();
   }
   return result;
 }
@@ -1186,11 +1242,23 @@ async function cliRender(options) {
     fencePlanSha256: fence.planSha256,
     gcpPlanOverlaySha256: gcp?.overlaySha256 ?? null,
     files: files.map(([name, value]) => ({ name, sha256: sha256(`${JSON.stringify(value, null, 2)}\n`) })),
-    migrations: rendered.migrationConfigs.map((entry) => ({
-      role: entry.role,
-      command: ["wrangler", "d1", "migrations", "apply", "<database name>", "--remote", "--config",
-        `<output-directory>/${migrationFile(entry.role)}`],
-    })),
+    migrations: [
+      ...rendered.migrationConfigs.map((entry) => ({
+        role: stagingEdgeMigrationTool(entry.role, "wrangler").key,
+        ledger: "d1_migrations",
+        command: ["wrangler", "d1", "migrations", "apply", "<database name>", "--remote", "--config",
+          `<output-directory>/${migrationFile(entry.role)}`],
+      })),
+      // A storage-ledger role is never given a Wrangler command or config: the
+      // d1-storage runner applies it (runbook section 11, storage migrations).
+      ...rendered.storageTargets.map((entry) => ({
+        role: stagingEdgeMigrationTool(entry.role, "storage").key,
+        ledger: entry.ledger,
+        command: ["npm", "run", "staging-edge", "--", "storage-apply", "--plan", "<private storage plan>",
+          "--qualified-worker-root", "<qualified mirror>", "--cli", "<pinned wrangler-dist/cli.js>",
+          "--operation", "<new private directory>"],
+      })),
+    ],
     standIn: ["wrangler", "deploy", "--config", "<output-directory>/standin.wrangler.json", "--strict"],
   };
   if (options.write === true) {
@@ -1268,6 +1336,100 @@ async function cliEndpoints(options) {
   return verifyStagingEdgeEndpoints(request);
 }
 
+/** The repository-relative check every private output takes: never inside the checkout. */
+async function outsideRepository(requested, workerDirectory = STAGING_EDGE_WORKER_DIRECTORY) {
+  const repository = await realpath(resolve(workerDirectory, "..", ".."));
+  let parent;
+  try {
+    parent = await realpath(dirname(resolve(requested)));
+  } catch {
+    return fail("STAGING_EDGE_OUTPUT_UNSAFE");
+  }
+  const path = join(parent, basename(resolve(requested)));
+  const relation = relative(repository, path);
+  if (relation === "" || (!relation.startsWith(`..${sep}`) && relation !== ".." && !isAbsolute(relation))) {
+    fail("STAGING_EDGE_OUTPUT_INSIDE_REPOSITORY");
+  }
+  const info = await lstat(parent);
+  const uid = process.getuid?.();
+  if (!info.isDirectory() || (info.mode & 0o077) !== 0 || (uid !== undefined && info.uid !== uid)) fail("STAGING_EDGE_OUTPUT_UNSAFE");
+  return path;
+}
+
+async function readStoragePlan(path) {
+  try {
+    return JSON.parse((await readMaintenanceFile(resolve(path), 256 * 1024)).toString("utf8"));
+  } catch {
+    return fail("STAGING_EDGE_STORAGE_PLAN_UNREADABLE");
+  }
+}
+
+/**
+ * storage-plan: the reviewed d1-storage plan for a staging storage-ledger role
+ * (analytics), under render's isolation rules, from a clean checkout whose
+ * qualified role mirror carries exactly the checkout's SQL. Writes the plan
+ * (0600, new file, outside the repository) and prints its digest.
+ */
+async function cliStoragePlan(options) {
+  const inputs = await readInputs(options.inputsPath);
+  const isolation = assertStagingEdgeTarget({
+    inputs, template: await readStagingEdgeTemplate(), trackedConfigs: await readStagingEdgeTrackedConfigs(),
+    ...(await readProductionIsolation(options)),
+  });
+  const { sourceCommit } = await readIngestionRoleInputs(STAGING_EDGE_WORKER_DIRECTORY);
+  const workerRoot = resolve(options.qualifiedWorkerRoot);
+  const sqlFiles = await assertQualifiedMirrorMatchesCheckout({ qualifiedWorkerRoot: workerRoot, role: options.role });
+  const plan = buildStagingEdgeStoragePlan({
+    inputs: isolation.target, role: options.role, sourceCommit, qualificationSha256: options.qualificationSha256,
+    ...(options.ttlMinutes === undefined ? {} : { ttlMinutes: options.ttlMinutes }),
+  });
+  const prepared = await prepareStoragePlan({ plan, workerRoot });
+  const path = await outsideRepository(options.planOutput);
+  await writeFile(path, `${JSON.stringify(plan, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+  return {
+    ok: true, code: null, dryRun: true, planSha256: prepared.planSha256, sourceCommit, expiresAt: plan.expiresAt,
+    targets: plan.targets.map((target) => ({ role: target.role, ledger: "d1_storage_migrations",
+      migrations: prepared.qualifications[target.binding].migrations.length, sqlFiles })),
+  };
+}
+
+async function cliStorageRetire(options) {
+  if (options.execute === true) assertStagingEdgeStorageEnvironment();
+  const plan = await readStoragePlan(options.planPath);
+  const directory = options.execute === true ? await createStagingOutputDirectory(options.outputDirectory) : null;
+  const result = await retireStagingEdgeWranglerLedger({
+    plan, workerRoot: resolve(options.qualifiedWorkerRoot), directory, cliPath: resolve(options.cliPath),
+    execute: options.execute === true, confirmation: options.confirmation, approvedPlanSha256: options.approvedPlanSha256,
+  });
+  return { ok: true, code: null, dryRun: options.execute !== true, ...result };
+}
+
+async function cliStorageApply(options) {
+  if (options.execute === true) assertStagingEdgeStorageEnvironment();
+  const plan = await readStoragePlan(options.planPath);
+  const operationDirectory = options.execute === true ? await outsideRepository(options.operationDirectory) : undefined;
+  const result = await runStagingEdgeStorageMigration({
+    plan, workerRoot: resolve(options.qualifiedWorkerRoot), operationDirectory, cliPath: resolve(options.cliPath),
+    execute: options.execute === true, confirmation: options.confirmation, approvedPlanSha256: options.approvedPlanSha256,
+    resume: options.resume === true,
+  });
+  return { ok: true, code: null, dryRun: options.execute !== true, ...result };
+}
+
+async function cliStorageVerify(options) {
+  const plan = await readStoragePlan(options.planPath);
+  const workerRoot = resolve(options.qualifiedWorkerRoot);
+  if (options.execute !== true) {
+    const prepared = await prepareStoragePlan({ plan: assertStagingEdgeStoragePlan(plan, { allowExpired: true }), workerRoot,
+      allowExpired: true });
+    return { ok: true, code: null, dryRun: true, planSha256: prepared.planSha256 };
+  }
+  assertStagingEdgeStorageEnvironment();
+  const directory = await createStagingOutputDirectory(options.outputDirectory);
+  return { ok: true, code: null, dryRun: false,
+    ...(await verifyStagingEdgeStorage({ plan, workerRoot, directory, cliPath: resolve(options.cliPath) })) };
+}
+
 const ISOLATION_USAGE = "--production-inventory PRIVATE_JSON --production-inventory-sha256 SHA256 "
   + "(--production-plan PRIVATE_JSON | --production-plan-absent) "
   + "[--production-baseline-inventory PRIVATE_JSON --production-baseline-inventory-sha256 SHA256] "
@@ -1282,6 +1444,13 @@ const USAGE = "Usage: staging-edge-deploy.mjs <render|deploy|reconcile|endpoints
   + "  reconcile --operation PRIVATE_DIR (--inventory PRIVATE_JSON --inventory-sha256 SHA256 | --execute)\n"
   + "  endpoints --edge-mode MODE --inputs PRIVATE_JSON --expected-source FULL_SHA [--origin-commit FULL_SHA] [--execute]\n"
   + "  rehearsal\n"
+  + `  storage-plan --role analytics --inputs PRIVATE_JSON ${ISOLATION_USAGE} --qualified-worker-root DIR `
+  + "--qualification-sha256 SHA256 --plan-output NEW_PRIVATE_FILE [--ttl-minutes N]\n"
+  + "  storage-retire-wrangler-ledger --plan PRIVATE_JSON --qualified-worker-root DIR --cli WRANGLER_DIST_CLI "
+  + "[--execute --confirm RETIRE_STAGING_WRANGLER_LEDGER --approved-plan-sha256 SHA256 --output-directory NEW_PRIVATE_DIR]\n"
+  + "  storage-apply --plan PRIVATE_JSON --qualified-worker-root DIR --cli WRANGLER_DIST_CLI "
+  + "[--execute --confirm EXECUTE_REVIEWED_D1_STORAGE_PLAN --approved-plan-sha256 SHA256 --operation NEW_PRIVATE_DIR [--resume]]\n"
+  + "  storage-verify --plan PRIVATE_JSON --qualified-worker-root DIR --cli WRANGLER_DIST_CLI [--execute --output-directory NEW_PRIVATE_DIR]\n"
   + "Every subcommand is a dry run unless --execute is given.\n";
 
 async function main() {
@@ -1299,8 +1468,9 @@ async function main() {
       for (const step of stagingEdgeRehearsalSequence()) process.stdout.write(`${JSON.stringify(step)}\n`);
       return;
     }
-    result = await ({ render: cliRender, deploy: cliDeploy, reconcile: cliReconcile, endpoints: cliEndpoints })[
-      options.subcommand](options);
+    result = await ({ render: cliRender, deploy: cliDeploy, reconcile: cliReconcile, endpoints: cliEndpoints,
+      "storage-plan": cliStoragePlan, "storage-retire-wrangler-ledger": cliStorageRetire, "storage-apply": cliStorageApply,
+      "storage-verify": cliStorageVerify })[options.subcommand](options);
   } catch (error) {
     result = { ok: false, code: stagingCode(error, "STAGING_EDGE_FAILED") };
   }
