@@ -322,11 +322,15 @@ const PUBLIC_ALLOWANCE_ROSTER_IDS = new Set(PUBLIC_ALLOWANCE_ROSTER.map(([modelI
 const PUBLIC_ALLOWANCE_ROSTER_UNTIL_PUBLISHED = new Set(["gpt-6.1-sol"]);
 // The owner chose a selected comparison, not the whole historical vocabulary
 // (2d6cfbc8, "six requested public allowance models"): older generations stay
-// off the page. That choice is this explicit list, frozen at catalog
-// reviewed-model-catalog-2026-09-29.1. A model appended to the catalog after
-// that version is not on it, so it is charted as soon as the server publishes an
-// estimate for it, with no page edit. Add it here to keep it off. A published
-// metadata block charts a model named here too.
+// off the page. That choice is this explicit list, taken from the OpenAI
+// release-line catalog reviewed-model-catalog-2026-09-29.1. It covers every
+// primary id in the catalog this tree ships (reviewed-model-catalog-2026-09-23.1),
+// so with that catalog the charted list is exactly the roster. Unlike d43c8f92,
+// which charts only its hand-picked roster, a primary model that a later catalog
+// adds and that is not on this list is charted as soon as the server publishes
+// an estimate for it, with no page edit (owner round 5: shown once the catalog
+// adds it). Add it here to keep it off. A published metadata block charts a
+// model named here too.
 const PUBLIC_ALLOWANCE_HIDDEN_IDS = Object.freeze([
   "codex-auto-review", "gpt-4-turbo-2024-04-09", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano",
   "gpt-4o", "gpt-4o-2024-05-13", "gpt-4o-mini", "gpt-5", "gpt-5-codex", "gpt-5-mini",
@@ -456,9 +460,11 @@ export function chartedModelsWith(published = []) {
 // is a second thing that can drift.
 //
 // v1.3 is v1.1's meaning (the Pro 20x basis, with `combined`) plus the closed
-// model-metadata block, so it is read on the same basis as v1.1. Any other
-// version, v1.2 and v1.4 included, is refused whole until this reader is
-// changed to understand it.
+// model-metadata block, so it is read on the same basis as v1.1. Only v1.3 may
+// carry the block: a v1.0 or v1.1 envelope that has one is outside its own
+// contract and is refused whole, as d43c8f92 refuses it. Any other version,
+// v1.2 and v1.4 included, is refused whole until this reader is changed to
+// understand it.
 export const COMMUNITY_ALLOWANCE_BREAKDOWN_SCHEMA_VERSIONS = Object.freeze([
   "community-allowance-breakdowns-v1.0",
   "community-allowance-breakdowns-v1.1",
@@ -511,7 +517,11 @@ function retainedUnrecognizedCounts(value) {
  * payload carrying that key is not on the wire contract and is refused. */
 export function normalizePublicAllowanceBreakdowns(value, publishedDays, nowMs = Date.now(), { retained = false } = {}) {
   const isRecord = value !== null && typeof value === "object" && !Array.isArray(value);
-  const hasMetadataBlock = isRecord && Object.prototype.hasOwnProperty.call(value, "modelConfig");
+  // The block is a member of v1.3 only. On any other version the key is an
+  // unknown member, so the closed envelope check below refuses the payload.
+  const hasMetadataBlock = isRecord
+    && value.schemaVersion === COMMUNITY_ALLOWANCE_BREAKDOWN_MODEL_METADATA_VERSION
+    && Object.prototype.hasOwnProperty.call(value, "modelConfig");
   const hasRetainedCounts = retained && isRecord
     && Object.prototype.hasOwnProperty.call(value, "retainedUnrecognizedModels");
   const carried = hasRetainedCounts ? retainedUnrecognizedCounts(value.retainedUnrecognizedModels) : null;
@@ -972,9 +982,14 @@ function cachedAllowanceBlock(allowance) {
 
 function cachedBreakdowns(breakdowns) {
   return {
-    schemaVersion: breakdowns.hasCombined
-      ? COMMUNITY_ALLOWANCE_BREAKDOWN_COMBINED_VERSION
-      : COMMUNITY_ALLOWANCE_BREAKDOWN_SCHEMA_VERSIONS[0],
+    // A copy that keeps an applied metadata block is stored as v1.3, the only
+    // version allowed to carry one. Without an applied block, v1.3 means
+    // exactly v1.1, so it is stored under v1.1.
+    schemaVersion: breakdowns.modelMetadata === "applied"
+      ? COMMUNITY_ALLOWANCE_BREAKDOWN_MODEL_METADATA_VERSION
+      : breakdowns.hasCombined
+        ? COMMUNITY_ALLOWANCE_BREAKDOWN_COMBINED_VERSION
+        : COMMUNITY_ALLOWANCE_BREAKDOWN_SCHEMA_VERSIONS[0],
     basis: COMMUNITY_ALLOWANCE_BASIS,
     referencePlanType: COMMUNITY_ALLOWANCE_REFERENCE_PLAN_TYPE,
     normalization: COMMUNITY_ALLOWANCE_NORMALIZATION,
