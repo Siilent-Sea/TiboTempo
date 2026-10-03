@@ -598,8 +598,12 @@ npm run production:deploy -- --confirm DEPLOY_PRODUCTION \
   (`EDGE_PRIVACY_PAGE_PREMATURE`). Build or restore the tree on this line: it
   stages through this line's asset allowlist, which differs from the fast-path
   line's ([Changing the public site](../runbooks/production-edge-modes.md#changing-the-public-site)).
-  Keep this deploy's operation journal directory unmodified: it is the
-  evidence a later website rollback to this site names.
+  Keep this deploy's operation journal directory unmodified, and archive it
+  with the kept site's web-release receipt and generated site
+  (`npm run production:release-archive`; see
+  [Archive the release](../runbooks/2026-08-17-web-only-release.md#5-archive-the-release)):
+  the archived journal is the evidence a later website rollback to this site
+  names.
 - **Verify.** Check these:
   - public health reports the deploy commit as `deployment.sourceCommit`;
   - one version serves 100%, with the matching `DEPLOYMENT_SOURCE_COMMIT` and
