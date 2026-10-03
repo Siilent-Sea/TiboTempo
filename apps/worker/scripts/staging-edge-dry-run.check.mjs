@@ -72,6 +72,23 @@ test("the gcp candidate is reduced to the staging guard D1 and keeps the staging
   assert.equal(brake.vars.EDGE_UPSTREAM_ORIGIN, gcp.vars.EDGE_UPSTREAM_ORIGIN);
 });
 
+test("the rehearsal runs on Cloudflare's expanded observability after genesis", async () => {
+  const { candidates, live } = await simulate();
+  const declared = { enabled: true, head_sampling_rate: 1 };
+  const expanded = {
+    ...declared,
+    logs: { enabled: true, head_sampling_rate: 1, invocation_logs: true, persist: true },
+    traces: { enabled: false, head_sampling_rate: 1, persist: true },
+  };
+  // The genesis candidate is the tracked declaration; every later step renders
+  // from the simulated live capture, which carries the expanded sections.
+  assert.deepEqual(JSON.parse(await readFile(candidates["R1.0"], "utf8")).env.production.observability, declared);
+  for (const step of ["R1.1", STAGING_DRY_RUN_BUNDLES.fenced, STAGING_DRY_RUN_BUNDLES.gcp, STAGING_DRY_RUN_BUNDLES.brake]) {
+    assert.deepEqual(JSON.parse(await readFile(candidates[step], "utf8")).env.production.observability, expanded, step);
+  }
+  assert.deepEqual(live.settings.observability, expanded);
+});
+
 test("each broken property is reported", async () => {
   const { results } = await simulate();
   const cases = [

@@ -7,6 +7,7 @@ import { createProductionDeploymentLock } from './production-deployment-lock.mjs
 import { createMaintenanceTransport } from './production-maintenance-transport.mjs';
 import { storageSchemaDigest } from './d1-storage-plan.mjs';
 import { loadExistingRoleForwardSteps, verifyExistingRoleForwardReceipt } from './existing-role-forward-migration.mjs';
+import { productionObservabilityMatchesLive } from './production-live-config.mjs';
 
 const ROLES = ['analytics', 'publication', 'cache'];
 const REFRESH_PREVIOUS_SOURCE = '3216e2258830841c37f17c1a0b7d8703e0a72293';
@@ -29,6 +30,10 @@ const withoutMutableVars = vars => Object.fromEntries(Object.entries(vars).filte
 const bindingId = binding => binding.id ?? binding.database_id;
 const secretNames = bindings => bindings.filter(b => ['secret_text','secret_key'].includes(b.type)).map(b => `${b.type}:${b.name}`).sort();
 const same = (left,right) => identityDigest(left??null)===identityDigest(right??null);
+/** Cloudflare's settings API expands a declared observability object with
+ * pinned defaults; compare through the live-config verifier's closed rule.
+ * Any invalid or unknown key on either side is a settings change. */
+const sameObservability = (declared,live) => { try { return productionObservabilityMatchesLive(declared,live); } catch { return false; } };
 export function scheduledSettingsStableDigest(settings){
   const stable=structuredClone(settings);delete stable.bindings;
   if(stable.annotations){
@@ -195,7 +200,7 @@ function verifyConfigAgainstLive(role,config,snapshot,plan){
     ||!same(config.compatibility_flags,runtime.compatibility_flags)
     ||!same(config.limits,runtime.limits)
     ||!same(config.logpush,settings.logpush)
-    ||!same(config.observability,settings.observability)
+    ||!sameObservability(config.observability,settings.observability)
     ||!same(config.tail_consumers,settings.tail_consumers)
     ||!same(config.placement,settings.placement?.mode==='smart'?settings.placement:null))fail('RUNTIME_SETTINGS_CHANGED');
   const d1=snapshot.bindings.filter(x=>x.type==='d1');

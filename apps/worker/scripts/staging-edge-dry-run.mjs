@@ -164,12 +164,43 @@ export async function writeStagingDryRunSite(directory, marked) {
   return directory;
 }
 
-/** The simulated next live version: the expected snapshot, deployed from the synthetic source. */
+/**
+ * What Cloudflare's settings API reported on 2026-10-03 (staging edge genesis
+ * and production) for a Worker declaring only
+ * { enabled: true, head_sampling_rate: 1 }. Kept separate from the verifier's
+ * pinned-defaults table so the rehearsal cross-checks it rather than echoing it.
+ */
+const CLOUDFLARE_REPORTED_OBSERVABILITY = Object.freeze({
+  redact_query_string: false,
+  logs: Object.freeze({ enabled: true, head_sampling_rate: 1, persist: true, invocation_logs: true }),
+  traces: Object.freeze({ enabled: false, persist: true, head_sampling_rate: 1 }),
+});
+
+/**
+ * The observability a live capture reads after deploying `declared`: for the
+ * observed declaration, Cloudflare fills every unset field with its default;
+ * any other declaration is simulated unchanged.
+ */
+function cloudflareReportedObservability(declared) {
+  if (declared?.enabled !== true || declared.head_sampling_rate !== 1) return declared;
+  return {
+    redact_query_string: CLOUDFLARE_REPORTED_OBSERVABILITY.redact_query_string,
+    ...declared,
+    logs: { ...CLOUDFLARE_REPORTED_OBSERVABILITY.logs, ...declared.logs },
+    traces: { ...CLOUDFLARE_REPORTED_OBSERVABILITY.traces, ...declared.traces },
+  };
+}
+
+/**
+ * The simulated next live version: the expected snapshot, deployed from the
+ * synthetic source, with observability as Cloudflare's settings API expands it.
+ */
 export function stagingDryRunAdvance(expected, versionNumber) {
   const bindings = expected.bindings.filter((binding) => binding.name !== "DEPLOYMENT_SOURCE_COMMIT");
   bindings.push({ name: "DEPLOYMENT_SOURCE_COMMIT", type: "plain_text", text: STAGING_DRY_RUN_SOURCE });
   const versionId = `5e000000-0000-4000-8000-${String(versionNumber).padStart(12, "0")}`;
-  return createProductionLiveConfigSnapshot(stagingEdgeInventoryOf({ ...expected, bindings, versionId }));
+  const settings = { ...expected.settings, observability: cloudflareReportedObservability(expected.settings?.observability) };
+  return createProductionLiveConfigSnapshot(stagingEdgeInventoryOf({ ...expected, bindings, settings, versionId }));
 }
 
 /** Phase F, simulated: the four gcp secrets put on the live version. */

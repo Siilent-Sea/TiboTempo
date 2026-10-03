@@ -17,7 +17,7 @@ const files={analytics:'storage-analytics-worker.js',publication:'storage-public
 const flags={analytics:['STORAGE_ANALYTICS_SHARED_FEATURES','STORAGE_ANALYTICS_MODEL_BLOCKS'],publication:['STORAGE_ANALYTICS_SHARED_FEATURES','STORAGE_ANALYTICS_MODEL_BLOCKS'],cache:['CACHE_RETENTION_SHARED_FEATURES']};
 const hash=x=>createHash('sha256').update(x).digest('hex');
 const write=async(path,bytes)=>writeFile(path,bytes,{mode:0o600});
-async function fixture(t,{refresh=false}={}){
+async function fixture(t,{refresh=false,observability={declared:{enabled:true},live:{enabled:true}}}={}){
   const root=await realpath(await mkdtemp(join(tmpdir(),'scheduled-analytics-')));t.after(()=>rm(root,{recursive:true,force:true}));
   const pkg=join(root,'package'),operation=join(root,'operation');await mkdir(pkg,{mode:0o700});await mkdir(join(pkg,'artifacts'),{mode:0o700});
   const snapshots={},versions=new Map(),tags=new Map(),events=[],entries=[],rolePlans=[];
@@ -28,13 +28,13 @@ async function fixture(t,{refresh=false}={}){
       ...Object.fromEntries(flags[role].map(k=>[k,refresh&&!(role==='publication'&&k==='STORAGE_ANALYTICS_MODEL_BLOCKS')?'enabled':'disabled'])),
       ...(refresh&&role==='cache'?{CACHE_RETENTION_BUILD:'enabled'}:{})};
     const runtime={compatibility_date:'2026-07-26',compatibility_flags:[],limits:{cpu_ms:300000}};
-    const settings={logpush:false,observability:{enabled:true},tail_consumers:[],
+    const settings={logpush:false,observability:structuredClone(observability.live),tail_consumers:[],
       annotations:{'workers/message':`previous-${role}`,'workers/tag':`previous-${role}`,'workers/triggered_by':'synthetic'},bindings:[]};
     const config={name:role==='cache'?'tibotattle-cache-retention-synthetic':`tibotattle-${role}-synthetic`,main:bundlePath,no_bundle:true,keep_vars:true,workers_dev:false,
       vars,d1_databases:[{binding:'STORAGE_ANALYTICS_DB',database_id:database},
         ...(refresh?[{binding:'STORAGE_INGESTION_DB',database_id:primaryDatabase}]:[])],triggers:{crons:['* * * * *']},
       compatibility_date:runtime.compatibility_date,compatibility_flags:runtime.compatibility_flags,limits:runtime.limits,
-      logpush:settings.logpush,observability:settings.observability,tail_consumers:settings.tail_consumers};
+      logpush:settings.logpush,observability:structuredClone(observability.declared),tail_consumers:settings.tail_consumers};
     const configPath=join(pkg,'artifacts',`${role}-retained-upload.json`),configBytes=JSON.stringify(config)+'\n';await write(configPath,configBytes);
     entries.push({path:`artifacts/${role}/${files[role]}`,sha256:bundleSha256},{path:`artifacts/${role}-retained-upload.json`,sha256:hash(configBytes)});
     const bindings=[{type:'d1',name:'STORAGE_ANALYTICS_DB',id:database},
@@ -276,6 +276,40 @@ test('enabled successor refresh refuses control, provenance and ancestry drift b
     {code:'SCHEDULED_ANALYTICS_SOURCE_ANCESTRY_INVALID'});
     assert.deepEqual(f.events,[]);
   });
+});
+
+// The settings API's observability for a Worker declaring only
+// { enabled: true, head_sampling_rate: 1 }, as captured on 2026-10-03.
+const DECLARED_OBSERVABILITY={enabled:true,head_sampling_rate:1};
+const LIVE_OBSERVABILITY={enabled:true,head_sampling_rate:1,redact_query_string:false,
+  logs:{enabled:true,head_sampling_rate:1,persist:true,invocation_logs:true},
+  traces:{enabled:false,persist:true,head_sampling_rate:1}};
+
+test('a declared observability config matches the expanded live shape only at pinned defaults',async t=>{
+  await t.test('captured expanded shape deploys',async sub=>{
+    const f=await fixture(sub,{observability:{declared:DECLARED_OBSERVABILITY,live:LIVE_OBSERVABILITY}});
+    const result=await runScheduledAnalyticsRollout({...f.input,execute:true,confirmation:'DEPLOY_REVIEWED_SCHEDULED_ANALYTICS'});
+    assert.equal(result.status,'completed');
+  });
+  await t.test('a config copied verbatim from the capture deploys',async sub=>{
+    const f=await fixture(sub,{observability:{declared:LIVE_OBSERVABILITY,live:LIVE_OBSERVABILITY}});
+    assert.equal((await runScheduledAnalyticsRollout({...f.input,execute:true,confirmation:'DEPLOY_REVIEWED_SCHEDULED_ANALYTICS'})).status,'completed');
+  });
+  for(const [name,mutate] of [
+    ['traces enabled',value=>{value.traces.enabled=true;}],
+    ['logs not persisted',value=>{value.logs.persist=false;}],
+    ['query strings redacted',value=>{value.redact_query_string=true;}],
+    ['unknown observability key',value=>{value.logs.unexpected=true;}],
+    ['traces invocation_logs',value=>{value.traces.invocation_logs=true;}],
+  ]){
+    await t.test(name,async sub=>{
+      const live=structuredClone(LIVE_OBSERVABILITY);mutate(live);
+      const f=await fixture(sub,{observability:{declared:DECLARED_OBSERVABILITY,live}});
+      await assert.rejects(runScheduledAnalyticsRollout({...f.input,execute:true,confirmation:'DEPLOY_REVIEWED_SCHEDULED_ANALYTICS'}),
+        {code:'SCHEDULED_ANALYTICS_RUNTIME_SETTINGS_CHANGED'});
+      assert.equal(f.events.some(event=>event.startsWith('upload:')),false);
+    });
+  }
 });
 
 test('unapproved execution and changed package refuse before lock',async t=>{
