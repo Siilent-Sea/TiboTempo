@@ -899,7 +899,7 @@ staging Worker.
 | `endpoints` | Prints the per-mode public-surface matrix | Reads it, with GET only and no credentials |
 | `rehearsal` | Prints the R1 and R2 sequence with each step's expected outcome | Not accepted |
 | `storage-plan` | Takes render's isolation inputs and refusals, then writes the analytics D1's reviewed d1-storage plan (a new 0600 file outside the repository) and prints its digest | Not accepted |
-| `storage-retire-wrangler-ledger` | Validates the plan and qualification locally | Also needs `--confirm RETIRE_STAGING_WRANGLER_LEDGER`, `--approved-plan-sha256` and a new `--output-directory`. Drops a stray `d1_migrations` only while it is empty and the database's only object |
+| `storage-retire-wrangler-ledger` | Validates the plan and qualification locally | Also needs `--confirm RETIRE_STAGING_WRANGLER_LEDGER`, `--approved-plan-sha256` and a new `--output-directory`. Checks the database's name and ID against the server's list and info, then drops a stray `d1_migrations` only while it is empty and the database's only object |
 | `storage-apply` | The d1-storage runner's own plan validation | Also needs `--confirm EXECUTE_REVIEWED_D1_STORAGE_PLAN`, `--approved-plan-sha256` and a new `--operation` directory. Applies the qualified analytics migrations through the runner |
 | `storage-verify` | Validates the plan and qualification locally | Also needs a new `--output-directory`. Reads, read-only, the ledger, the schema fingerprint and the absence of `d1_migrations` |
 
@@ -1083,8 +1083,10 @@ clean checkout of the deploy line. Keep every plan, journal and output under one
    one, so the staging D1 must not keep it. Run `storage-retire-wrangler-ledger
    ... --execute --confirm RETIRE_STAGING_WRANGLER_LEDGER
    --approved-plan-sha256 <planSha256> --output-directory <new dir>`. It
-   drops the table only while it is empty and is the database's only
-   application object. The single import carries its own guard rows, so a
+   first reads the server's `d1 list` and `d1 info`, as the runner does, and
+   refuses (`D1_STORAGE_RESOURCE_IDENTITY_OR_CAPACITY_MISMATCH`) unless exactly
+   one database carries the plan's name and ID. It then drops the table only
+   while it is empty and is the database's only application object. The single import carries its own guard rows, so a
    non-empty ledger or a neighbouring object fails the import before either
    `DROP`. An absent ledger is a no-op (`absent`). A non-empty ledger
    (`D1_STORAGE_WRANGLER_LEDGER_NOT_EMPTY`) is a stop: report it and do not
@@ -1097,7 +1099,10 @@ clean checkout of the deploy line. Keep every plan, journal and output under one
    is present, and refuses before any journal or lock if it is
    (`STAGING_EDGE_STORAGE_WRANGLER_LEDGER_PRESENT`). The runner itself would
    also refuse, because the schema fingerprint no longer matches the empty
-   qualified start (`D1_STORAGE_SCHEMA_RECEIPT_MISMATCH`). The runner's
+   qualified start (`D1_STORAGE_SCHEMA_RECEIPT_MISMATCH`). That read uses a
+   new `<operation>-preflight` directory, so after a refused or failed
+   preflight, rerun with a new `--operation`; reusing it refuses
+   (`STAGING_EDGE_STORAGE_PREFLIGHT_DIRECTORY_EXISTS`). The runner's
    intent, journal and uncertain-outcome rules apply unchanged. After an
    uncertain outcome, rerun with `--resume` and the same `--operation`. Never
    fall back to Wrangler.

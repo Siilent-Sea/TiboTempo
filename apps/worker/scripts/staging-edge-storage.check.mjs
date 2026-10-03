@@ -9,6 +9,7 @@ import { identityDigest } from "../../../scripts/lib/release-operation.mjs";
 import fileValidation from "./d1-storage-file-preload.cjs";
 import {
   D1_STORAGE_CONFIRMATION,
+  D1_STORAGE_STAGING_EDGE_ROLES,
   stagingEdgeStorageDatabaseName,
   storageSchemaDigest,
   storageSha256,
@@ -30,6 +31,7 @@ import {
   buildStagingEdgeStoragePlan,
   createStagingEdgeStorageLock,
   retireStagingEdgeWranglerLedger,
+  stagingEdgeStorageRoles,
   runStagingEdgeStorageMigration,
   verifyStagingEdgeStorage,
 } from "./staging-edge-storage.mjs";
@@ -209,6 +211,9 @@ test("a stray Wrangler ledger is refused by the runner and retired only while it
   // The staging wrapper refuses before any journal or lock.
   await assert.rejects(f.execute("apply-early"), { code: "STAGING_EDGE_STORAGE_WRANGLER_LEDGER_PRESENT" });
   await assert.rejects(readdir(join(f.operations, "apply-early")), { code: "ENOENT" });
+  // Rerunning the same --operation after a refused preflight names its refusal: a new --operation is needed.
+  await assert.rejects(f.execute("apply-early"), { code: "STAGING_EDGE_STORAGE_PREFLIGHT_DIRECTORY_EXISTS" });
+  await assert.rejects(readdir(join(f.operations, "apply-early")), { code: "ENOENT" });
   // The bare runner refuses too, on its own schema fingerprint, and writes nothing.
   const bare = join(f.root, "bare");
   await mkdir(bare, { mode: 0o700 });
@@ -257,6 +262,43 @@ test("a stray Wrangler ledger is refused by the runner and retired only while it
   assert.equal(f.ledger().length, 2);
 });
 
+test("retirement establishes the database's identity from the server's list and info before any query or import", async (t) => {
+  const f = await fixture(t);
+  f.db.exec(WRANGLER_LEDGER_DDL);
+  // The server lists the plan's name under another ID, or does not list it at all, or lists it twice.
+  const cases = [
+    [{ id: "99999999-9999-4999-8999-999999999999" }, "D1_STORAGE_RESOURCE_IDENTITY_OR_CAPACITY_MISMATCH"],
+    [{ name: "tibotattle-staging-edge-analytics-other" }, "D1_STORAGE_RESOURCE_IDENTITY_OR_CAPACITY_MISMATCH"],
+  ];
+  for (const [index, [server, code]] of cases.entries()) {
+    const wrangler = await syntheticWrangler(f.root, f.db, server);
+    await assert.rejects(f.retire(`retire-identity-${index}`, { adapterFactory: wrangler.adapterFactory }), { code });
+    // Only inventory ran: no query and no import addressed the plan's ID.
+    assert.equal(wrangler.calls.length > 0, true);
+    assert.equal(wrangler.calls.every((call) => call.args.includes("list") || call.args.includes("info")), true);
+    await assert.rejects(readFile(join(f.operations, STAGING_EDGE_STORAGE_LOCK_FILE)), { code: "ENOENT" });
+  }
+  const duplicated = await syntheticWrangler(f.root, f.db);
+  const listed = duplicated.spawn;
+  const spawn = (command, args, options) => (args.includes("list")
+    ? { status: 0, stdout: JSON.stringify([{ uuid: f.plan.targets[0].databaseId, name: f.plan.targets[0].name },
+      { uuid: "99999999-9999-4999-8999-999999999999", name: f.plan.targets[0].name }]) }
+    : listed(command, args, options));
+  await assert.rejects(f.retire("retire-identity-duplicate", { adapterFactory: (input) =>
+    createStorageWranglerAdapter({ ...input, cliPath: duplicated.cliPath, spawn }) }),
+  { code: "D1_STORAGE_RESOURCE_IDENTITY_OR_CAPACITY_MISMATCH" });
+  assert.deepEqual(f.objects(), [{ type: "table", name: "d1_migrations" }]);
+
+  // With the plan's exact name and ID listed, list and info run first, then the guarded reads and the import.
+  const calls = f.wrangler.calls.length;
+  assert.equal((await f.retire("retire-identity-ok")).targets[0].status, "retired");
+  const kinds = f.wrangler.calls.slice(calls).map((call) => (call.args.includes(fileValidation.PLACEHOLDER) ? "import"
+    : call.args.some((arg) => arg.startsWith("--tibo-query-path=")) ? "query"
+      : call.args.includes("list") ? "list" : "info"));
+  assert.deepEqual(kinds, ["list", "info", "query", "query", "import", "query"]);
+  assert.deepEqual(f.objects(), []);
+});
+
 test("retirement is staging-only and the storage plan admits the staging-edge name only for a staging migration", async (t) => {
   const f = await fixture(t);
   const target = f.plan.targets[0];
@@ -268,9 +310,13 @@ test("retirement is staging-only and the storage plan admits the staging-edge na
     { phase: "create", targets: [{ ...target, databaseId: null }] },
     { targets: [{ ...target, name: "tibotattle-staging-edge-analytics-2" }] },
     { targets: [{ ...target, name: "tibotattle-staging-edge-ingestion" }] },
+    // The exception is the staging storage-ledger roles' only: the other roles keep Wrangler's ledger.
+    { targets: [{ ...target, role: "ingestion", name: "tibotattle-staging-edge-ingestion" }] },
+    { targets: [{ ...target, role: "control", name: "tibotattle-staging-edge-control" }] },
   ]) {
     assert.throws(() => validateStoragePlan({ ...f.plan, ...change }), { code: "D1_STORAGE_TARGET_INVALID" });
   }
+  assert.deepEqual(D1_STORAGE_STAGING_EDGE_ROLES, stagingEdgeStorageRoles().map((role) => role.storageRole));
   // A production-shaped plan for the same database never reaches the adapter's retirement.
   const production = { ...f.plan, environment: "production",
     targets: [{ ...target, name: `tibotattle-production-analytics-${f.plan.operationId}` }] };

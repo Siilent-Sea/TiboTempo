@@ -198,21 +198,22 @@ export async function createStorageWranglerAdapter({ plan, qualifications, direc
     }
     return { present, rows: count, otherObjects: rows.length - (present ? 1 : 0) };
   };
+  const inventory = async (target) => {
+    assertTarget(target);
+    const list = json(await command(['list', '--json']));
+    if (!Array.isArray(list) || list.length > 4096) throw storageError('INVENTORY_LIMIT');
+    const matches = list.filter((entry) => entry.name === target.name);
+    if (matches.length !== 1) return matches.length === 0 ? [] : [null, null];
+    if (target.databaseId !== null && matches[0].uuid !== target.databaseId) throw storageError('RESOURCE_IDENTITY_OR_CAPACITY_MISMATCH');
+    // Info is addressed by the exact server-returned UUID; the account is
+    // pinned in the private config. Never infer an ID from a name fragment.
+    const info = json(await command(['info', matches[0].uuid, '--json']));
+    if (info.uuid !== matches[0].uuid || info.name !== target.name) throw storageError('RESOURCE_IDENTITY_OR_CAPACITY_MISMATCH');
+    return [{ id: info.uuid, name: info.name, bytes: info.database_size ?? info.file_size }];
+  };
   return {
     proof: { wranglerVersion: '4.114.0', cliSha256: cli.digest },
-    async inventory(target) {
-      assertTarget(target);
-      const list = json(await command(['list', '--json']));
-      if (!Array.isArray(list) || list.length > 4096) throw storageError('INVENTORY_LIMIT');
-      const matches = list.filter((entry) => entry.name === target.name);
-      if (matches.length !== 1) return matches.length === 0 ? [] : [null, null];
-      if (target.databaseId !== null && matches[0].uuid !== target.databaseId) throw storageError('RESOURCE_IDENTITY_OR_CAPACITY_MISMATCH');
-      // Info is addressed by the exact server-returned UUID; the account is
-      // pinned in the private config. Never infer an ID from a name fragment.
-      const info = json(await command(['info', matches[0].uuid, '--json']));
-      if (info.uuid !== matches[0].uuid || info.name !== target.name) throw storageError('RESOURCE_IDENTITY_OR_CAPACITY_MISMATCH');
-      return [{ id: info.uuid, name: info.name, bytes: info.database_size ?? info.file_size }];
-    },
+    inventory,
     async create(target) {
       assertTarget(target);
       assertStorageMutationApproval(plan, approval.extensions);
@@ -258,8 +259,14 @@ export async function createStorageWranglerAdapter({ plan, qualifications, direc
      * production's absence of it. Absent is a no-op; anything else refuses. */
     async retireEmptyWranglerLedger(target) {
       assertTarget(target);
-      if (plan.environment !== 'staging' || plan.phase !== 'migrate') throw storageError('WRANGLER_LEDGER_RETIREMENT_REFUSED');
+      if (plan.environment !== 'staging' || plan.phase !== 'migrate' || target.databaseId === null) throw storageError('WRANGLER_LEDGER_RETIREMENT_REFUSED');
       assertStorageMutationApproval(plan, approval.extensions);
+      // As the runner does before any write, establish identity from the
+      // server's own list and info before a query or import addresses the ID:
+      // exactly one database by the plan's name, carrying the plan's ID.
+      const identity = await inventory(target);
+      if (!Array.isArray(identity) || identity.length !== 1 || identity[0]?.id !== target.databaseId
+          || identity[0]?.name !== target.name) throw storageError('RESOURCE_IDENTITY_OR_CAPACITY_MISMATCH');
       const before = await wranglerLedger(target);
       if (!before.present) return { status: 'absent', ...before };
       if (before.rows !== 0 || before.otherObjects !== 0) throw storageError('WRANGLER_LEDGER_NOT_EMPTY');

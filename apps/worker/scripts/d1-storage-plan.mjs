@@ -48,13 +48,17 @@ const COMMIT = /^[a-f0-9]{40}$/;
 const matches = (expression, value) => typeof value === 'string' && expression.test(value);
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 export const storageError = (suffix) => operationError(`D1_STORAGE_${suffix}`);
-/** The staging edge's existing, provider-identified databases keep their
- * created names (`tibotattle-staging-edge-<role>`). That exact name is admitted
- * only for a staging migration of an existing database ID; production plans,
- * creation and every other staging name keep the operation-scoped prefix. */
+/** The staging edge's existing, provider-identified storage-ledger databases
+ * keep their created names (`tibotattle-staging-edge-<role>`). That exact name
+ * is admitted only for these roles (today: analytics; the staging edge's other
+ * D1s keep Wrangler's ledger) and only for a staging migration of an existing
+ * database ID. Production plans, creation, every other role and every other
+ * staging name keep the operation-scoped prefix. */
+export const D1_STORAGE_STAGING_EDGE_ROLES = Object.freeze(['analytics']);
 export const stagingEdgeStorageDatabaseName = (role) => `tibotattle-staging-edge-${role}`;
 const admittedTargetName = (plan, target) => target.name.startsWith(`tibotattle-${plan.environment}-${target.role}-`)
   || (plan.environment === 'staging' && plan.phase === 'migrate' && target.databaseId !== null
+    && D1_STORAGE_STAGING_EDGE_ROLES.includes(target.role)
     && target.name === stagingEdgeStorageDatabaseName(target.role));
 export const storageSha256 = (value) => createHash('sha256').update(value).digest('hex');
 export function exactKeys(value, keys) {

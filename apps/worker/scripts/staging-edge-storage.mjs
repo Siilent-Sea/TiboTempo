@@ -237,7 +237,10 @@ export function createStagingEdgeStorageLock({ operationDirectory }) {
  * A fresh execution first reads, read-only, whether a Wrangler ledger is
  * present and refuses before any journal or lock: the runner would refuse it
  * anyway (its schema fingerprint no longer matches the empty qualified start),
- * but only after taking the lock the retirement needs.
+ * but only after taking the lock the retirement needs. That read uses a new
+ * `<operation>-preflight` directory; an existing one refuses
+ * (STAGING_EDGE_STORAGE_PREFLIGHT_DIRECTORY_EXISTS), so a rerun after a refused
+ * preflight takes a new --operation.
  */
 export async function runStagingEdgeStorageMigration({
   plan, workerRoot, operationDirectory, cliPath, execute = false, confirmation, approvedPlanSha256, resume = false,
@@ -248,9 +251,17 @@ export async function runStagingEdgeStorageMigration({
     if (confirmation !== D1_STORAGE_CONFIRMATION || approvedPlanSha256 !== identityDigest(staged)) {
       throw storageError("EXECUTE_NOT_APPROVED");
     }
+    // The preflight's transport directory is new on every fresh execution, like
+    // the operation directory itself: after a refused or failed preflight,
+    // rerun with a new --operation (no journal or lock was written).
     const directory = `${resolve(operationDirectory)}-preflight`;
     await privateParent(directory);
-    await mkdir(directory, { mode: 0o700 });
+    try {
+      await mkdir(directory, { mode: 0o700 });
+    } catch (error) {
+      if (error?.code === "EEXIST") fail("PREFLIGHT_DIRECTORY_EXISTS");
+      throw error;
+    }
     const { adapter } = await stagingAdapter({ plan: staged, workerRoot, directory, cliPath, allowExpired: false,
       adapterFactory });
     for (const target of staged.targets) {

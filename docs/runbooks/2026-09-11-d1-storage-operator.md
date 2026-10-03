@@ -64,9 +64,10 @@ reviewed source commits, operation UUID, expiry, phase and target set. Its maxim
 growth budget. Creation can use a null ID only for the exact operation-specific
 new name. Migration requires the ID returned by the provider; names alone never
 authorize an existing database. One exception keeps a created name: a staging
-`migrate` plan may target `tibotattle-staging-edge-<role>` by its existing ID
-(the staging edge's analytics D1). Production plans, creation and every other
-staging name keep the operation-scoped prefix. The staging edge drives this
+`migrate` plan may target `tibotattle-staging-edge-analytics` by its existing
+ID (the staging edge's analytics D1, its only storage-ledger D1). Production
+plans, creation, the other roles and every other staging name keep the
+operation-scoped prefix. The staging edge drives this
 plan through its own subcommands, with a local staging lock in place of the
 shared production lock ([edge-mode runbook](production-edge-modes.md), section
 11, "Analytics: the storage runner").
