@@ -588,7 +588,15 @@ test("render takes deploy's isolation inputs and refuses what deploy refuses bef
   assert.equal(dry.output.productionIsolation.productionPlan, false);
   const out = join(directory, "rendered");
   assert.equal(render(["--inputs", inputs.path, ...isolation(), "--write", "--output-directory", out]).status, 0);
-  assert.ok((await readdir(out)).includes("migrations-analytics.wrangler.json"));
+  const written = await readdir(out);
+  assert.ok(written.includes("migrations-ingestion.wrangler.json"));
+  // Analytics takes production's storage ledger: no Wrangler migration config, and a storage-runner command.
+  assert.equal(written.includes("migrations-analytics.wrangler.json"), false);
+  const analyticsMigration = dry.output.migrations.find((entry) => entry.role === "analytics");
+  assert.equal(analyticsMigration.ledger, "d1_storage_migrations");
+  assert.deepEqual(analyticsMigration.command.slice(0, 5), ["npm", "run", "staging-edge", "--", "storage-apply"]);
+  assert.ok(dry.output.migrations.filter((entry) => entry.command[0] === "wrangler").every((entry) => entry.ledger === "d1_migrations"
+    && entry.role !== "analytics"));
   // Without the isolation inputs render does not run.
   assert.equal(runDriver(["render", "--inputs", inputs.path]).status, 2);
   assert.equal(runDriver(["render", "--inputs", inputs.path, ...isolation().slice(0, 5)]).status, 2);

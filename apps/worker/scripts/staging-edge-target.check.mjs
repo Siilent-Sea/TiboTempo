@@ -164,7 +164,12 @@ test("the example inputs render a complete staging target with no placeholder le
   assert.ok(isAbsolute(rendered.standIn.main) && existsSync(rendered.standIn.main));
   assert.equal(rendered.standIn.d1_databases.length, 1);
   assert.deepEqual(rendered.standIn.triggers.crons, [RAW_INPUTS.standInCron]);
-  assert.deepEqual(rendered.migrationConfigs.map((entry) => entry.binding), STAGING_EDGE_D1_ROLES.map((role) => role.binding));
+  // Wrangler configs for the Wrangler-ledger roles only; analytics is a storage-runner target.
+  assert.deepEqual(rendered.migrationConfigs.map((entry) => entry.binding),
+    ["USAGE_MONITOR_DB", "DELETION_LEDGER", "STORAGE_ANALYTICS_CATCHUP_CONTROL_DB", "RELEASE_GUARD_DB"]);
+  assert.deepEqual(rendered.storageTargets, [{ role: "analytics", storageRole: "analytics", binding: "ANALYTICS_DB",
+    databaseName: RAW_INPUTS.d1.analytics.name, ledger: "d1_storage_migrations" }]);
+  assert.equal(JSON.stringify(rendered).includes("analytics-migrations"), false);
   for (const entry of rendered.migrationConfigs) {
     const [database] = entry.config.d1_databases;
     assert.ok(isAbsolute(database.migrations_dir) && existsSync(database.migrations_dir), entry.role);

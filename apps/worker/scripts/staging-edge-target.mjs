@@ -55,17 +55,62 @@ export const STAGING_EDGE_REFUSED_WORKER_NAMES = Object.freeze([
 export const STAGING_EDGE_GENESIS_VERSION_ID = "00000000-0000-4000-8000-000000000000";
 const GENESIS_NAMESPACE_ID = "staging-edge-genesis-namespace";
 
-/** D1 roles: input key, binding, migrations directory (relative to apps/worker). */
+/** The two migration ledgers a staging D1 can carry: Wrangler's and the d1-storage runner's. */
+export const STAGING_EDGE_WRANGLER_LEDGER = "d1_migrations";
+export const STAGING_EDGE_STORAGE_LEDGER = "d1_storage_migrations";
+
+/**
+ * D1 roles: input key, binding, migrations directory (relative to apps/worker)
+ * and the ledger that applies them.
+ *
+ * Analytics takes production's ledger: production's analytics D1 was built by
+ * the d1-storage runner and records `d1_storage_migrations` (no
+ * `d1_migrations`), and Wrangler's `migrations apply --remote` cannot apply its
+ * triggers (its statement splitter ends a trigger at a `CASE ... END;`). Its
+ * storage role is `analytics`, the runner's qualified analytics directory.
+ *
+ * The other roles keep Wrangler's ledger. Ingestion is deliberate: production's
+ * ingestion ledger is the typed restore base (`ingestion-restore-base-v1`, 13
+ * storage rows), a schema the JSON-topology staging Worker (D-S7) cannot run;
+ * staging ingestion carries the `migrations/` chain the JSON Worker needs and
+ * makes no ledger-parity claim. The release-guard gate reads Wrangler's ledger
+ * (`determinePendingD1Migrations`), and production's deletion ledger and
+ * catch-up control D1 are not storage-runner databases.
+ */
 export const STAGING_EDGE_D1_ROLES = Object.freeze([
-  Object.freeze({ key: "ingestion", binding: "USAGE_MONITOR_DB", migrationsDir: "migrations", fenceLabel: "ingestion" }),
-  Object.freeze({ key: "analytics", binding: "ANALYTICS_DB", migrationsDir: "analytics-migrations", fenceLabel: "analytics" }),
+  Object.freeze({ key: "ingestion", binding: "USAGE_MONITOR_DB", migrationsDir: "migrations", fenceLabel: "ingestion",
+    ledger: STAGING_EDGE_WRANGLER_LEDGER, storageRole: null }),
+  Object.freeze({ key: "analytics", binding: "ANALYTICS_DB", migrationsDir: "analytics-migrations", fenceLabel: "analytics",
+    ledger: STAGING_EDGE_STORAGE_LEDGER, storageRole: "analytics" }),
   Object.freeze({ key: "deletionLedger", binding: "DELETION_LEDGER", migrationsDir: "deletion-ledger-migrations",
-    fenceLabel: "deletion-ledger" }),
+    fenceLabel: "deletion-ledger", ledger: STAGING_EDGE_WRANGLER_LEDGER, storageRole: null }),
   Object.freeze({ key: "catchupControl", binding: "STORAGE_ANALYTICS_CATCHUP_CONTROL_DB",
-    migrationsDir: "ops/staging-edge/catchup-standin/migrations", fenceLabel: "catchup-control" }),
+    migrationsDir: "ops/staging-edge/catchup-standin/migrations", fenceLabel: "catchup-control",
+    ledger: STAGING_EDGE_WRANGLER_LEDGER, storageRole: null }),
   Object.freeze({ key: "releaseGuard", binding: EDGE_MODE_RELEASE_GUARD_BINDING,
-    migrationsDir: EDGE_MODE_RELEASE_GUARD_MIGRATIONS_DIR, fenceLabel: null }),
+    migrationsDir: EDGE_MODE_RELEASE_GUARD_MIGRATIONS_DIR, fenceLabel: null,
+    ledger: STAGING_EDGE_WRANGLER_LEDGER, storageRole: null }),
 ]);
+
+/** The input key of a role, from its key or its hyphenated file form (`deletion-ledger`). */
+function stagingEdgeRole(name) {
+  const role = STAGING_EDGE_D1_ROLES.find((entry) => entry.key === name
+    || entry.key.replace(/[A-Z]/gu, (letter) => `-${letter.toLowerCase()}`) === name);
+  return role ?? fail("D1_ROLE_UNKNOWN");
+}
+
+/**
+ * The only tool that may apply a role's migrations. Wrangler is refused for a
+ * storage-ledger role (analytics), and the storage runner for the others, so
+ * no rendered command or config can write the wrong ledger.
+ */
+export function stagingEdgeMigrationTool(roleName, tool) {
+  const role = stagingEdgeRole(roleName);
+  if (tool === "wrangler" && role.ledger === STAGING_EDGE_STORAGE_LEDGER) fail("MIGRATION_REQUIRES_STORAGE_RUNNER");
+  if (tool === "storage" && role.ledger !== STAGING_EDGE_STORAGE_LEDGER) fail("MIGRATION_REQUIRES_WRANGLER");
+  if (tool !== "wrangler" && tool !== "storage") fail("MIGRATION_TOOL_INVALID");
+  return role;
+}
 
 const HEX32 = /^[0-9a-f]{32}$/u;
 const HEX64 = /^[0-9a-f]{64}$/u;
@@ -482,7 +527,8 @@ function absoluteMigrationConfig({ inputs, role, workerDirectory }) {
 /**
  * Render the committed template with the private inputs: the staging edge
  * config the typed render rebuilds (env.production holds the staging Worker),
- * the stand-in Worker config and one migration config per D1. Paths a Wrangler
+ * the stand-in Worker config, one Wrangler migration config per Wrangler-ledger
+ * D1 and one storage-runner target per storage-ledger D1. Paths a Wrangler
  * config outside the repository needs (the stand-in's main and every
  * migrations_dir) are made absolute; the edge config keeps its repository-
  * relative main and assets, which the candidate writer resolves.
@@ -523,13 +569,25 @@ export function renderStagingEdgeTemplate({ template, inputs, workerDirectory = 
   }
   standIn.main = join(workerDirectory, standIn.main);
   for (const database of standIn.d1_databases) database.migrations_dir = join(workerDirectory, database.migrations_dir);
-  const migrationConfigs = STAGING_EDGE_D1_ROLES.map((role) => Object.freeze({
-    role: role.key,
-    binding: role.binding,
-    databaseName: target.d1[role.key].name,
-    config: absoluteMigrationConfig({ inputs: target, role, workerDirectory }),
-  }));
-  return Object.freeze({ inputs: target, edgeTracked, standIn, migrationConfigs: Object.freeze(migrationConfigs) });
+  // A Wrangler migration config (with a migrations_dir) exists only for a
+  // Wrangler-ledger role; a storage-ledger role gets a runner target instead.
+  const migrationConfigs = STAGING_EDGE_D1_ROLES.filter((role) => role.ledger === STAGING_EDGE_WRANGLER_LEDGER)
+    .map((role) => Object.freeze({
+      role: stagingEdgeMigrationTool(role.key, "wrangler").key,
+      binding: role.binding,
+      databaseName: target.d1[role.key].name,
+      config: absoluteMigrationConfig({ inputs: target, role, workerDirectory }),
+    }));
+  const storageTargets = STAGING_EDGE_D1_ROLES.filter((role) => role.ledger === STAGING_EDGE_STORAGE_LEDGER)
+    .map((role) => Object.freeze({
+      role: stagingEdgeMigrationTool(role.key, "storage").key,
+      storageRole: role.storageRole,
+      binding: role.binding,
+      databaseName: target.d1[role.key].name,
+      ledger: role.ledger,
+    }));
+  return Object.freeze({ inputs: target, edgeTracked, standIn, migrationConfigs: Object.freeze(migrationConfigs),
+    storageTargets: Object.freeze(storageTargets) });
 }
 
 function rawInventory(snapshotLike) {

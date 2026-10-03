@@ -302,7 +302,10 @@ staging-edge driver (`npm run staging-edge`, STG-DRV) and runs its offline
 rehearsal dry run. Every staging-edge subcommand is a dry run unless given
 `--execute`. Render and deploy take the same production isolation inputs,
 including the production EP-8 fence plan, and refuse any production Worker,
-hostname, D1, bucket, rate-limit namespace or origin value. The committed template, example inputs and stand-in
+hostname, D1, bucket, rate-limit namespace or origin value. The staging
+analytics D1 takes production's `d1_storage_migrations` ledger through the
+`storage-*` subcommands (the d1-storage runner); render never gives it a
+Wrangler migration config. The committed template, example inputs and stand-in
 cron Worker live in `ops/staging-edge/`. These scripts need a Node.js release
 that strips TypeScript types by default. The
 [production edge modes runbook](../../docs/runbooks/production-edge-modes.md)

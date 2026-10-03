@@ -48,6 +48,14 @@ const COMMIT = /^[a-f0-9]{40}$/;
 const matches = (expression, value) => typeof value === 'string' && expression.test(value);
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 export const storageError = (suffix) => operationError(`D1_STORAGE_${suffix}`);
+/** The staging edge's existing, provider-identified databases keep their
+ * created names (`tibotattle-staging-edge-<role>`). That exact name is admitted
+ * only for a staging migration of an existing database ID; production plans,
+ * creation and every other staging name keep the operation-scoped prefix. */
+export const stagingEdgeStorageDatabaseName = (role) => `tibotattle-staging-edge-${role}`;
+const admittedTargetName = (plan, target) => target.name.startsWith(`tibotattle-${plan.environment}-${target.role}-`)
+  || (plan.environment === 'staging' && plan.phase === 'migrate' && target.databaseId !== null
+    && target.name === stagingEdgeStorageDatabaseName(target.role));
 export const storageSha256 = (value) => createHash('sha256').update(value).digest('hex');
 export function exactKeys(value, keys) {
   if (!value || typeof value !== 'object' || Array.isArray(value)
@@ -74,7 +82,7 @@ export function validateStoragePlan(plan, { now = Date.now(), allowExpired = fal
     exactKeys(target, ['role', 'name', 'binding', 'databaseId', 'qualificationSha256', 'migrationGrowthBudgetBytes']);
     if (!Object.hasOwn(D1_STORAGE_SCHEMA_DIRECTORIES, target.role)
         || typeof target.name !== 'string' || !/^[a-z][a-z0-9-]{2,95}$/.test(target.name)
-        || !target.name.startsWith(`tibotattle-${plan.environment}-${target.role}-`)
+        || !admittedTargetName(plan, target)
         || !matches(/^[A-Z][A-Z0-9_]{0,63}$/, target.binding)
         || !(target.databaseId === null ? plan.phase === 'create' : matches(UUID, target.databaseId))
         || (plan.phase === 'create' && target.databaseId === null && !target.name.endsWith(`-${plan.operationId}`))
