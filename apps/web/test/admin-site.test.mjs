@@ -2216,6 +2216,63 @@ test("database checks remain independent, label stale data and recover", async (
   }, {}, () => reply());
 });
 
+test("round 12: the Google Cloud origin's v0.2 health shows the removed ledger, and v0.6 an unavailable history", async () => {
+  const overview = await fixture("admin-overview-valid.json");
+  overview.schemaVersion = "admin-overview-v0.6";
+  overview.service.telemetryStorageMode = "typed";
+  overview.snapshots = [];
+  overview.pendingHistoricalRebuilds = null;
+  overview.pendingHistoricalRebuildsBounded = null;
+  overview.historicalPublication = { status: "unavailable" };
+  overview.deletionLedger = { status: "unavailable" };
+  overview.counts.contributions.synthetic = { status: "unavailable" };
+  const health = await fixture("admin-database-health-valid.json");
+  health.schemaVersion = "admin-database-health-v0.2";
+  health.databases[1] = { role: "deletion_ledger", status: "not_applicable", responseMs: null, databaseBytes: null };
+  await withAdminPage(async path => path === ADMIN_READ_PATHS[0] ? response(overview) : unavailableResponse(),
+    async documentRef => {
+      const status = documentRef.byId.get("database-health-status");
+      await waitFor(() => status.textContent === "All required API databases readable");
+      assert.deepEqual(tableTexts(documentRef, "database-health-rows")[1],
+        ["Deletion ledger", "Removed (append-only)", "Not applicable", "Not applicable"]);
+      await waitFor(() => /Historical model publication/u.test(allText(documentRef.byId.get("lifecycle-status"))));
+      const lifecycle = allText(documentRef.byId.get("lifecycle-status"));
+      assert.match(lifecycle, /unavailable on this host/u);
+      assert.doesNotMatch(lifecycle, /Historical model days/u, "no invented count");
+      assert.ok(documentRef.byId.get("counts").children.length > 0, "the rest of the overview renders");
+    }, {}, () => response(health));
+});
+
+test("round 12: the edge Worker's v0.5 overview and v0.1 health still render the measured ledger and history", async () => {
+  const overview = await fixture("admin-overview-valid.json");
+  assert.equal(overview.schemaVersion, "admin-overview-v0.5");
+  overview.service.telemetryStorageMode = "typed";
+  overview.snapshots = [];
+  overview.pendingHistoricalRebuilds = null;
+  overview.pendingHistoricalRebuildsBounded = null;
+  overview.historicalPublication = {
+    publishedDays: 69,
+    publishedDaysBounded: false,
+    latestEvidenceDay: "2026-08-16",
+    latestComputedAt: "2026-08-17T11:55:00.000Z",
+    previewState: "current",
+    previewGeneratedAt: "2026-08-17T11:56:00.000Z",
+  };
+  const health = await fixture("admin-database-health-valid.json");
+  assert.equal(health.schemaVersion, "admin-database-health-v0.1");
+  await withAdminPage(async path => path === ADMIN_READ_PATHS[0] ? response(overview) : unavailableResponse(),
+    async documentRef => {
+      const status = documentRef.byId.get("database-health-status");
+      await waitFor(() => status.textContent === "All required API databases readable");
+      assert.deepEqual(tableTexts(documentRef, "database-health-rows")[1],
+        ["Deletion ledger", "Readable", "5 ms", "1 MiB"]);
+      await waitFor(() => /Historical model days/u.test(allText(documentRef.byId.get("lifecycle-status"))));
+      assert.deepEqual(statusTexts(documentRef, "lifecycle-status")
+        .filter(([label]) => /^Historical model/u.test(label)), [["Historical model days: ", "69"]]);
+      assert.doesNotMatch(allText(documentRef.byId.get("lifecycle-status")), /unavailable on this host/u);
+    }, {}, () => response(health));
+});
+
 test("database failures reach attention and older Workers show unavailable without losing overview", async () => {
   const overview = await fixture("admin-overview-valid.json");
   const degraded = await fixture("admin-database-health-valid.json");

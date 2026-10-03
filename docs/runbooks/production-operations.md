@@ -247,6 +247,11 @@ The **Database health** section independently calls owner-only
 parameters). It performs one constant `SELECT 1` per API-bound D1 role: primary
 service/telemetry, deletion ledger, and the separate analytics database in typed
 storage mode. JSON mode explicitly marks separate analytics as not applicable.
+The console also reads the Google Cloud origin's `admin-database-health-v0.2`,
+whose removed deletion ledger is always not applicable and shows as "Removed
+(append-only)", and its `admin-overview-v0.6`, whose historical publication may
+be the closed `{"status":"unavailable"}` and shows as unavailable on this host,
+never as a count. The Worker keeps serving v0.1 and v0.5 until the switch.
 Other Workers' databases, including the catchup control journal, are outside this
 probe's coverage. The page is explicit that this is not an account-wide database
 inventory; retained recovery copies, staging databases, R2 and Durable Objects
