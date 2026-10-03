@@ -34,6 +34,8 @@ export function exampleModelSpeeds(period='all', speedMode='standard') {
   const latency=[1.4,2.1,1.1,3.8,1.7,.9,1.6,2.3,4.9,2.6,1.3,1.8,1.2,.8,2.7,1.9,3.4,1.5,2.2,1.1,1.8,3.1,2.4,1.2,4.2,1.7,.9,1.4,2.8,1.6];
   if (!['standard','fast'].includes(speedMode)) throw new RangeError('Unsupported speed mode');
   return {schemaVersion:5,method:5,speedMode,excludedUnknownTurns:0,status:'ready',collecting:false,stale:false,updatedAt:new Date(end+86400000-1).toISOString(),period,interval:'day',start,end,historyProgress:null,
+    // The public page's pinned comparison. GPT-6.1 Sol is left out: the public
+    // page names it only once the served catalog adds it (owner rounds 5 and 11).
     models:speedMode==='fast'?[]:[
       ['gpt-6-astra','Astra'],['gpt-6-sol','GPT-6 Sol'],['gpt-6-luna','GPT-6 Luna'],
       ['gpt-5.6-terra','Terra'],['gpt-5.6-sol','Sol'],['gpt-5.6-luna','Luna'],
