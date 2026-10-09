@@ -1,6 +1,9 @@
 import { spawnSync } from "node:child_process";
+import { constants } from "node:fs";
+import { buildPublicReleaseSite, verifyPublishedInstallerRemote } from "./build-public-release-site.js";
 import { createHash } from "node:crypto";
-import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { readPublishedElectronSiteRelease } from "./lib/electron-public-site.mjs";
+import { lstat, mkdir, mkdtemp, open, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -624,6 +627,7 @@ export function inspectWebReleaseScope({
   baseCommit: baseRef,
   sourceCommit: sourceRef = "HEAD",
   git = runGit,
+  installerOnly = false,
 }) {
   const root = resolve(repositoryRoot);
   ensureCleanCandidate(root, git);
@@ -644,8 +648,12 @@ export function inspectWebReleaseScope({
     root,
     ["diff", "--name-status", "-z", `${baseCommit}..${sourceCommit}`],
   ));
-  if (changes.length === 0) {
+  if (changes.length === 0 && !installerOnly) {
     throw new Error("Web-only release candidate has no committed changes.");
+  }
+  if (installerOnly && changes.some(change => change.status !== "M"
+      || !INSTALLER_ONLY_CONTROL_PATHS.has(change.path))) {
+    throw new Error("Installer-only release changed source outside its release controls.");
   }
   const unsupported = changes.find((change) =>
     !isAllowedWebReleasePath(change.path)
@@ -736,6 +744,216 @@ function validSourceProvenance(value) {
     && /^[a-f0-9]{64}$/u.test(value.sha256);
 }
 
+// Installer-only admission preserves the entire tracked generator dependency
+// closure, not only its entrypoint. The four controls below are not imported by
+// the generator; every other tracked blob and mode remains bound to the base.
+const INSTALLER_ONLY_CONTROL_PATHS = new Set([
+  "scripts/web-release-lane.js", "scripts/prepare-web-release.js",
+  "test/web-release-lane.test.js", "docs/runbooks/2026-08-17-web-only-release.md",
+]);
+const INSTALLER_ONLY_INPUT_KEYS = ["previousReceipt", "previousSiteManifest",
+  "previousInstallerManifest", "candidateInstallerManifest"];
+const INSTALLER_ONLY_HTML_PATHS = new Set(["index.html", "community.html", "404.html", "docs.html"]);
+
+function exactKeys(value, keys) {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
+}
+
+async function pinnedBytes(spec, maximumBytes = 512 * 1024) {
+  if (!exactKeys(spec, ["path", "sha256"]) || !isAbsolute(spec.path ?? "")
+      || !/^[a-f0-9]{64}$/u.test(spec.sha256 ?? "")) {
+    throw new Error("Installer-only input requires an absolute path and exact SHA-256.");
+  }
+  const before = await regularFile(spec.path, "Installer-only input");
+  if (before.nlink !== 1 || before.size < 1 || before.size > maximumBytes) {
+    throw new Error("Installer-only input has unsupported links or size.");
+  }
+  const handle = await open(spec.path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  let bytes;
+  try {
+    const opened = await handle.stat();
+    if (opened.ino !== before.ino || opened.dev !== before.dev) throw new Error("Installer-only input changed.");
+    const chunks = []; let length = 0;
+    for await (const chunk of handle.createReadStream({ autoClose: false })) {
+      length += chunk.length;
+      if (length > before.size) throw new Error("Installer-only input grew.");
+      chunks.push(chunk);
+    }
+    bytes = Buffer.concat(chunks);
+    const after = await handle.stat(); const named = await lstat(spec.path);
+    if (named.ino !== before.ino || named.dev !== before.dev || named.isSymbolicLink()
+        || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs
+        || bytes.length !== before.size || sha256(bytes) !== spec.sha256) {
+      throw new Error("Installer-only input does not match its pinned bytes.");
+    }
+  } finally { await handle.close(); }
+  return bytes;
+}
+
+export async function readInstallerOnlyWebProof(path, digest) {
+  const value = JSON.parse((await pinnedBytes({ path, sha256: digest })).toString("utf8"));
+  if (!exactKeys(value, INSTALLER_ONLY_INPUT_KEYS)) throw new Error("Installer-only proof has unsupported fields.");
+  return value;
+}
+
+async function boundSiteBytes(directory, manifest) {
+  if (!Array.isArray(manifest.files) || manifest.files.length < 1 || manifest.files.length > 500) {
+    throw new Error("Installer-only site file set is invalid.");
+  }
+  const result = new Map();
+  for (const file of manifest.files) {
+    if (!exactKeys(file, ["path", "bytes", "sha256"]) || !safeRelativePath(file.path)
+        || result.has(file.path) || !Number.isSafeInteger(file.bytes) || file.bytes < 1
+        || file.bytes > 16 * 1024 * 1024) throw new Error("Installer-only site file is invalid.");
+    const bytes = await pinnedBytes({ path: resolve(directory, file.path), sha256: file.sha256 }, 16 * 1024 * 1024);
+    if (bytes.length !== file.bytes) throw new Error("Installer-only site byte count differs.");
+    result.set(file.path, bytes);
+  }
+  // The directory must contain precisely the listed assets and its manifest.
+  const { readdir } = await import("node:fs/promises");
+  const actual = [];
+  async function visit(path, prefix = "") {
+    for (const entry of await readdir(path, { withFileTypes: true })) {
+      const name = `${prefix}${entry.name}`;
+      if (entry.isDirectory()) await visit(join(path, entry.name), `${name}/`);
+      else if (entry.isFile()) actual.push(name);
+      else throw new Error("Installer-only site contains a non-regular entry.");
+    }
+  }
+  await visit(directory);
+  if (JSON.stringify(actual.sort()) !== JSON.stringify([...result.keys(), "release-site-manifest.json"].sort())) {
+    throw new Error("Installer-only site contains an unexpected file set.");
+  }
+  return result;
+}
+
+export async function preflightInstallerOnlyWebProof({ repositoryRoot, scope, proof, git = runGit }) {
+  const actualScope = inspectWebReleaseScope({ repositoryRoot, baseCommit: scope.baseCommit, installerOnly: true, git });
+  if (scope.sourceCommit !== actualScope.sourceCommit || scope.sha256 !== actualScope.sha256
+      || JSON.stringify(scope.changes) !== JSON.stringify(actualScope.changes)) {
+    throw new Error("Installer-only scope does not match the committed candidate.");
+  }
+  const proofKeys = Object.keys(proof ?? {}).filter(key => key !== "generatorInputsSha256");
+  if (!exactKeys(Object.fromEntries(proofKeys.map(key => [key, proof[key]])), INSTALLER_ONLY_INPUT_KEYS)
+      || (Object.hasOwn(proof, "generatorInputsSha256") && !/^[a-f0-9]{64}$/u.test(proof.generatorInputsSha256))) {
+    throw new Error("Installer-only proof has unsupported fields.");
+  }
+  if (scope.changes.some(change => change.status !== "M" || !INSTALLER_ONLY_CONTROL_PATHS.has(change.path))) {
+    throw new Error("Installer-only release changed source outside its release controls.");
+  }
+  const trackedInputs = commit => git(repositoryRoot, ["ls-tree", "-r", commit]).split("\n")
+    .filter(row => row && !INSTALLER_ONLY_CONTROL_PATHS.has(row.split("\t")[1])).join("\n");
+  const inputs = trackedInputs(scope.baseCommit);
+  if (inputs !== trackedInputs(scope.sourceCommit)) throw new Error("Installer-only generator input closure changed.");
+  const generatorInputsSha256 = sha256(inputs);
+  if (proof.generatorInputsSha256 !== undefined && proof.generatorInputsSha256 !== generatorInputsSha256) {
+    throw new Error("Installer-only generator input pin differs.");
+  }
+  const raw = {};
+  for (const key of INSTALLER_ONLY_INPUT_KEYS) raw[key] = await pinnedBytes(proof[key]);
+  const prior = JSON.parse(raw.previousReceipt.toString("utf8"));
+  const previous = JSON.parse(raw.previousSiteManifest.toString("utf8"));
+  if (prior.schemaVersion !== WEB_RELEASE_RECEIPT_SCHEMA || !["web-only", "installer-only"].includes(prior.kind)
+      || prior.sourceCommit !== scope.baseCommit || !PUBLIC_RELEASE_SOURCE_COMMIT_PATTERN.test(prior.baseCommit ?? "")
+      || !Array.isArray(prior.sourceDiff?.changes) || !/^[a-f0-9]{64}$/u.test(prior.sourceDiff?.sha256 ?? "")
+      || prior.site?.manifestPath !== WEB_RELEASE_MANIFEST_PATH
+      || prior.site?.manifestSha256 !== proof.previousSiteManifest.sha256
+      || JSON.stringify(prior.site.source) !== JSON.stringify(previous.source)) {
+    throw new Error("Installer-only predecessor receipt does not match the deployed base and site.");
+  }
+  if (!validSourceProvenance(previous.source)
+      || previous.electronRelease?.publishedInstallersVerified !== true
+      || JSON.stringify(previous.electronRelease.verificationScope) !== '["pinned-release-manifest","published-installer-bytes"]') {
+    throw new Error("Installer-only predecessor lacks verified published installer evidence.");
+  }
+  const priorScope = inspectWebReleaseScope({ repositoryRoot, baseCommit: prior.baseCommit,
+    sourceCommit: prior.sourceCommit, installerOnly: prior.kind === "installer-only", git });
+  if (priorScope.sha256 !== prior.sourceDiff.sha256
+      || JSON.stringify(priorScope.changes) !== JSON.stringify(prior.sourceDiff.changes)) {
+    throw new Error("Installer-only predecessor receipt does not match its committed source diff.");
+  }
+  await boundSiteBytes(dirname(proof.previousSiteManifest.path), previous);
+  return { raw, previous, generatorInputsSha256 };
+}
+
+export async function verifyInstallerOnlyWebProof({ repositoryRoot, scope, proof, site, git = runGit }) {
+  const { raw, previous, generatorInputsSha256 } = await preflightInstallerOnlyWebProof({ repositoryRoot, scope, proof, git });
+  const candidate = site.manifest;
+  for (const manifest of [previous, candidate]) {
+    if (!exactKeys(manifest, ["schemaVersion", "electronRelease", "source", "site", "files"])
+        || manifest.schemaVersion !== PUBLIC_RELEASE_MANIFEST_SCHEMA
+        || manifest.electronRelease?.publishedInstallersVerified !== true
+        || JSON.stringify(manifest.electronRelease.verificationScope) !== '["pinned-release-manifest","published-installer-bytes"]') {
+      throw new Error("Installer-only release requires verified published installer evidence.");
+    }
+  }
+  if (JSON.stringify(candidate.source) !== JSON.stringify(previous.source)
+      || JSON.stringify(candidate.site) !== JSON.stringify(previous.site)) {
+    throw new Error("Installer-only public source, site or social metadata changed.");
+  }
+  const version = value => /^\d+\.\d+\.\d+$/u.test(value ?? "") ? value.split(".").map(Number) : null;
+  const oldVersion = version(previous.electronRelease.version), newVersion = version(candidate.electronRelease.version);
+  const newer = oldVersion && newVersion && newVersion.some((value, index) =>
+    value > oldVersion[index] && newVersion.slice(0, index).every((prefix, offset) => prefix === oldVersion[offset]));
+  if (!newer || !/^\d{10}$/u.test(previous.electronRelease.buildNumber ?? "")
+      || !/^\d{10}$/u.test(candidate.electronRelease.buildNumber ?? "")
+      || candidate.electronRelease.buildNumber <= previous.electronRelease.buildNumber) {
+    throw new Error("Installer-only release requires a newer version and build.");
+  }
+  const previousDirectory = dirname(proof.previousSiteManifest.path);
+  const currentDirectory = dirname(site.manifestPath);
+  const previousFiles = await boundSiteBytes(previousDirectory, previous);
+  const currentFiles = await boundSiteBytes(currentDirectory, candidate);
+  if (JSON.stringify([...previousFiles.keys()].sort()) !== JSON.stringify([...currentFiles.keys()].sort())) {
+    throw new Error("Installer-only release changed its generated file set.");
+  }
+  const temporary = await mkdtemp(join(tmpdir(), "web-installer-proof-"));
+  try {
+    for (const [label, manifest, spec, files, original] of [
+      ["previous", previous, proof.previousInstallerManifest, previousFiles, raw.previousSiteManifest],
+      ["candidate", candidate, proof.candidateInstallerManifest, currentFiles, await readFile(site.manifestPath)],
+    ]) {
+      const output = join(temporary, label);
+      await buildPublicReleaseSite({ output, source: await realpath(join(repositoryRoot, "apps/web/public")),
+        siteUrl: manifest.site.canonicalUrl, releaseNotesUrl: manifest.site.releaseNotesUrl,
+        privacyUrl: manifest.site.privacyUrl, securityUrl: manifest.site.securityUrl, supportUrl: manifest.site.supportUrl,
+        socialImage: join(previousDirectory, manifest.site.socialPreview.path),
+        electronPublishedManifest: spec.path, electronPublishedManifestSha256: spec.sha256,
+        electronPublishedBuildNumber: manifest.electronRelease.buildNumber,
+      }, { verifyPublishedInstaller: async value => ({ bytes: value.expectedBytes, sha256: value.expectedSha256 }) });
+      // Counterfactual regeneration is deterministic comparison, never evidence
+      // of a network read. Mandatory HTTPS proof follows the comparison.
+      const rebuilt = await readFile(join(output, "release-site-manifest.json"));
+      if (!rebuilt.equals(original)) throw new Error(`Installer-only ${label} manifest differs from exact regeneration.`);
+      const rebuiltFiles = await boundSiteBytes(output, JSON.parse(rebuilt));
+      for (const [path, bytes] of files) {
+        if (!rebuiltFiles.get(path)?.equals(bytes)) throw new Error(`Installer-only ${label} asset differs from exact regeneration.`);
+      }
+    }
+    for (const [path, bytes] of previousFiles) {
+      if (!bytes.equals(currentFiles.get(path)) && !INSTALLER_ONLY_HTML_PATHS.has(path)) {
+        throw new Error("Installer-only release changed an asset outside generated download HTML.");
+      }
+    }
+  } finally { await rm(temporary, { recursive: true, force: true }); }
+  // This public boundary is also called by receipt issuance and deployment.
+  // Never accept an asserted manifest flag or the offline comparison callback
+  // as publication evidence: stream all four candidate HTTPS assets again.
+  const published = await readPublishedElectronSiteRelease({
+    manifestPath: proof.candidateInstallerManifest.path,
+    approvedManifestSha256: proof.candidateInstallerManifest.sha256,
+    buildNumber: candidate.electronRelease.buildNumber,
+    verifyPublishedInstaller: verifyPublishedInstallerRemote,
+  });
+  for (const key of ["version", "buildNumber", "publishedInstallersVerified", "verificationScope", "downloads"]) {
+    if (JSON.stringify(published[key]) !== JSON.stringify(candidate.electronRelease[key])) {
+      throw new Error("Installer-only publication bytes do not match the generated release.");
+    }
+  }
+  return { ...Object.fromEntries(INSTALLER_ONLY_INPUT_KEYS.map(key => [key, proof[key]])), generatorInputsSha256 };
+}
+
 async function releaseManifestForCandidate({ repositoryRoot }) {
   const manifestPath = expectedManifestPath(repositoryRoot);
   await regularFile(manifestPath, "Generated web-release manifest");
@@ -766,6 +984,7 @@ export async function writeWebReleaseReceipt({
   receiptPath = expectedReceiptPath(repositoryRoot),
   replace = false,
   preparedAt = new Date().toISOString(),
+  installerOnlyProof = null,
   git = runGit,
 }) {
   if (scope === null || typeof scope !== "object"
@@ -794,9 +1013,15 @@ export async function writeWebReleaseReceipt({
   const site = await releaseManifestForCandidate({
     repositoryRoot: repository,
   });
+  if (installerOnlyProof !== null && scope.sourceCommit !== resolveGitCommit(repository, "HEAD", "Installer-only candidate", git)) {
+    throw new Error("Installer-only receipt issuance requires the checked-out candidate commit.");
+  }
+  const installerOnly = installerOnlyProof === null ? null
+    : await verifyInstallerOnlyWebProof({ repositoryRoot: repository, scope, proof: installerOnlyProof, site, git });
   const receipt = {
     schemaVersion: WEB_RELEASE_RECEIPT_SCHEMA,
-    kind: "web-only",
+    kind: installerOnly === null ? "web-only" : "installer-only",
+    ...(installerOnly === null ? {} : { installerOnly }),
     preparedAt,
     baseCommit: scope.baseCommit,
     sourceCommit: scope.sourceCommit,
@@ -850,7 +1075,7 @@ export async function verifyWebReleaseReceipt({
   const target = assertReceiptPath(repository, receiptPath);
   const receipt = await readReceipt(target);
   if (receipt?.schemaVersion !== WEB_RELEASE_RECEIPT_SCHEMA
-      || receipt.kind !== "web-only"
+      || !["web-only", "installer-only"].includes(receipt.kind)
       || !PUBLIC_RELEASE_SOURCE_COMMIT_PATTERN.test(receipt.baseCommit ?? "")
       || !PUBLIC_RELEASE_SOURCE_COMMIT_PATTERN.test(receipt.sourceCommit ?? "")
       || !Array.isArray(receipt?.sourceDiff?.changes)
@@ -864,6 +1089,7 @@ export async function verifyWebReleaseReceipt({
     repositoryRoot: repository,
     baseCommit: receipt.baseCommit,
     sourceCommit: receipt.sourceCommit,
+    installerOnly: receipt.kind === "installer-only",
     git,
   });
   if (scope.sha256 !== receipt.sourceDiff.sha256
@@ -879,5 +1105,9 @@ export async function verifyWebReleaseReceipt({
       || JSON.stringify(site.manifest.source) !== JSON.stringify(receipt.site.source)) {
     throw new Error("Web-only release receipt no longer matches the generated site.");
   }
+  if (receipt.kind === "installer-only") {
+    if (!receipt.installerOnly?.generatorInputsSha256) throw new Error("Installer-only receipt is missing its proof.");
+    await verifyInstallerOnlyWebProof({ repositoryRoot: repository, scope, proof: receipt.installerOnly, site, git });
+  } else if (receipt.installerOnly !== undefined) throw new Error("Ordinary web release cannot carry installer-only proof.");
   return Object.freeze({ receipt, scope, site });
 }

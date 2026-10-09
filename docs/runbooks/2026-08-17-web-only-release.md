@@ -10,7 +10,8 @@ status: maintained
 Use this lane for a generated public-site change that must not carry a macOS
 client, Worker-runtime, migration, dependency, or configuration change. It
 reuses the already-published signed installer and does not create a client
-version bump.
+version bump. A separately published Electron client can update only the
+website download metadata through the installer-only admission below.
 
 The lane is intentionally commit-bound. `product:web-release:prepare` refuses
 a dirty candidate, requires the exact deployed source commit as its base, and
@@ -462,6 +463,82 @@ is the separate cryptographic gate.
 
 Do not pass the private-plan flags or native installer flags with this mode.
 Keep the release manifest outside the public source and generated output.
+
+### Admit an installer-only website update
+
+Use this mode only after the new stable Electron release has passed its client
+publication gates. The ordinary web-only mode still requires a nonempty source
+diff. Installer-only mode admits an unchanged public source or modifications to
+these four release controls only: `scripts/web-release-lane.js`,
+`scripts/prepare-web-release.js`, `test/web-release-lane.test.js`, and this
+runbook. It rejects additions, deletions, renames and every other tracked change,
+including package versions, locales, Worker code, configuration and generators.
+Do not manufacture a copy change to satisfy the ordinary gate.
+
+Retain the exact currently deployed receipt and its complete generated site,
+together with the old and new canonical installer manifests. Verify release
+attestations separately and take the new build number from the reviewed client
+release evidence. The predecessor receipt must use this lane's schema and kind,
+name the exact deployed base as its source, and match its actual committed diff
+and the retained site manifest. Each input is a bounded regular file with no
+symlink or hardlink. Create a private JSON proof outside the deployable output
+with exactly these four fields, replacing every placeholder with an absolute
+path and the raw file SHA-256:
+
+```json
+{
+  "previousReceipt": { "path": "/absolute/previous/web-release-receipt.json", "sha256": "<sha256>" },
+  "previousSiteManifest": { "path": "/absolute/previous/public-release-site/release-site-manifest.json", "sha256": "<sha256>" },
+  "previousInstallerManifest": { "path": "/absolute/previous/release-manifest.json", "sha256": "<sha256>" },
+  "candidateInstallerManifest": { "path": "/absolute/candidate/release-manifest.json", "sha256": "<sha256>" }
+}
+```
+
+Hash the proof itself and add these controls before the normal preparation
+command's `--` separator:
+
+```bash
+--installer-only-proof /absolute/private/installer-only-proof.json \
+--installer-only-proof-sha256 <raw-proof-sha256>
+```
+
+After the separator, select that same candidate canonical manifest and digest
+with `--electron-published-manifest`, `--electron-published-manifest-sha256`
+and the exact reviewed `--electron-published-build-number`. Keep the predecessor
+site URLs and exact social-image bytes. This mode does not accept a private
+publication plan. It does not bump tracked package or client metadata.
+
+Before the build, the guard checks the four input hashes, predecessor receipt,
+complete retained site, and tracked source closure. It pins every tracked Git
+blob and file mode except the four release controls, preserving the full
+recursive generator dependency closure. After the normal build, it regenerates
+both releases through that unchanged maintained generator with their respective
+canonical manifests. Both complete file sets, all asset bytes and both manifest
+bytes must match their regenerations exactly. The two sites must retain identical
+public source, social and site metadata. Only the generator's exact download and
+version substitutions in `index.html`, `community.html`, `404.html`, `docs.html`
+and the generated release manifest may differ; all other assets stay identical.
+The new installer version and build must both advance.
+
+Counterfactual regeneration uses an offline comparison callback and supplies no
+publication proof. The ordinary builder verifies all four new HTTPS installer
+bytes. The exported installer-only proof boundary also performs those same four
+real checks before issuing an `installer-only` receipt; receipt verification,
+typed deployment and archive verification repeat them. There is no injected
+publication verifier in that boundary. An unavailable, truncated or mismatched
+installer refuses issuance or verification, even if an offline-generated
+manifest asserts `publishedInstallersVerified: true`. Keep both canonical inputs,
+the predecessor site and receipt available at every later verification. Verify and archive an
+installer-only receipt from its exact candidate checkout. Later reuse requires
+that exact source checkout and its retained inputs; this mode does not widen
+ancestor-receipt admission. Rollback to an earlier ordinary web-only receipt
+continues through the unchanged ordinary rollback path.
+
+An offline preview remains visibly `publishedInstallersVerified: false`, cannot
+produce this receipt and cannot authorize activation. After a verified prepare,
+use the existing typed production and archive commands above with the exact
+live predecessor and origin pins. Client publication, website preparation,
+website deployment and live qualification remain separate gates.
 
 ### Reuse a retained reviewed publication plan
 
