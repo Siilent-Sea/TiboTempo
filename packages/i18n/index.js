@@ -20,6 +20,10 @@ export const LANGUAGE_OPTIONS = Object.freeze([
 ]);
 
 export const EN_US_CATALOG = Object.freeze({
+  "community.daily.publishedApiEquivalentEstimates": "Total published API-equivalent estimates",
+  "community.daily.publishedPricing.historical": "Published estimates use earlier pricing. Repricing pending.",
+  "community.daily.publishedPricing.mixed": "Some published estimates use earlier pricing. Repricing pending.",
+  "community.daily.publishedPricing.unknown": "Published estimates include an unrecognized pricing version.",
   "continuityConsent.title": "Turn boundaries and cache details",
   "continuityConsent.description": "This optional update adds turn starts, preceding compaction, same-time event order and reported cache-write lifetimes. It requires a new review and approval.",
   "continuityConsent.reviewTitle": "Review turn and cache contribution",
@@ -906,6 +910,10 @@ export const EN_US_CATALOG = Object.freeze({
 });
 
 export const ZH_HANS_CATALOG = Object.freeze({
+  "community.daily.publishedApiEquivalentEstimates": "已发布的 API 等值估算总额",
+  "community.daily.publishedPricing.historical": "已发布的估算使用较早的价格。重新定价尚待完成。",
+  "community.daily.publishedPricing.mixed": "部分已发布的估算使用较早的价格。重新定价尚待完成。",
+  "community.daily.publishedPricing.unknown": "已发布的估算包含无法识别的定价版本。",
   "continuityConsent.title": "轮次边界与缓存详情",
   "continuityConsent.description": "此可选更新新增轮次起点、此前的压缩、同一时间事件顺序和已报告的缓存写入有效期，需要重新审阅和核准。",
   "continuityConsent.reviewTitle": "审阅轮次与缓存贡献",
@@ -1792,6 +1800,10 @@ export const ZH_HANS_CATALOG = Object.freeze({
 });
 
 export const ES_CATALOG = Object.freeze({
+  "community.daily.publishedApiEquivalentEstimates": "Total de estimaciones publicadas equivalentes de API",
+  "community.daily.publishedPricing.historical": "Las estimaciones publicadas usan precios anteriores. La actualización de precios está pendiente.",
+  "community.daily.publishedPricing.mixed": "Algunas estimaciones publicadas usan precios anteriores. La actualización de precios está pendiente.",
+  "community.daily.publishedPricing.unknown": "Las estimaciones publicadas incluyen una versión de precios no reconocida.",
   "continuityConsent.title": "Límites de turnos y detalles de caché",
   "continuityConsent.description": "Esta actualización opcional añade inicios de turnos, compactación previa, orden de eventos simultáneos y duraciones de escritura de caché. Requiere una nueva revisión y aprobación.",
   "continuityConsent.reviewTitle": "Revisar contribución de turnos y caché",

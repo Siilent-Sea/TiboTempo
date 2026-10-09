@@ -115,23 +115,51 @@ function allTokens(totals) {
   ]);
 }
 
+// Presentation identities only: the API owns admission and preserves the original
+// publication. Unknown pairs must never imply current repricing.
+const PUBLISHED_SPEND_PRICING_IDENTITIES = Object.freeze({
+  historical: Object.freeze({
+    method: "server-api-price-equivalent-v0.5",
+    registry: "48119389ecbcaced58837bc24fa852c3c4a99835289b417e69f34fb0166a63b9",
+  }),
+  current: Object.freeze({
+    method: "server-api-price-equivalent-v0.6",
+    registry: "d57a7443bb43a756f1458872897dfcfcafdde0893433fc83b1036d58184de78d",
+  }),
+});
+
+function publishedSpendPricingIdentity(spend) {
+  for (const [identity, pair] of Object.entries(PUBLISHED_SPEND_PRICING_IDENTITIES)) {
+    if (spend.pricingMethodVersion === pair.method && spend.registrySha256 === pair.registry) {
+      return identity;
+    }
+  }
+  return "unknown";
+}
+
 function communityDailySpendSummary(days) {
   let knownCostUsd = 0;
   let pricedDays = 0;
   let complete = true;
+  const pricingIdentities = new Set();
   for (const day of days) {
     const spend = day.apiEquivalentSpend;
     complete &&= spend?.coverage === "complete";
     if (spend?.knownCostUsd === null || spend?.knownCostUsd === undefined) continue;
+    pricingIdentities.add(publishedSpendPricingIdentity(spend));
     knownCostUsd += spend.knownCostUsd;
     if (!Number.isFinite(knownCostUsd)) {
-      return { knownCostUsd: null, pricedDays: 0, coverage: "unavailable" };
+      return { knownCostUsd: null, pricedDays: 0, coverage: "unavailable", pricing: "unavailable" };
     }
     pricedDays += 1;
   }
   return {
     knownCostUsd: pricedDays > 0 ? knownCostUsd : null,
     pricedDays,
+    pricing: pricedDays === 0 ? "unavailable"
+      : pricingIdentities.has("historical")
+        ? pricingIdentities.size === 1 ? "historical" : "mixed"
+        : pricingIdentities.has("unknown") ? "unknown" : "current",
     coverage: pricedDays === 0 ? "unavailable" : complete ? "complete" : "partial",
   };
 }
@@ -995,12 +1023,18 @@ export function renderCommunityDailySeries({
       t("community.daily.activityThroughDetail"),
     ],
     [
-      t("community.daily.apiEquivalentSpend"),
+      t(spend.pricing === "current" || spend.pricing === "unavailable"
+        ? "community.daily.apiEquivalentSpend"
+        : "community.daily.publishedApiEquivalentEstimates"),
       spend.knownCostUsd === null ? compact(null) : usdFormatter(2).format(spend.knownCostUsd),
-      t(`community.daily.apiEquivalentSpendDetail.${spend.coverage}`, {
-        days: historyDays,
-        pricedDays: compact(spend.pricedDays),
-      }),
+      [
+        t(`community.daily.apiEquivalentSpendDetail.${spend.coverage}`, {
+          days: historyDays,
+          pricedDays: compact(spend.pricedDays),
+        }),
+        ...(["historical", "mixed", "unknown"].includes(spend.pricing)
+          ? [t(`community.daily.publishedPricing.${spend.pricing}`)] : []),
+      ].join(" "),
     ],
     [
       t("community.daily.turnsCounted"),

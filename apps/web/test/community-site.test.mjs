@@ -9,6 +9,7 @@ import {
   PublicCommunityClient,
   communityDailyWindow,
   normalizeCommunityDailySeries,
+  projectCommunityDailyPayloadForCache,
   normalizeCommunitySnapshot,
 } from "../public/community-data.js";
 import {
@@ -1732,7 +1733,8 @@ test("community spend card sums only reported equivalents and qualifies incomple
       basis: "reported_usage_event_time_api_price_equivalent_v1",
       currency: "USD", knownCostUsd, coverage: "complete", usageEvents: 120,
       fullyPricedUsageEvents: 120, partiallyPricedUsageEvents: 0, unpricedUsageEvents: 0,
-      pricingMethodVersion: "server-api-price-equivalent-v1.0", registrySha256: "a".repeat(64),
+      pricingMethodVersion: "server-api-price-equivalent-v0.6",
+      registrySha256: "d57a7443bb43a756f1458872897dfcfcafdde0893433fc83b1036d58184de78d",
       ...overrides,
     };
   }
@@ -1774,6 +1776,88 @@ test("community spend card sums only reported equivalents and qualifies incomple
     assert.equal(cards[1].children[1].textContent, value, label);
     assert.equal(cards[1].children[2].textContent, detail, label);
     assert.doesNotMatch(container.text, /Contributors that day|9,999/u, label);
+  }
+});
+
+test("published spend pricing provenance preserves original totals, dates and versions", () => {
+  const historical = {
+    basis: "reported_usage_event_time_api_price_equivalent_v1", currency: "USD",
+    knownCostUsd: 1.25, coverage: "complete", usageEvents: 120,
+    fullyPricedUsageEvents: 120, partiallyPricedUsageEvents: 0, unpricedUsageEvents: 0,
+    pricingMethodVersion: "server-api-price-equivalent-v0.5",
+    registrySha256: "48119389ecbcaced58837bc24fa852c3c4a99835289b417e69f34fb0166a63b9",
+  };
+  const current = {
+    ...historical, knownCostUsd: 2.5,
+    pricingMethodVersion: "server-api-price-equivalent-v0.6",
+    registrySha256: "d57a7443bb43a756f1458872897dfcfcafdde0893433fc83b1036d58184de78d",
+  };
+  const unknown = { ...current, registrySha256: historical.registrySha256 };
+  const unavailable = {
+    ...historical, knownCostUsd: null, coverage: "unavailable",
+    fullyPricedUsageEvents: 0, unpricedUsageEvents: 120,
+  };
+  const day = (date, spend) => publishedDailyDay(date, 2, {
+    payload: { apiEquivalentSpend: spend, allowance: allowanceBlock({ centralUsd: 9999 }) },
+  });
+  for (const [label, days, value, title, notice] of [
+    ["historical", [day("2026-08-06", historical)], "$1.25", "Total published API-equivalent estimates",
+      "Published estimates use earlier pricing. Repricing pending."],
+    ["current", [day("2026-08-06", current)], "$2.5", "Total API-equivalent spend", ""],
+    ["mixed", [day("2026-08-06", historical), day("2026-08-07", current)], "$3.75",
+      "Total published API-equivalent estimates", "Some published estimates use earlier pricing. Repricing pending."],
+    ["historical and absent", [day("2026-08-06", historical), publishedDailyDay("2026-08-07", 1)], "$1.25",
+      "Total published API-equivalent estimates", "Published estimates use earlier pricing. Repricing pending."],
+    ["unknown pair", [day("2026-08-06", unknown)], "$2.5", "Total published API-equivalent estimates",
+      "Published estimates include an unrecognized pricing version."],
+    ["historical and unknown", [day("2026-08-06", historical), day("2026-08-07", unknown)], "$3.75",
+      "Total published API-equivalent estimates", "Some published estimates use earlier pricing. Repricing pending."],
+    ["all unavailable", [day("2026-08-06", unavailable)], "—", "Total API-equivalent spend", ""],
+  ]) {
+    const payload = publishedDailySeries({ days });
+    const documentRef = fakeDocument(), container = documentRef.createElement("div");
+    renderCommunityDailySeries({ documentRef, container, payload,
+      cache: { fetchedAt: "2026-08-08T02:00:00.000Z", ageMs: 3600000 } });
+    const card = container.descendants().find(element => element.className === "snapshot-quality-grid").children[1];
+    assert.equal(card.children[0].textContent, title, label);
+    assert.equal(card.children[1].textContent, value, label);
+    assert.equal(card.children[2].textContent.endsWith(notice), true, label);
+    assert.equal(card.children[2].textContent.includes("Repricing pending."), notice.includes("Repricing pending."), label);
+    assert.match(card.children[2].textContent, /not an actual bill/u, label);
+    assert.doesNotMatch(container.text, /9,999/u, label);
+    const normalized = normalizeCommunityDailySeries(payload);
+    assert.equal(normalized.days[0].day, "2026-08-06", label);
+    assert.equal(normalized.days[0].revision, 2, label);
+    assert.equal(normalized.days[0].releasedAt, days[0].releasedAt, label);
+    assert.deepEqual(normalized.days[0].apiEquivalentSpend, days[0].payload.apiEquivalentSpend, label);
+    assert.deepEqual(payload.days, days, "rendering must never reprice or restamp the publication");
+    const cached = JSON.parse(JSON.stringify(projectCommunityDailyPayloadForCache(payload)));
+    renderCommunityDailySeries({ documentRef, container, payload: cached,
+      cache: { fetchedAt: "2026-08-08T02:00:00.000Z", ageMs: 3600000 } });
+    const restoredCard = container.descendants().find(element => element.className === "snapshot-quality-grid").children[1];
+    assert.equal(restoredCard.text, card.text, `${label}: cache reload retains the original estimate and pricing notice`);
+    const restored = normalizeCommunityDailySeries(cached).days[0];
+    assert.deepEqual(restored.apiEquivalentSpend, normalized.days[0].apiEquivalentSpend, label);
+    assert.equal(restored.releasedAt, normalized.days[0].releasedAt, label);
+    assert.equal(restored.revision, normalized.days[0].revision, label);
+  }
+  const invalid = { ...historical, fullyPricedUsageEvents: 119 };
+  const payload = publishedDailySeries({ days: [day("2026-08-06", invalid)] });
+  const documentRef = fakeDocument(), container = documentRef.createElement("div");
+  renderCommunityDailySeries({ documentRef, container, payload });
+  const card = container.descendants().find(element => element.className === "snapshot-quality-grid").children[1];
+  assert.equal(card.children[1].textContent, "—", "invalid conservation cannot become a published estimate");
+  assert.equal(card.children[2].textContent, "API-equivalent spend unavailable; not an actual bill");
+});
+
+test("published pricing notices retain their meaning in every shipped language", () => {
+  for (const locale of SUPPORTED_LOCALES) {
+    for (const identity of ["historical", "mixed", "unknown"]) {
+      const key = `community.daily.publishedPricing.${identity}`;
+      const notice = translate(key, {}, locale);
+      assert.notEqual(notice, key, `${locale}: ${identity}`);
+      assert.ok(notice.length > 0);
+    }
   }
 });
 

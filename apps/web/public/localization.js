@@ -127,6 +127,7 @@ export const WEB_MESSAGES = Object.freeze({
       || key.startsWith("performanceConsent.")
       || key.startsWith("appearance.")
       || key.startsWith("site.features.")
+      || key.startsWith("community.")
       || key.startsWith("accounting.cacheContinuity.matrix.")
       || key.startsWith("trends.")
       || key.startsWith("electron.")
