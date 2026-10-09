@@ -1,5 +1,7 @@
 import {
   ADMIN_MODEL_CONFIG,
+  SEPTEMBER29_ADMIN_MODEL_CONFIG,
+  SEPTEMBER29_ADMIN_MODEL_HISTORY_CATALOG_VERSION,
   ADMIN_MODEL_HISTORY_CATALOG_VERSION,
 } from "../../public/telemetry-shared.generated.js";
 
@@ -79,5 +81,15 @@ export function createAdminPro10AllowancePreviewPayload() {
     { planType: "plus", label: "Plus", multiplier: 10 },
   ];
   for (const day of preview.days) day.byPlanType.promax = structuredClone(day.byPlanType.pro);
+  return preview;
+}
+
+// Known live-origin catalog shape, with synthetic dollar values only.
+export function withSeptember29AdminHistory(preview) {
+  preview.models.modelConfig = SEPTEMBER29_ADMIN_MODEL_CONFIG;
+  for (const day of preview.models.days) {
+    day.catalogVersion = SEPTEMBER29_ADMIN_MODEL_HISTORY_CATALOG_VERSION;
+    day.values.push(["gpt-6.1-sol", 1234.5, 1]);
+  }
   return preview;
 }

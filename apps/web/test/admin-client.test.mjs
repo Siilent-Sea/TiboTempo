@@ -1,4 +1,4 @@
-import { createAdminAllowancePreviewPayload, createAdminPro10AllowancePreviewPayload } from "./fixtures/admin-allowance.js";
+import { createAdminAllowancePreviewPayload, createAdminPro10AllowancePreviewPayload, withSeptember29AdminHistory } from "./fixtures/admin-allowance.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -1618,4 +1618,32 @@ test("admin preview refuses crossed v0.3/v0.4 claims, plan sets, factors and man
   }
   const missingProMax = structuredClone(current); delete missingProMax.days[0].byPlanType.promax;
   assert.throws(() => projectAdminAllowancePreview(missingProMax), { code: "ADMIN_ALLOWANCE_PREVIEW_INVALID" });
+});
+
+test("both admin preview bases read the exact live 43-model catalog without relabeling or dropping values", () => {
+  for (const build of [createAdminAllowancePreviewPayload, createAdminPro10AllowancePreviewPayload]) {
+    const input = withSeptember29AdminHistory(build());
+    const result = projectAdminAllowancePreview(input);
+    assert.equal(result.schemaVersion, input.schemaVersion);
+    assert.equal(result.basis, input.basis);
+    assert.equal(result.models.modelConfig.length, 43);
+    assert.deepEqual(result.days, input.days);
+    assert.equal(result.models.days.at(-1).catalogVersion, "reviewed-model-catalog-2026-09-29.1");
+    assert.deepEqual(result.models.days.at(-1).byModel["gpt-6.1-sol"], { capacityUsd: 1234.5, participantCount: 1 });
+    for (const mutate of [
+      p => { p.models.modelConfig = p.models.modelConfig.slice(0, 42); },
+      p => { p.models.modelConfig = p.models.modelConfig.slice(1); },
+      p => { p.models.modelConfig = [...p.models.modelConfig, p.models.modelConfig[42]]; },
+      p => { p.models.modelConfig = p.models.modelConfig.map((m, i) => i === 42 ? { ...m, modelId: "unknown-model" } : m); },
+      p => { p.models.modelConfig = p.models.modelConfig.map((m, i) => i === 42 ? { ...m, allowanceTrack: "spark" } : m); },
+      p => { p.models.modelConfig = p.models.modelConfig.map((m, i) => i === 42 ? { ...m, pricingStatus: "unpriced" } : m); },
+      p => { p.models.days[0].catalogVersion = "reviewed-model-catalog-2026-10-01.1"; },
+      p => { p.models.days[0].values.push(["gpt-6.1-sol", 1234.5, 1]); },
+      p => { p.models.days[0].v1ParticipantCount = 0; },
+      p => { p.models.basis = "unknown"; },
+    ]) {
+      const invalid = structuredClone(input); mutate(invalid);
+      assert.throws(() => projectAdminAllowancePreview(invalid), { code: "ADMIN_ALLOWANCE_PREVIEW_INVALID" });
+    }
+  }
 });

@@ -1,5 +1,6 @@
 import {
   ADMIN_MODEL_CONFIG,
+  SEPTEMBER29_ADMIN_MODEL_CONFIG,
   expandAdminModelHistoryDay,
 } from "./telemetry-shared.generated.js";
 
@@ -649,9 +650,12 @@ function projectAllowanceModels(value, latestAllowedDay, modelBasis) {
       || models.gate !== ADMIN_ALLOWANCE_MODELS_GATE) {
     invalid(code);
   }
-  const modelConfig = array(models.modelConfig, code).map((entry, index) => {
+  const suppliedModels = array(models.modelConfig, code);
+  const expectedModels = suppliedModels.length === SEPTEMBER29_ADMIN_MODEL_CONFIG.length
+    ? SEPTEMBER29_ADMIN_MODEL_CONFIG : ADMIN_ALLOWANCE_PREVIEW_MODELS;
+  const modelConfig = suppliedModels.map((entry, index) => {
     const model = record(entry, code);
-    const expected = ADMIN_ALLOWANCE_PREVIEW_MODELS[index];
+    const expected = expectedModels[index];
     if (!expected
         || model.modelId !== expected.modelId
         || typeof model.label !== "string" || model.label.length === 0 || model.label.length > 80
@@ -663,7 +667,7 @@ function projectAllowanceModels(value, latestAllowedDay, modelBasis) {
     // catalog label without discarding otherwise compatible results.
     return expected;
   });
-  if (modelConfig.length !== ADMIN_ALLOWANCE_PREVIEW_MODELS.length) invalid(code);
+  if (modelConfig.length !== expectedModels.length) invalid(code);
   let previousDay = "";
   const days = boundedArray(models.days, ADMIN_ALLOWANCE_PREVIEW_DAYS, code).map((entry) => {
     const day = record(entry, code);
@@ -672,7 +676,8 @@ function projectAllowanceModels(value, latestAllowedDay, modelBasis) {
     previousDay = dayValue;
     if (day.catalogVersion === undefined) invalid(code);
     const projected = expandAdminModelHistoryDay(day);
-    if (projected === null) invalid(code);
+    if (projected === null
+        || projected.values.some(([modelId]) => !modelConfig.some(model => model.modelId === modelId))) invalid(code);
     return projected;
   });
   if (days.length > ADMIN_ALLOWANCE_PREVIEW_DAYS) invalid(code);

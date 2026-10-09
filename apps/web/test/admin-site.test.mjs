@@ -4,7 +4,7 @@ import { test } from "node:test";
 
 import { formatReportingTime } from "../public/ui-format.js";
 import { ADMIN_MODEL_CONFIG } from "../public/telemetry-shared.generated.js";
-import { createAdminAllowancePreviewPayload, createAdminPro10AllowancePreviewPayload } from "./fixtures/admin-allowance.js";
+import { createAdminAllowancePreviewPayload, createAdminPro10AllowancePreviewPayload, withSeptember29AdminHistory } from "./fixtures/admin-allowance.js";
 
 const fixture = async (name) => JSON.parse(await readFile(
   new URL(`./fixtures/${name}`, import.meta.url),
@@ -2414,4 +2414,24 @@ test("admin v0.4 leaves unavailable Pro Max evidence explicit without an invente
     assert.match(descendantNodes(card).map(node => node.textContent).join(" "), /No qualifying fits/u);
     assert.equal(allowanceNodes(documentRef, ".admin-allowance-dot").some(dot => dot.classList.contains("allowance-series-3")), false);
   });
+});
+
+test("live-shaped 43-model admin previews render both bases and keep the added model's exact value", async () => {
+  for (const [build, reference] of [[createAdminAllowancePreviewPayload, "Pro 20×"],
+    [createAdminPro10AllowancePreviewPayload, "Pro 10×"]]) {
+    await withAllowancePage(withSeptember29AdminHistory(build()), async documentRef => {
+      assert.equal(documentRef.byId.get("admin-community-basis-heading").textContent, `${reference}-equivalent allowance`);
+      selectAllowanceControl(documentRef, "admin-community-mode-controls", 'button[data-allowance-mode="models"]');
+      const cards = allowanceNodes(documentRef, ".admin-allowance-plan-summary");
+      const added = cards.find(card => card.querySelector("h3").textContent === "GPT-6.1 Sol");
+      assert.ok(added, "known live model is displayed rather than discarded");
+      assert.equal(added.querySelector(".allowance-summary-value").textContent, "$1,235");
+      const container = documentRef.byId.get("admin-community-allowance-result");
+      const legend = container.querySelector('button[data-allowance-model-focus="gpt-6.1-sol"]');
+      assert.ok(legend);
+      container.listeners.get("click")({ target: legend });
+      assert.ok(container.querySelectorAll(".admin-allowance-dot").some(dot =>
+        dot.getAttribute("aria-label").includes(`$1,235/${reference} week`)));
+    });
+  }
 });
