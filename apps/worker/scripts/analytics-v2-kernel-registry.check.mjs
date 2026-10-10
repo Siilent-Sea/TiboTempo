@@ -86,6 +86,9 @@ const REGISTRY_PINS = Object.freeze([
   "a5e06ca4657eda0b6ee412fdfd0c40dec0664c3834b86780cff4e00216525c1e",
   // Kernel 13: bounded saved-cohort repricing and genuine four-plan Pro 10x projection.
   "1efa523ef3859e11d04f4b9e59651b384bb03b5724d2d93bb3a20472082e7e5b",
+  // Kernel 14: activation-only classification proof working sets share the
+  // overlay reader's module; overlay reads and pricing identity unchanged.
+  "2caee1ed3c56982a8cc6b945ca33ec727cc130ce9e4f7ad230582202d9594967",
 ]);
 const ENTRY_KEYS = ["computeClosureSha256", "kernelId", "methodVersion", "priceRegistrySha256", "priceRegistryVersion",
   "productionCommit", "vendorManifestSha256"];
