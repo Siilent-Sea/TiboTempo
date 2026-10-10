@@ -7,7 +7,8 @@ export { allowanceModelPresentation, modelThemeIcon } from "./model-visuals.js";
 // any more.
 
 import { chartedModelsWith, normalizeCommunityDailySeries, planWeeklyApiEquivalentUsd,
-  COMMUNITY_ALLOWANCE_NORMALIZATION, COMMUNITY_ALLOWANCE_PRO10_NORMALIZATION } from "./community-data.js";
+  COMMUNITY_ALLOWANCE_NORMALIZATION, COMMUNITY_ALLOWANCE_PRO10_NORMALIZATION,
+  COMMUNITY_ALLOWANCE_PRO20_PROMAX_NORMALIZATION } from "./community-data.js";
 import {
   compact,
   compactPrecise,
@@ -408,6 +409,30 @@ function allowanceNormalization(series, view = "aggregate") {
   return series?.days?.findLast(day => day.allowance != null)?.allowance.normalization
     ?? COMMUNITY_ALLOWANCE_NORMALIZATION;
 }
+// Presentation per validated normalization: the reference unit's label, the
+// plan cards in display order ([key, label, colour]), whether a declared plan
+// keeps its card without an estimate, and the copy keys that differ from the
+// historical Pro 20x catalog. `current` marks the declared four-plan contracts
+// whose metadata block is the served catalog's public roster.
+const PRO10_COPY_KEYS = new Set(["heading", "heroCopy", "chartDescription",
+  "modelChartDescription", "modelMethod", "cardsCaption", "referenceEquivalent", "methodNote"]);
+const ALLOWANCE_PRESENTATION = new Map([
+  [COMMUNITY_ALLOWANCE_NORMALIZATION, Object.freeze({ reference: "Pro 20×", current: false,
+    plans: [["plus", "Plus", 2], ["prolite", "Pro 5×", 1], ["pro", "Pro 20×", 0]],
+    copyPrefix: null, copyKeys: new Set() })],
+  [COMMUNITY_ALLOWANCE_PRO10_NORMALIZATION, Object.freeze({ reference: "Pro 10×", current: true,
+    plans: [["plus", "Plus", 2], ["prolite", "Pro 5×", 1], ["promax", "Pro 25×", 3], ["pro", "Pro 10×", 0]],
+    copyPrefix: "community.allowance.pro10.", copyKeys: PRO10_COPY_KEYS })],
+  // Option B: the Pro 20x unit with Pro Max at x0.8. It reuses the historical
+  // Pro 20x copy except the method note (four plans, Pro Max x0.8, 25-point
+  // floor) and adds a neutral note that every Pro account is counted at 20x.
+  [COMMUNITY_ALLOWANCE_PRO20_PROMAX_NORMALIZATION, Object.freeze({ reference: "Pro 20×", current: true,
+    plans: [["plus", "Plus", 2], ["prolite", "Pro 5×", 1], ["promax", "Pro 25×", 3], ["pro", "Pro 20×", 0]],
+    copyPrefix: "community.allowance.pro20Promax.", copyKeys: new Set(["methodNote"]),
+    planNoteKey: "community.allowance.pro20Promax.planCohortNote" })],
+]);
+const allowancePresentation = normalization => ALLOWANCE_PRESENTATION.get(normalization)
+  ?? ALLOWANCE_PRESENTATION.get(COMMUNITY_ALLOWANCE_NORMALIZATION);
 function sameAllowanceBasis(allowance, normalization) {
   return allowance != null && (allowance.normalization ?? COMMUNITY_ALLOWANCE_NORMALIZATION) === normalization;
 }
@@ -592,22 +617,22 @@ export function buildCommunityAllowanceChartModel(series, options = {}) {
   const rangeDaysWithActivity = series.days.filter(day => day.day <= anchor && communityDayStartMs(day.day) >= cutoff);
   if (rangeDaysWithActivity.length === 0) return null;
   const normalization = allowanceNormalization(series, view);
-  const pro10 = normalization === COMMUNITY_ALLOWANCE_PRO10_NORMALIZATION;
+  const presentation = allowancePresentation(normalization);
   const breakdownDays = new Map(series.breakdowns.days.map(day => [day.day, day]));
   const definitions = [
     { key: "aggregate", view: "aggregate", label: null, className: "" },
-    ...[ ["plus", "Plus", 2], ["prolite", "Pro 5×", 1],
-      ...(pro10 ? [["promax", "Pro 25×", 3]] : []), ["pro", pro10 ? "Pro 10×" : "Pro 20×", 0] ].map(([key, label, color]) => ({
-      // The v1.4 plan roster is closed, so each declared plan keeps its card
-      // and panel with the empty-estimate state rather than silently vanishing
-      // (Pro 25× has no published fit yet). Legacy rosters keep their gate.
-      key, label, view: "plans", className: `allowance-series-${color}`, pinned: pro10,
+    ...presentation.plans.map(([key, label, color]) => ({
+      // A declared (v1.4/v1.5) plan roster is closed, so each declared plan
+      // keeps its card and panel with the empty-estimate state rather than
+      // silently vanishing (Pro 25× has no published fit yet). Legacy rosters
+      // keep their gate.
+      key, label, view: "plans", className: `allowance-series-${color}`, pinned: presentation.current,
     })),
-    // Current v1.4 metadata can name GPT-6.1 Sol before a fit is published.
+    // Current v1.4/v1.5 metadata can name GPT-6.1 Sol before a fit is published.
     // Keep its card honest with the existing empty-estimate state; legacy
     // metadata and models without current catalog authority retain their gate.
     ...modelDefinitions(series.breakdowns.modelConfig,
-      pro10 && series.breakdowns.modelMetadata === "applied"),
+      presentation.current && series.breakdowns.modelMetadata === "applied"),
   ];
   const summaryFor = (day, definition) => {
     const breakdown = breakdownDays.get(day.day);
@@ -1646,11 +1671,10 @@ export function renderCommunityAllowanceSection({
   const locale = documentRef?.documentElement?.lang ?? "en-US";
   const series = normalizeCommunityDailySeries(payload, { retained: cache !== null && cache !== undefined });
   const normalization = allowanceNormalization(series, view);
-  const pro10 = normalization === COMMUNITY_ALLOWANCE_PRO10_NORMALIZATION;
-  const basisKeys = new Set(["heading", "heroCopy", "chartDescription",
-    "modelChartDescription", "modelMethod", "cardsCaption", "referenceEquivalent", "methodNote"]);
-  const basisKey = key => pro10 && basisKeys.has(key.replace("community.allowance.", ""))
-    ? key.replace("community.allowance.", "community.allowance.pro10.") : key;
+  const presentation = allowancePresentation(normalization);
+  const basisKey = key => presentation.copyPrefix !== null
+    && presentation.copyKeys.has(key.replace("community.allowance.", ""))
+    ? key.replace("community.allowance.", presentation.copyPrefix) : key;
   const t = (key, values = {}) => translate(basisKey(key), values, locale);
   for (const [element, key] of [[headingNode, "community.allowance.heading"], [heroNode, "community.allowance.heroCopy"]]) {
     if (element === null) continue;
@@ -1705,7 +1729,7 @@ export function renderCommunityAllowanceSection({
   if (view === "aggregate" && !series.breakdowns?.hasCombined
       && series.days.some(day => day.allowance != null && !sameAllowanceBasis(day.allowance, normalization))) {
     container.append(node("p", "snapshot-disclosure", t("community.allowance.basisTransition", {
-      basis: pro10 ? "Pro 10×" : "Pro 20×",
+      basis: presentation.reference,
     })));
   }
   const model = buildCommunityAllowanceChartModel(series, { rangeDays, view });
@@ -1789,6 +1813,8 @@ export function renderCommunityAllowanceSection({
     }
     container.append(node("p", "snapshot-disclosure", t(view === "models"
       ? "community.allowance.modelMethod" : "community.allowance.planMethod")),
+    ...(view === "plans" && presentation.planNoteKey
+      ? [node("p", "snapshot-disclosure", t(presentation.planNoteKey))] : []),
     ...unrecognizedModelNotice());
     return "published";
   }
