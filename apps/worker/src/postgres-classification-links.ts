@@ -345,7 +345,9 @@ class ClassificationWork {
       WHERE (pair.before_id,pair.after_id)>($1::bigint,$2::bigint) ORDER BY pair.before_id,pair.after_id LIMIT 201`,
     [oldCursor, newCursor])).rows;
   }
-  /** The session closure's original-or-candidate usage rows for one session. */
+  /** The session closure's original-or-candidate usage rows for one session,
+   * in numeric (format,id) order: the cursor compares bigint ids, so a bare
+   * `ORDER BY id` over the text output column would skip rows past page one. */
   async session(sessionId: Uint8Array, formatCursor: number,
     recordCursor: string): Promise<readonly {format:PostgresClassificationFormat;id:string}[]> {
     const sources = [await this.source(10), await this.source(11), await this.source(12)];
@@ -362,7 +364,8 @@ class ClassificationWork {
         UNION ALL SELECT 12,id,stream,session_id FROM ${sources[2]}),
       selected AS (SELECT format,id FROM original WHERE stream=1 AND session_id=$1
         UNION SELECT $2::integer,id FROM ${work("candidate")} WHERE stream=1 AND session_id=$1)
-      SELECT format,id::text FROM selected WHERE (format,id)>($3::integer,$4::bigint) ORDER BY format,id LIMIT 201`,
+      SELECT selected.format,selected.id::text AS id FROM selected
+       WHERE (selected.format,selected.id)>($3::integer,$4::bigint) ORDER BY selected.format,selected.id LIMIT 201`,
     [sessionId, this.input.format, formatCursor, recordCursor])).rows;
   }
   async drop(): Promise<void> {

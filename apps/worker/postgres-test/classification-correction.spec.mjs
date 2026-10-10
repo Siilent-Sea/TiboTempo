@@ -1316,6 +1316,36 @@ test("v1.1 closures probe successors once per manifest, not once per retained ro
   });
 });
 
+test("session closure reads every usage row of a large session in numeric order", {
+  skip: !PG_TEST_SOCKET, timeout: 180_000,
+}, async () => {
+  await withSchema(async context => {
+    const participant = await seedParticipant(context, "session-pages");
+    const principal = await seedDevice(context, participant, "session-pages");
+    const COUNT = 600;
+    const sessionDay = await stage(context, principal, DAY_ONE, "session", session());
+    // A single-digit id from 2 to 9 sorts after every "1..." id as text, so
+    // the frozen pages' bigint cursor has passed it before it is ever read.
+    const tail = await stage(context, principal, DAY_THREE, "usage", usageAt(DAY_THREE, 0));
+    assert.ok(Number(tail.ids[0]) >= 2 && Number(tail.ids[0]) < 10);
+    const original = await stageScaleV12Day(modules, pool, context.schema, context.options, principal, DAY_TWO,
+      bulkUsage(DAY_TWO, COUNT));
+    assert.equal((await context.domain.activate(principal,
+      await prepared(context, principal, [sessionDay, original, tail]))).replay, false);
+    const knownSession = await stage(context, principal, DAY_ONE, "session", session("openai_codex"));
+    const knownDay = await stageScaleV12Day(modules, pool, context.schema, context.options, principal, DAY_TWO,
+      bulkUsage(DAY_TWO, COUNT, KNOWN));
+    // The unchanged tail keeps its unknown provider, so a known session must refuse.
+    const predecessor = await context.domain.createPredecessor(principal);
+    const manifest = domainManifest(predecessor, [knownSession, knownDay, tail]);
+    const input = await proofInput(context, 12, principal, manifest, predecessor.token);
+    assert.equal((await runProof(modules.oracle.preparePostgresClassificationActivation, context, input)).outcome, ACCEPTED,
+      "edca848 accepted: its text-ordered session pages never read the unknown tail");
+    assert.equal((await runProof(modules.links.preparePostgresClassificationActivation, context, input)).outcome, REFUSED);
+    await refused(context, principal, manifest);
+  });
+});
+
 test("migration76 is a forward-only addition to the current75 ledger and fences both reader generations", {
   skip: !PG_TEST_SOCKET, timeout: 120_000,
 }, async () => {
