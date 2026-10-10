@@ -1161,3 +1161,44 @@ test("empty GPT-6.1 Sol card requires valid current metadata, retains cache valu
     assert.doesNotMatch(renderView(refused).text, /GPT-6\.1 Sol/u);
   }
 });
+
+function v14WithoutProMax() {
+  const payload = v14Fixture();
+  for (const day of payload.allowanceBreakdowns.days) day.byPlanType.promax = summary(null);
+  return payload;
+}
+
+test("v1.4 plans keep a Pro 25× card and panel without inventing an estimate when Pro Max has no fit", () => {
+  const payload = v14WithoutProMax();
+  const normalized = normalizeCommunityDailySeries(payload, { nowMs: NOW });
+  const plans = buildCommunityAllowanceChartModel(normalized, { view: "plans" });
+  assert.deepEqual(plans.cardSeries.map(item => item.label), ["Plus", "Pro 5×", "Pro 25×", "Pro 10×"]);
+  assert.equal(plans.cardSeries[2].latest, null);
+  assert.equal(plans.dots.some(dot => dot.seriesKey === "promax"), false, "Pro Max is never drawn at zero");
+  assert.equal(buildCommunityAllowanceChartModel(normalized, { view: "plans", seriesKeys: ["promax"] }), null);
+  const rendered = renderView(payload, { view: "plans" });
+  assert.equal(rendered.state, "published");
+  assert.deepEqual(rendered.cards.map(card => card.label), ["Plus", "Pro 5×", "Pro 25×", "Pro 10×"]);
+  assert.equal(rendered.cards[2].value, "—");
+  assert.match(rendered.cards[2].text, /No published estimate yet/u);
+  const withProMax = renderView(v14Fixture(), { view: "plans" });
+  assert.deepEqual(rendered.cards.filter(card => card.label !== "Pro 25×"),
+    withProMax.cards.filter(card => card.label !== "Pro 25×"), "every other plan card stays exact");
+  const documentRef = { documentElement: { lang: "en-US" }, createElement: tag => new Element(tag),
+    createElementNS: (_, tag) => new Element(tag) };
+  const container = new Element("div");
+  renderCommunityAllowanceSection({ documentRef, container, payload, view: "plans" });
+  const panels = container.descendants()
+    .filter(element => element.tag === "div" && (element.className ?? "").split(" ").includes("allowance-panel"));
+  assert.deepEqual(panels.map(panel => panel.descendants().find(element => element.tag === "h4")?.text),
+    ["Plus", "Pro 5×", "Pro 25×", "Pro 10×"]);
+  assert.match(panels[2].className, /allowance-panel-empty/u);
+  assert.match(panels[2].text, /No published estimate yet/u);
+  assert.equal(panels[2].descendants().some(element => element.tag === "svg"), false);
+});
+
+test("legacy Pro 20× plan roster is unchanged and never names Pro Max", () => {
+  const rendered = renderView(v13Fixture(), { view: "plans" });
+  assert.deepEqual(rendered.cards.map(card => card.label), ["Plus", "Pro 5×", "Pro 20×"]);
+  assert.doesNotMatch(rendered.text, /Pro 25[×x]/u);
+});

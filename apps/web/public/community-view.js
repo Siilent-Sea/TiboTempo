@@ -598,7 +598,10 @@ export function buildCommunityAllowanceChartModel(series, options = {}) {
     { key: "aggregate", view: "aggregate", label: null, className: "" },
     ...[ ["plus", "Plus", 2], ["prolite", "Pro 5×", 1],
       ...(pro10 ? [["promax", "Pro 25×", 3]] : []), ["pro", pro10 ? "Pro 10×" : "Pro 20×", 0] ].map(([key, label, color]) => ({
-      key, label, view: "plans", className: `allowance-series-${color}`,
+      // The v1.4 plan roster is closed, so each declared plan keeps its card
+      // and panel with the empty-estimate state rather than silently vanishing
+      // (Pro 25× has no published fit yet). Legacy rosters keep their gate.
+      key, label, view: "plans", className: `allowance-series-${color}`, pinned: pro10,
     })),
     // Current v1.4 metadata can name GPT-6.1 Sol before a fit is published.
     // Keep its card honest with the existing empty-estimate state; legacy
@@ -708,7 +711,7 @@ export function buildCommunityAllowanceChartModel(series, options = {}) {
   // The page's pinned roster keeps a card (and a legend entry) while it has no
   // estimate; every other model, however it became known, is drawn only once it
   // has one. A catalog of dozens of models must not become dozens of empty cards.
-  const cardSeries = view === "models"
+  const cardSeries = view === "models" || view === "plans"
     ? viewDefinitions.filter(definition => definition.pinned || visibleByKey.has(definition.key))
       .map(definition => visibleByKey.get(definition.key) ?? { ...definition, latest: null }) : visible;
   const dots = visible.flatMap(definition => definition.dots)
@@ -1765,13 +1768,19 @@ export function renderCommunityAllowanceSection({
       // comparison becomes deliberate rather than automatic, which is the
       // honest trade now that the cards lead with each plan's own week.
       const panels = node("div", "allowance-small-multiples");
-      for (const latest of model.latestSummaries) {
-        const panelModel = buildCommunityAllowanceChartModel(series,
+      for (const seriesCard of model.cardSeries) {
+        const latest = seriesCard.latest;
+        const panelModel = latest === null ? null : buildCommunityAllowanceChartModel(series,
           { rangeDays, view, seriesKeys: [latest.seriesKey] });
-        if (panelModel === null) continue;
-        const panel = node("div", `allowance-panel ${latest.seriesClass}`.trim());
-        panel.append(node("h4", "allowance-panel-title", latest.seriesLabel));
-        appendCommunityAllowanceChart({ documentRef, container: panel, model: panelModel, t, inspection });
+        if (panelModel === null && latest !== null) continue;
+        const panel = node("div", `allowance-panel${panelModel === null ? " allowance-panel-empty" : ""} ${seriesCard.className}`.trim());
+        panel.append(node("h4", "allowance-panel-title", seriesCard.label));
+        if (panelModel === null) {
+          // A pinned plan with no estimate is named, never drawn at zero.
+          panel.append(node("p", "allowance-panel-empty-note", t("community.allowance.noModelEstimate")));
+        } else {
+          appendCommunityAllowanceChart({ documentRef, container: panel, model: panelModel, t, inspection });
+        }
         panels.append(panel);
       }
       container.append(panels);
