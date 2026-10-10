@@ -130,7 +130,7 @@ export const FASTPATH_MEASUREMENT = Object.freeze({
   databaseVersion: "POSTGRES_17",
   edition: "ENTERPRISE",
   availabilityType: "ZONAL",
-  tier: "db-custom-4-16384",
+  tier: "db-custom-2-12288",
   storageSizeGb: 50,
   maxConnections: 100,
   // C-INFRA's CLOUD_SQL_LOGGING_FLAGS and max_connections, sorted by name.
