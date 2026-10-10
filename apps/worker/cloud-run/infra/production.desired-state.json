@@ -93,7 +93,7 @@
   "scheduler": {
     "analytics-refresh": {
       "name": "tibotattle-analytics-refresh-trigger",
-      "schedule": null,
+      "schedule": "0 3 * * *",
       "state": "PAUSED"
     },
     "maintenance": {

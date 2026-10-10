@@ -431,11 +431,17 @@ test("the committed desired states render offline: staging's and production's wa
   assert.deepEqual(prod.service, { unavailable: "TELEMETRY_STORAGE_NAMESPACE_UNASSIGNED" });
   assert.equal(prod.bucket.location, "US-EAST1");
   assert.equal(prod.jobs["analytics-refresh"].metadata.name, "tibotattle-analytics-refresh");
-  // Round 15 (C3): the owner decides the refresh cadence after the production-scale
-  // measurement, so the committed schedule is null and the trigger is not rendered.
-  // D-OPS4's maintenance trigger has its pinned five-minute cadence, so its flags render.
+  // The owner's refresh cadence (daily 03:00 UTC) is committed, so its flags render.
+  // D-OPS4's maintenance trigger has its pinned every-minute cadence, so its flags render.
   assert.deepEqual(Object.keys(prod.scheduler), ["analytics-refresh", "maintenance"]);
-  assert.deepEqual(prod.scheduler["analytics-refresh"], { unavailable: "SCHEDULER_CADENCE_UNSET" });
+  assert.ok(prod.scheduler["analytics-refresh"].includes("--schedule=0 3 * * *"));
+  assert.ok(prod.scheduler["analytics-refresh"].includes("--time-zone=Etc/UTC"));
+  // An unset cadence is still not rendered.
+  const unset = JSON.parse(unpinnedProductionText());
+  unset.scheduler["analytics-refresh"].schedule = null;
+  const unsetRender = JSON.parse((await run(["render", "--environment=production", ...IMAGE],
+    { readFile: reader(`${JSON.stringify(unset, null, 2)}\n`) })).out);
+  assert.deepEqual(unsetRender.scheduler["analytics-refresh"], { unavailable: "SCHEDULER_CADENCE_UNSET" });
   assert.ok(prod.scheduler.maintenance.includes("--schedule=* * * * *"));
   assert.ok(prod.scheduler.maintenance.includes(
     "--uri=https://run.googleapis.com/v2/projects/tibotattle-prod/locations/us-east1/jobs/tibotattle-maintenance:run"));

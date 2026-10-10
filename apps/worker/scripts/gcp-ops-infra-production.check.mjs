@@ -45,6 +45,10 @@ const LEFT_OUT = /GOOGLE_OIDC_CLIENT_SECRET|APPLE_PRIVATE_KEY|DISTRIBUTION_GITHU
 /** The committed production file before the pins, then with the pins the main session makes. */
 function production(pin = () => {}) {
   const value = JSON.parse(unpinnedProductionText());
+  // The rehearsal models the first production apply, before the owner set the
+  // refresh cadence. The committed cadence (daily 03:00 UTC) is checked in its
+  // own test below; a pin may still set one.
+  value.scheduler["analytics-refresh"].schedule = null;
   pin(value);
   return manifest.assertCommittedDesiredState(manifest.validateDesiredState(value));
 }
@@ -315,4 +319,13 @@ test("a cadence the owner commits later (synthetic here) is created paused after
   // The cutover's gate no longer finds the cadence unset.
   assert.equal([...operations.infrastructureCleanliness(plan(), { requireCadence: true }).reasons]
     .some((reason) => reason.endsWith(":SCHEDULER_CADENCE_UNSET")), false);
+});
+
+test("the committed production refresh cadence is the owner's daily 03:00 UTC, created paused", () => {
+  const committed = JSON.parse(unpinnedProductionText());
+  assert.deepEqual(committed.scheduler["analytics-refresh"],
+    { name: "tibotattle-analytics-refresh-trigger", schedule: "0 3 * * *", state: "PAUSED" });
+  const flags = manifest.schedulerFlags(manifest.validateDesiredState(committed), "analytics-refresh");
+  assert.ok(flags.includes("--schedule=0 3 * * *"));
+  assert.ok(flags.includes("--time-zone=Etc/UTC"));
 });
