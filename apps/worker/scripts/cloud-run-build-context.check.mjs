@@ -19,7 +19,7 @@ test("generated context carries profiler and reprice runtime closure, excludes f
     assert.equal(generated.status, 0, generated.stderr);
     const receipt = JSON.parse(generated.stdout);
     assert.equal(receipt.mode, "create");
-    assert.equal(receipt.primaryMigrations, 77);
+    assert.equal(receipt.primaryMigrations, 78);
     assert.deepEqual(await readFile(join(output, "apps/worker/catalog/manifest-0001.json")),
       await readFile(join(WORKER, "catalog/manifest-0001.json")));
     await assert.rejects(access(join(output, "apps/worker/catalog/manifest-0002.json")), { code: "ENOENT" });
