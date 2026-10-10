@@ -1373,7 +1373,7 @@ test("migration76 is a forward-only addition to the current75 ledger and fences 
     assert.ok((await pool.query("SELECT to_regclass($1)::text AS name", [`${schema}.telemetry_classification_correction_links`])).rows[0].name);
     await applyPostgresMigrations({role:"primary",schema,pool});
     const history=(await pool.query(`SELECT * FROM "${schema}"."_tibotattle_migration_history" ORDER BY version`)).rows;
-    assert.equal(history.length,76);
+    assert.equal(history.length,migrations.length,"later promoted migrations append after 0076");
     assert.deepEqual(history.slice(0,75),oldHistory);
   } finally {
     await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);

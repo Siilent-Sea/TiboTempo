@@ -440,7 +440,7 @@ test("contract classification finds drops, renames, tightenings and dynamic SQL,
   ]) assert.deepEqual(kinds(sql), [], sql);
 });
 
-test("the promoted primary tail 0001-0076 is classified once and pinned in CONTRACT_MIGRATIONS", () => {
+test("the promoted primary tail 0001-0078 is classified once and pinned in CONTRACT_MIGRATIONS", () => {
   const classified = Object.fromEntries(primary.map((migration) => [migration.name, classifyContractOperations(migration.sql)])
     .filter(([, operations]) => operations.length > 0));
   assert.deepEqual(Object.keys(CONTRACT_MIGRATIONS).sort(), Object.keys(classified).sort());
@@ -477,6 +477,8 @@ test("the promoted primary tail 0001-0076 is classified once and pinned in CONTR
     "0074_analytics_v2_pricing_classes.sql",
     DISTRIBUTION_VISIBILITY,
     "0076_classification_correction_links.sql",
+    "0077_analytics_v2_reprice.sql",
+    "0078_classification_link_lookup_indexes.sql",
   ]);
   for (const migration of primary.filter(({ version, name }) => version > residue.version && name !== RUN_STAMPS && name !== DISTRIBUTION_VISIBILITY)) {
     assert.deepEqual([...classifyContractOperations(migration.sql)], [], migration.name);

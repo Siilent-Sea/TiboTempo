@@ -79,8 +79,8 @@ syncBuiltinESMExports();
     assert.deepEqual(Object.keys(sourceCheck).sort(), ["schemaVersion", "status", "migrationCount", "migrationTail", "migrationDigest"].sort());
     assert.equal(sourceCheck.schemaVersion, "postgres-community-graph-cloud-run-benchmark-build-check-v1");
     assert.equal(sourceCheck.status, "ok");
-    assert.equal(sourceCheck.migrationCount, 77);
-    assert.equal(sourceCheck.migrationTail, "0077_analytics_v2_reprice.sql");
+    assert.equal(sourceCheck.migrationCount, 78);
+    assert.equal(sourceCheck.migrationTail, "0078_classification_link_lookup_indexes.sql");
     assert.match(sourceCheck.migrationDigest, /^[0-9a-f]{64}$/u);
     const dockerfile = await readFile(join(cloud, "Dockerfile"), "utf8");
     for (const name of entries) assert.ok(dockerfile.includes(`test -s dist/${name}.mjs`), `${name} is required by Docker RUN`);
@@ -89,9 +89,9 @@ syncBuiltinESMExports();
     const migrations = await benchmark.readPostgresCommunityGraphBenchmarkMigrations({
       readMigrations: ({ role }) => readPostgresMigrations({ role, rootDirectory: join(output, "apps/worker/postgres/migrations") }),
     });
-    assert.equal(migrations.length, 77);
-    assert.equal(migrations.at(-2).name, "0076_classification_correction_links.sql");
-    assert.equal(migrations.at(-1).name, "0077_analytics_v2_reprice.sql");
+    assert.equal(migrations.length, 78);
+    assert.equal(migrations.at(-2).name, "0077_analytics_v2_reprice.sql");
+    assert.equal(migrations.at(-1).name, "0078_classification_link_lookup_indexes.sql");
     console.log(JSON.stringify({ contextFiles: receipt.fileCount, sourceContentDigest: receipt.sourceContentDigest,
       runtimeFiles: runtime.length, excludedFixtures: fixtures.length, builtEntries: entries.length,
       diagnosticCloudRefusal: true, actualContextBuild: true, actualBuiltMigrationSourceCheck: sourceCheck }));
