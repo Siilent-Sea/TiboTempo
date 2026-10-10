@@ -17,8 +17,8 @@ export const POSTGRES_MAINTENANCE_JOB_POOL_MAX = 2;
 /** Cycles are whole UTC minutes, the Worker cron's scheduledTime granularity. */
 export const POSTGRES_MAINTENANCE_JOB_CYCLE_MILLISECONDS = 60_000;
 export const POSTGRES_MAINTENANCE_JOB_APPLICATION_NAME = "tibotattle-maintenance-job";
-/** GCP cost-control cadence: one bounded pass every five minutes; Worker cron is separate. */
-export const POSTGRES_MAINTENANCE_JOB_SCHEDULE = "*/5 * * * *";
+/** One bounded pass every minute, as the Worker cron (owner restored 2026-10-10). */
+export const POSTGRES_MAINTENANCE_JOB_SCHEDULE = "* * * * *";
 /** Variables the job refuses even when empty, and the code each gives. */
 export const POSTGRES_MAINTENANCE_JOB_FORBIDDEN_VARIABLES = Object.freeze({
   HOST_MODE: "POSTGRES_MAINTENANCE_JOB_HOST_MODE_FORBIDDEN",

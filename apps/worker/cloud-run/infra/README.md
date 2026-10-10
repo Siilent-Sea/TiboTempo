@@ -75,7 +75,7 @@ trigger:
 |---|---|
 | `production-migrate` (OPS-10, manual) | none |
 | `analytics-refresh` | `scheduler.analytics-refresh`: the owner's cadence (decision D3), `null` until decided |
-| `maintenance` | `scheduler.maintenance`: **every five minutes, `*/5 * * * *`**, pinned |
+| `maintenance` | `scheduler.maintenance`: **every minute, `* * * * *`**, pinned |
 
 The maintenance job runs C-MAINT's MP-2-lite lifecycle pass
 (`dist/postgres-maintenance-job.mjs --profile=maintenance-job`, built by the
@@ -83,9 +83,9 @@ same image) as the runtime account, with one primary pool of 2
 (`jobs.maintenance.maxConnections`, at least the job's own
 `POSTGRES_MAINTENANCE_JOB_POOL_MAX`). Each execution reconciles at most 100
 due quarantine registrations, the d43c8f92 Worker's batch. GCP runs this bounded
-pass every five minutes for cost control; the separate Worker cron stays at one
-minute. Examination capacity is now 1,200 registrations/hour. A due backlog
-above the fixed page leaves `/api/ready` not_ready until later passes drain it.
+pass every minute, as the Worker cron (examination capacity 6,000
+registrations/hour). A due backlog above the fixed page leaves `/api/ready`
+not_ready until later passes drain it.
 The lifecycle freshness limit remains two hours; auth expiry and both 24-hour
 orphan safety windows remain unchanged. The validator pins the cadence to the
 job's contract constant

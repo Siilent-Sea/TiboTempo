@@ -14,10 +14,11 @@
  * OD-CR-4). It is a separate workload from the request-serving origin: it
  * has no HOST_MODE and serves nothing.
  *
- * Schedule (the GCP cost-control trigger contract): every five minutes,
- * POSTGRES_MAINTENANCE_JOB_SCHEDULE; the Worker cron is separate.
- * A pass keeps the 100-registration batch and both 24-hour safety windows.
- * Throughput is at most 20 due registrations/minute on average. A backlog
+ * Schedule (the D-OPS4 trigger contract): every minute,
+ * POSTGRES_MAINTENANCE_JOB_SCHEDULE, as the Worker cron. The five-minute
+ * cost-control cadence of 2026-10-09 starved reconciliation; the owner
+ * restored every minute on 2026-10-10. A pass keeps the 100-registration batch
+ * and both 24-hour safety windows. A sustained due rate above 100/minute
  * leaves /api/ready not_ready and lets the journal
  * grow. While a migration runs the pass is skipped; while a pass runs the
  * migration runner refuses POSTGRES_MIGRATION_CONFLICT (fail-closed,
@@ -102,7 +103,7 @@ export const POSTGRES_MAINTENANCE_JOB_USAGE = `Usage: node postgres-maintenance-
 
 Run one MP-2-lite lifecycle and quarantine-reconciliation pass for the current
 one-minute cycle (up to 100 registrations). Cloud Run Jobs only, triggered
-every five minutes (*/5 * * * *). Exits 0 (complete, partial or skipped), 1 (refused,
+every minute (* * * * *). Exits 0 (complete, partial or skipped), 1 (refused,
 failure or configuration) or 2 (usage refusal).
 
   --profile=<name>  maintenance-job or staging-maintenance-job (required)

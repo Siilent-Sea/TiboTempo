@@ -46,9 +46,8 @@
  * MEAS-3), and the MP-2-lite maintenance job (MAINTENANCE_JOB_CONTRACT, D-OPS4).
  * Two jobs have a Cloud Scheduler trigger. The analytics-refresh cadence is
  * the owner's (decision D3; there is no default). The maintenance cadence is
- * every five minutes for GCP cost control, independent of the Worker cron;
- * the validator pins it (PINNED_SCHEDULER_CADENCES). The fixed per-pass batch
- * can leave /api/ready not_ready while due work is backlogged.
+ * every minute, the Worker cron's, and the validator pins it
+ * (PINNED_SCHEDULER_CADENCES): a slower trigger leaves /api/ready not_ready.
  * Every trigger's state is closed: created and paused in one apply, and
  * resumed only explicitly (OPS-3). The OPS-4 probe jobs (cloud-run/
  * ops-probe-contract.mjs OPS_PROBE_JOBS), restore-verify, ledger and
@@ -159,9 +158,10 @@ export const JOB_NAMES = Object.freeze(["production-migrate", "analytics-refresh
 /** Jobs a Cloud Scheduler trigger runs. production-migrate is manual (OPS-10). */
 export const SCHEDULED_JOB_NAMES = Object.freeze(["analytics-refresh", "maintenance"]);
 /**
- * The reviewed GCP maintenance cadence is one bounded pass every five minutes.
- * A pass retains the 100-registration batch and safety windows; due work above
- * 20 registrations/minute on average may backlog and make /api/ready not_ready.
+ * The maintenance pass reconciles at most 100 quarantine registrations per
+ * execution, the Worker's batch, so the trigger runs every minute, the Worker
+ * cron's cadence (owner restored 2026-10-10 after the five-minute cadence
+ * backlogged reconciliation and left /api/ready not_ready).
  * The two-hour lifecycle freshness threshold and separate Worker cron are
  * unchanged. Single-sourced from postgres-maintenance-job-contract.mjs; any
  * other cadence, including null, refuses (SCHEDULER_CADENCE_MISMATCH:<job>).
