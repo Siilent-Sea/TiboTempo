@@ -560,13 +560,14 @@ function buildCommunityAllowanceSingleChartModel(series, {
  * `pinned` marks the page's roster models that keep a card even with no
  * estimate, while any other model is charted only when it has one.
  */
-function modelDefinitions(modelConfig) {
+function modelDefinitions(modelConfig, currentMetadata = false) {
   return chartedModelsWith(modelConfig.filter(entry => Number.isSafeInteger(entry.order)))
     .map(({ modelId, label, family, order, pinned }, index) => {
       const published = Number.isSafeInteger(order);
       return { tier: published ? 0 : 1, definition: {
         key: modelId, label, view: "models", ...allowanceModelPresentation(modelId, index, family),
-        order: published ? order : index, pinned: pinned === true,
+        order: published ? order : index, pinned: pinned === true
+          || (currentMetadata && published && modelId === "gpt-6.1-sol"),
       } };
     }).sort((left, right) => left.tier - right.tier || left.definition.order - right.definition.order)
     .map(({ definition }) => definition);
@@ -599,7 +600,11 @@ export function buildCommunityAllowanceChartModel(series, options = {}) {
       ...(pro10 ? [["promax", "Pro 25×", 3]] : []), ["pro", pro10 ? "Pro 10×" : "Pro 20×", 0] ].map(([key, label, color]) => ({
       key, label, view: "plans", className: `allowance-series-${color}`,
     })),
-    ...modelDefinitions(series.breakdowns.modelConfig),
+    // Current v1.4 metadata can name GPT-6.1 Sol before a fit is published.
+    // Keep its card honest with the existing empty-estimate state; legacy
+    // metadata and models without current catalog authority retain their gate.
+    ...modelDefinitions(series.breakdowns.modelConfig,
+      pro10 && series.breakdowns.modelMetadata === "applied"),
   ];
   const summaryFor = (day, definition) => {
     const breakdown = breakdownDays.get(day.day);

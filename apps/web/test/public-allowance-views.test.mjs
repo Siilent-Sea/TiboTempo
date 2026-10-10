@@ -584,7 +584,8 @@ function renderView(payload, { view = "models", cache, lang = "en-US" } = {}) {
   const container = new Element("div");
   const state = renderCommunityAllowanceSection({ documentRef, container, payload, view, cache });
   const cards = container.descendants().filter(element => element.tag === "article")
-    .map(card => ({ label: card.descendants().find(element => element.tag === "h3")?.text, className: card.className }));
+    .map(card => ({ label: card.descendants().find(element => element.tag === "h3")?.text, className: card.className,
+      value: card.descendants().find(element => element.tag === "strong")?.text, text: card.text }));
   return { state, cards, text: container.text };
 }
 
@@ -1101,5 +1102,62 @@ test("plan captions and accessible panels describe the converted own-week values
     renderCommunityAllowanceSection({ documentRef, container, payload, view: "models" });
     const modelCaption = container.descendants().find(element => element.className === "allowance-summary-caption");
     assert.match(modelCaption.text, reference === "Pro 10x" ? /Pro 10× week/u : /Pro 20× week/u);
+  }
+});
+
+const CURRENT_SEVEN_MODEL_BLOCK = [
+  SIX_MODEL_BLOCK[0], { id: "gpt-6.1-sol", label: "GPT-6.1 Sol", family: "sol", order: 1 },
+  ...SIX_MODEL_BLOCK.slice(1).map(model => ({ ...model, order: model.order + 1 })),
+];
+function currentSevenMetadataFixture() {
+  const payload = v14Fixture();
+  payload.allowanceBreakdowns.modelConfig = structuredClone(CURRENT_SEVEN_MODEL_BLOCK);
+  return payload;
+}
+
+test("v1.4 current metadata admits a published GPT-6.1 Sol tuple, preserving raw value and cache", () => {
+  const payload = addTuples(currentSevenMetadataFixture(), "gpt-6.1-sol", 3, 123.45, 2);
+  const normalized = normalizeCommunityDailySeries(payload, { nowMs: NOW });
+  assert.equal(normalized.breakdowns.unrecognizedModelTuples, 0);
+  assert.ok(normalized.breakdowns.days.at(-1).models.some(tuple => JSON.stringify(tuple) === JSON.stringify(["gpt-6.1-sol", 123.45, 2])));
+  const rendered = renderView(payload);
+  assert.deepEqual(rendered.cards.map(card => card.label), ["GPT-6 Astra", "GPT-6.1 Sol", ...SIX_CARDS.slice(1)]);
+  assert.match(rendered.cards[1].className, /allowance-model-sol/u);
+  const retained = projectCommunityDailyPayloadForCache(payload, { nowMs: NOW });
+  assert.deepEqual(retained.allowanceBreakdowns.modelConfig, CURRENT_SEVEN_MODEL_BLOCK);
+  assert.deepEqual(normalizeCommunityDailySeries(retained, { nowMs: NOW, retained: true }).breakdowns.days, normalized.breakdowns.days);
+});
+
+test("current v1.4 metadata names GPT-6.1 Sol without fabricating an estimate or unpublished tuple", () => {
+  const payload = currentSevenMetadataFixture();
+  const rendered = renderView(payload);
+  assert.deepEqual(rendered.cards.map(card => card.label), ["GPT-6 Astra", "GPT-6.1 Sol", ...SIX_CARDS.slice(1)]);
+  assert.equal(rendered.cards[1].value, "—");
+  assert.match(rendered.cards[1].text, /No published estimate yet/u);
+  payload.allowanceBreakdowns.days.at(-1).models.push(["gpt-6.1-sol", 123.45, 2]);
+  const last = payload.allowanceBreakdowns.days.at(-1).day;
+  payload.days = payload.days.filter(day => day.day !== last);
+  assert.equal(renderView(payload).state, "breakdowns_unavailable", "a tuple outside published dates refuses the graph");
+  assert.deepEqual(renderView(payload).cards, []);
+  assert.doesNotMatch(renderView(payload).text, /GPT-6\.1 Sol/u);
+});
+
+
+test("empty GPT-6.1 Sol card requires valid current metadata, retains cache values, and leaves legacy publication gates intact", () => {
+  const payload = currentSevenMetadataFixture();
+  const normalized = normalizeCommunityDailySeries(payload, { nowMs: NOW });
+  const chart = buildCommunityAllowanceChartModel(normalized, { view: "models" });
+  assert.equal(chart.cardSeries[1].key, "gpt-6.1-sol");
+  assert.equal(chart.cardSeries[1].latest, null);
+  assert.equal(chart.dots.some(dot => dot.seriesKey === "gpt-6.1-sol"), false);
+  const retained = projectCommunityDailyPayloadForCache(payload, { nowMs: NOW });
+  assert.deepEqual(normalizeCommunityDailySeries(retained, { nowMs: NOW, retained: true }).breakdowns.days,
+    normalized.breakdowns.days, "all published tuples, nulls and dates survive unchanged");
+  assert.deepEqual(renderView(retained, { cache: RETAINED }).cards, renderView(payload).cards);
+  assert.deepEqual(renderView(payload).cards.filter(card => card.label !== "GPT-6.1 Sol"),
+    renderView(v14Fixture()).cards, "every existing model card amount and empty state stays exact");
+  for (const refused of [v13Fixture(CURRENT_SEVEN_MODEL_BLOCK), v11Fixture(), v14Fixture(),
+    v14Fixture([{ ...CURRENT_SEVEN_MODEL_BLOCK[1], order: -1 }]), v14Fixture(null)]) {
+    assert.doesNotMatch(renderView(refused).text, /GPT-6\.1 Sol/u);
   }
 });
