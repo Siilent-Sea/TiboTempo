@@ -1337,7 +1337,7 @@ const FOREIGN_INSTANCE_NAMES = Object.freeze(["tibotattle-primary", "tibotattle-
 function measInstanceResource(overrides = {}, settingsOverrides = {}) {
   return {
     name: MEAS, project: "tibotattle", region: "us-east1", databaseVersion: "POSTGRES_17", state: "RUNNABLE",
-    settings: { tier: "db-custom-4-16384", edition: "ENTERPRISE", availabilityType: "ZONAL", dataDiskType: "PD_SSD",
+    settings: { tier: "db-custom-2-12288", edition: "ENTERPRISE", availabilityType: "ZONAL", dataDiskType: "PD_SSD",
       connectorEnforcement: "REQUIRED", ipConfiguration: { ipv4Enabled: true, authorizedNetworks: [] },
       databaseFlags: [...FASTPATH_MEASUREMENT.databaseFlags, ...FASTPATH_MEASUREMENT.diagnosticFlags]
         .map(([name, value]) => ({ name, value })),
