@@ -425,9 +425,21 @@ clock. Nonclassification quantities and original typed rows stay immutable;
 effective readers validate the link and its activation receipt, and replay
 converges on the existing head. A differing quantity remains a conflict.
 
+The activation proof builds the candidate set and each history format once per
+activation, as `ON COMMIT DROP` temporary tables, and pages indexed pair sets;
+it never rebuilds them per page. The origin's runtime role therefore needs the
+database `TEMPORARY` privilege, which PostgreSQL grants by default. The v1.1
+closure probes (typed v1 transition, legacy gap, previous-generation gap) are
+hash anti-joins over the candidate's decoded admissions, not per-row manifest
+rescans.
+
 The PostgreSQL synthetic gate is `node --test
 postgres-test/classification-correction.spec.mjs` with an owned local
 `PG_TEST_SOCKET`/`PG_TEST_PORT`. It checks correction atomicity, variants,
 whole-session provider closure, replay and the populated migration75-to76
-receipt fence. Migration, image rollout and installed-client acceptance remain
-separate operational gates. GCP performance admission stays retired.
+receipt fence. It also compares the bounded proof and the v1.1 closures with the
+frozen edca848 oracles in `postgres-test/fixtures/classification/` and bounds
+their plans. `postgres-test/classification-activation-scale.bench.mjs` reports
+local, aggregate-only statement timings at synthetic scale; it is evidence, not
+a gate. Migration, image rollout and installed-client acceptance remain separate
+operational gates. GCP performance admission stays retired.

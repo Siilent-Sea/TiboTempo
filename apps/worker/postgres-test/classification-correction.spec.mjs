@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { copyFile, lstat, mkdir, mkdtemp, realpath, rm, stat } from "node:fs/promises";
+import { copyFile, lstat, mkdir, mkdtemp, readFile, realpath, rm, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
@@ -16,6 +16,10 @@ import {
 } from "@app-usagemonitor/telemetry-contract";
 import { applyPostgresMigrations, readPostgresMigrations } from "../scripts/postgres-migrations.mjs";
 import analyticsV2Config from "../vitest.analytics-v2.config.mjs";
+import {
+  grantScaleV11, initializeScaleV11, scaleDays, scaleSession, scaleUsage, scaleV11DomainManifest, stageScaleV11Day,
+  stageScaleV12Day,
+} from "./fixtures/classification-scale.mjs";
 
 const PG_TEST_SOCKET = process.env.PG_TEST_SOCKET;
 const PG_TEST_PORT = Number(process.env.PG_TEST_PORT ?? "55567");
@@ -44,6 +48,13 @@ let modules;
 const databaseFailures = [];
 // Statement texts, recorded only while a test sets it to an array.
 let statementLog = null;
+// Statement texts with their bind values, recorded only while set.
+let statementCapture = null;
+// The frozen edca848 proof and closures the rewrite must reproduce exactly.
+const FROZEN = {
+  "postgres-test/fixtures/classification/activation-oracle.ts": "d9ebe9b302d093543c9167609e01c938eb10fe67827ca456d575ba423158c70d",
+  "postgres-test/fixtures/classification/closure-oracle.ts": "a7b1008aae61c40f2c618cddfde38c8c6a50f767ef54ee933f4942567413bb69",
+};
 
 after(async () => { await pool?.end(); await vite?.close(); });
 const sha256Hex = value => createHash("sha256").update(value).digest("hex");
@@ -52,6 +63,9 @@ async function setup() {
   if (pool) return;
   assert.match(PG_TEST_SOCKET ?? "", /^\/private\/tmp\/tibotattle-pg-[^/]+\/socket$/u);
   assert.equal(PG_TEST_PORT, 55567, "this bounded gate uses only the coordinator-reserved port");
+  for (const [path, digest] of Object.entries(FROZEN)) {
+    assert.equal(sha256Hex(await readFile(resolve(WORKER_ROOT, path))), digest, `${path} is a frozen oracle`);
+  }
   const link = await lstat(PG_TEST_SOCKET);
   const host = await realpath(PG_TEST_SOCKET);
   const metadata = await stat(host);
@@ -68,6 +82,8 @@ async function setup() {
     client.query = (...args) => {
       const caller = new Error().stack.split("\n").slice(2, 5);
       statementLog?.push(typeof args[0] === "string" ? args[0] : args[0]?.text ?? "");
+      statementCapture?.push({ text: typeof args[0] === "string" ? args[0] : args[0]?.text ?? "",
+        values: Array.isArray(args[1]) ? args[1] : [] });
       const result = query(...args);
       if (!result?.catch) return result;
       return result.catch(error => {
@@ -93,6 +109,9 @@ async function setup() {
     codec: await vite.ssrLoadModule("/src/typed-telemetry-codec.ts"),
     compatibility: await vite.ssrLoadModule("/src/telemetry-v11-compatibility.ts"),
     reconciliation: await vite.ssrLoadModule("/src/telemetry-usage-reconciliation.ts"),
+    links: await vite.ssrLoadModule("/src/postgres-classification-links.ts"),
+    oracle: await vite.ssrLoadModule("/postgres-test/fixtures/classification/activation-oracle.ts"),
+    closureOracle: await vite.ssrLoadModule("/postgres-test/fixtures/classification/closure-oracle.ts"),
   };
 }
 
@@ -197,12 +216,12 @@ function session(provider = "unknown") {
 }
 
 /** Same real register/stage/ready path as typed-v12-domain-unchanged. */
-async function stage(context, principal, day, stream, record) {
+async function stage(context, principal, day, stream, record, { parserVersion = "synthetic-classification-pg17" } = {}) {
   const nowEpoch = Date.now();
   const consent = telemetryV12RequiredConsent();
   const records = Array.isArray(record) ? record : [record];
   const chunk = { schemaVersion: "telemetry-contribution-v1.2", manifestDigest: "0".repeat(64),
-    chunkId: `${stream}:${day}:0`, chunkRevision: 1, parserVersion: "synthetic-classification-pg17",
+    chunkId: `${stream}:${day}:0`, chunkRevision: 1, parserVersion,
     consent, records, chunkDigest: sha256Hex(canonicalTelemetryV12Json(records)) };
   const manifest = { schemaVersion: "telemetry-day-manifest-v1.2", day,
     parserVersion: chunk.parserVersion, consent,
@@ -681,7 +700,7 @@ test("v12 activation runs its whole-domain classification proof under the 60 s s
       const begin = issued.lastIndexOf("BEGIN");
       const transaction = issued.slice(begin);
       assert.equal(transaction[1], "SET LOCAL statement_timeout='60000ms'");
-      assert.ok(transaction.some(sql => sql.includes("candidate AS MATERIALIZED")),
+      assert.ok(transaction.some(sql => sql.startsWith('CREATE TEMP TABLE pg_temp."classification_candidate"')),
         "the classification proof runs inside the budgeted activation transaction");
     }
     assert.equal(activation.replay, false);
@@ -963,6 +982,339 @@ test("session provider closure includes active method-1 archives captured before
   }, "active");
 });
 
+
+// ---- Bounded activation proof and v1.1 closures (2026-10-10) ----------------
+// Each proof case runs the live proof and the frozen edca848 proof (pinned in
+// FROZEN) on the same state with the same activation input, each in its own
+// always-rolled-back transaction, and requires the same outcome and the same
+// link rows in the same order. Every case also asserts its expected outcome,
+// so agreement can never be two vacuous passes.
+const ACCEPTED = "accepted";
+const REFUSED = "refused";
+const KNOWN = { provider: "openai_codex", modelId: MODEL };
+const usageAt = (day, index, patch = {}) => usage({ eventId: `event:v2:${sha256Hex(`parity:${day}:${index}`)}`,
+  eventTime: new Date(Date.parse(`${day}T00:00:00.000Z`) + (index + 1) * 1000).toISOString(), ...patch });
+const bulkUsage = (day, count, patch = {}, override = () => ({})) =>
+  Array.from({ length: count }, (_, index) => usageAt(day, index, { ...patch, ...override(index) }));
+const candidateBuilds = statements => statements.filter(sql => sql.includes("JOIN candidate_days day ON day.manifest_id")).length;
+function* planNodes(node) { yield node; for (const child of node.Plans ?? []) yield* planNodes(child); }
+
+/** The exact input a domain hands the proof, rebuilt from its predecessor row. */
+async function proofInput(context, format, principal, manifest, token) {
+  const tokenHash = sha256Hex(token);
+  const name = format === 11 ? "telemetry_v11_domain_predecessors" : "telemetry_v12_domain_predecessors";
+  const row = (await pool.query(`SELECT previous_generation_id,input_revision::text AS input_revision,
+    ${format === 12 ? "days_json" : "NULL::text AS days_json"} FROM ${context.table(name)} WHERE token_hash=$1`, [tokenHash])).rows[0];
+  assert.ok(row, "the predecessor exists");
+  return { participantId: principal.participantId, deviceId: principal.deviceId, format,
+    previousGenerationId: row.previous_generation_id, generationId: randomUUID(), predecessorTokenHash: tokenHash,
+    inputRevision: Number(row.input_revision), manifestDigest: manifest.manifestDigest, days: manifest.days,
+    ...(format === 12 ? { predecessorDays: JSON.parse(row.days_json) } : {}) };
+}
+
+/** One proof implementation inside a transaction that is always rolled back. */
+async function runProof(prepare, context, input, { explain = false } = {}) {
+  const client = await pool.connect();
+  const statements = [], plans = [];
+  const proofClient = { async query(text, values) {
+    const pairs = /^CREATE TEMP TABLE pg_temp\."classification_((?:exact|foreign)_\d+)"/u.exec(text);
+    if (explain && pairs) plans.push({ set: pairs[1], plan: (await client.query(`EXPLAIN (FORMAT JSON) ${text}`, values)).rows[0]["QUERY PLAN"][0].Plan });
+    statements.push(text);
+    return client.query(text, values);
+  }, release() {} };
+  try {
+    await client.query("BEGIN");
+    await client.query("SET LOCAL statement_timeout='60000ms'");
+    let outcome = ACCEPTED;
+    try { await prepare(proofClient, `"${context.schema}"`, input); }
+    catch (error) { if (error?.code !== "POSTGRES_CLASSIFICATION_CORRECTION_INVALID") throw error; outcome = REFUSED; }
+    const links = (await client.query(`SELECT * FROM ${context.table("telemetry_classification_correction_links")}
+      WHERE generation_id=$1 ORDER BY id`, [input.generationId])).rows.map(({ id, created_at, ...row }) => row);
+    const leftovers = (await client.query(`SELECT count(*)::integer AS n FROM pg_class
+      WHERE relpersistence='t' AND relname LIKE 'classification\\_%' AND pg_table_is_visible(oid)`)).rows[0].n;
+    return { outcome, links, statements, plans, leftovers };
+  } finally {
+    await client.query("ROLLBACK");
+    client.release();
+  }
+}
+
+async function proofParity(context, format, principal, manifest, token, expected, label) {
+  const input = await proofInput(context, format, principal, manifest, token);
+  const live = await runProof(modules.links.preparePostgresClassificationActivation, context, input, { explain: true });
+  const frozen = await runProof(modules.oracle.preparePostgresClassificationActivation, context, input);
+  assert.equal(frozen.outcome, expected, `${label}: frozen outcome`);
+  assert.equal(live.outcome, frozen.outcome, `${label}: outcome`);
+  assert.deepEqual(live.links, frozen.links, `${label}: identical link rows in identical order`);
+  if (live.outcome === ACCEPTED) assert.equal(live.leftovers, 0, `${label}: working sets dropped`);
+  return { input, live, frozen };
+}
+
+test("bounded proof reproduces the frozen edca848 proof across pages, devices, duplicate originals and refusals", {
+  skip: !PG_TEST_SOCKET, timeout: 300_000,
+}, async () => {
+  await withSchema(async context => {
+    const participant = await seedParticipant(context, "parity");
+    const principal = await seedDevice(context, participant, "parity-own");
+    const other = await seedDevice(context, participant, "parity-other");
+    const stageMany = (device, day, records, parserVersion) => stageScaleV12Day(modules, pool, context.schema,
+      context.options, device, day, records, parserVersion ? { parserVersion } : {});
+    const COUNT = 450; // three pages of 200 pairs
+    const unknown = bulkUsage(DAY_TWO, COUNT);
+    // Every later predecessor pins the earliest READY original; an identical
+    // second original is the accepted head, so both pair with each candidate.
+    await stageMany(principal, DAY_TWO, unknown, "synthetic-parity-earliest");
+    const sessionDay = await stage(context, principal, DAY_ONE, "session", session());
+    const headDay = await stageMany(principal, DAY_TWO, unknown);
+    const tail = await stage(context, principal, DAY_THREE, "usage", usageAt(DAY_THREE, 0));
+    assert.equal((await context.domain.activate(principal,
+      await prepared(context, principal, [sessionDay, headDay, tail]))).replay, false);
+    const check = async (label, device, days, expected) => {
+      const predecessor = await context.domain.createPredecessor(device);
+      return proofParity(context, 12, device, domainManifest(predecessor, days), predecessor.token, expected, label);
+    };
+
+    const knownSession = await stage(context, principal, DAY_ONE, "session", session("openai_codex"));
+    const knownDay = await stageMany(principal, DAY_TWO, bulkUsage(DAY_TWO, COUNT, KNOWN));
+    const knownTail = await stage(context, principal, DAY_THREE, "usage", usageAt(DAY_THREE, 0, KNOWN));
+    // 2x450 usage pairs: the second original of each occurrence resolves
+    // through the link the first just wrote. The session closure then pages
+    // more than 200 original and candidate rows.
+    const corrected = await check("exact multi-page correction", principal, [knownSession, knownDay, knownTail], ACCEPTED);
+    assert.equal(corrected.live.links.length, COUNT + 2);
+    const quantity = await stageMany(principal, DAY_TWO, bulkUsage(DAY_TWO, COUNT, KNOWN,
+      index => index === COUNT - 1 ? { totalInputContextTokens: 1001 } : {}));
+    const late = await check("refusal on a later exact page", principal, [knownSession, quantity, knownTail], REFUSED);
+    assert.ok(late.live.links.length >= 2 * 200, "two full pages of links precede the refusal");
+    assert.equal(late.live.statements.filter(sql => /FROM pg_temp\."classification_exact_12" pair/u.test(sql)).length, 3,
+      "the refusal comes on the third exact page");
+    const sameForeign = await stageMany(other, DAY_TWO, bulkUsage(DAY_TWO, COUNT));
+    await check("agreeing foreign device over every foreign page", other, [sameForeign], ACCEPTED);
+    const differingForeign = await stageMany(other, DAY_TWO, bulkUsage(DAY_TWO, COUNT, {},
+      index => index === COUNT - 1 ? KNOWN : {}));
+    await check("foreign classification refused on a later page", other, [differingForeign], REFUSED);
+
+    // Cost shape: one candidate build and at most one history build per
+    // format, however many pages; pages read only their indexed pair set.
+    const { live, frozen } = corrected;
+    assert.equal(candidateBuilds(live.statements), 1, "the candidate set is built once");
+    assert.ok(candidateBuilds(frozen.statements) >= 12, "the frozen proof rebuilt it in every statement and page");
+    assert.equal(live.statements.filter(sql => /^CREATE TEMP TABLE pg_temp\."classification_source_/u.test(sql)).length, 3);
+    const pages = live.statements.filter(sql => /FROM pg_temp\."classification_(?:exact|foreign)_\d+" pair/u.test(sql));
+    assert.ok(pages.length >= 6);
+    for (const sql of pages) assert.equal(sql.includes(context.schema), false, "a page reads only its working set");
+    const exact = live.plans.find(entry => entry.set === "exact_12");
+    const join = [...planNodes(exact.plan)].find(node => /Join|Nested Loop/u.test(node["Node Type"]));
+    assert.ok(["Hash Join", "Merge Join"].includes(join["Node Type"]),
+      `the analyzed working sets pair in one set join, not a nested rescan (${join["Node Type"]})`);
+  });
+});
+
+test("an unchanged v1.2 day is re-checked against v1.1 evidence a later v1.1 activation admitted", {
+  skip: !PG_TEST_SOCKET, timeout: 120_000,
+}, async () => {
+  await withSchema(async context => {
+    const today = new Date().toISOString().slice(0, 10);
+    const yesterday = new Date(Date.now() - DAY_MS).toISOString().slice(0, 10);
+    const participant = await seedParticipant(context, "cross-format");
+    const modern = await seedDevice(context, participant, "cross-v12");
+    const legacy = await seedDevice(context, participant, "cross-v11", { v12: false });
+    const options = { ...context.options, sourceNamespace: SOURCE_NAMESPACE };
+    await initializeScaleV11(modules, pool, context.schema, options);
+    await grantScaleV11(modules, pool, participant, legacy, options);
+    const modernToday = await stage(context, modern, today, "usage", usageAt(today, 0, KNOWN));
+    assert.equal((await context.domain.activate(modern, await prepared(context, modern, [modernToday]))).replay, false);
+    // A v1.1 activation never compares against v1.2 records, so another
+    // device's unknown copy of the same occurrence is admitted afterwards.
+    const { boundaryFlags, tieOrder, cacheWriteTtl, ...common } = usageAt(today, 0,
+      { components: { ...usage().components, inputCacheWriteTokens: null } });
+    const v11Domain = modules.live.createPostgresTelemetryV11Domain(pool, options);
+    const legacyToday = await stageScaleV11Day(modules, pool, context.schema, options, legacy, today,
+      [{ ...common, schemaVersion: "usage-event-v1.1" }]);
+    assert.equal((await v11Domain.activate(legacy, scaleV11DomainManifest(await v11Domain.createPredecessor(legacy),
+      [legacyToday]))).replay, false);
+    // The v1.2 device's next domain keeps today's manifest and adds yesterday.
+    const modernYesterday = await stage(context, modern, yesterday, "usage", usageAt(yesterday, 0, KNOWN));
+    const predecessor = await context.domain.createPredecessor(modern);
+    const manifest = domainManifest(predecessor, [modernYesterday, modernToday]);
+    await proofParity(context, 12, modern, manifest, predecessor.token, REFUSED, "unchanged day re-checked");
+    // A changed-days-only candidate would accept it: narrowing is not
+    // semantics-preserving, so the bounded proof keeps every domain day.
+    const narrowed = await proofInput(context, 12, modern, manifest, predecessor.token);
+    narrowed.days = narrowed.days.filter(day => day.day === yesterday);
+    assert.equal((await runProof(modules.oracle.preparePostgresClassificationActivation, context, narrowed)).outcome, ACCEPTED);
+    await refused(context, modern, manifest);
+  });
+});
+
+/** Run captured live closure SQL and the frozen edca848 SQL on one (possibly mutated) state, then roll back. */
+async function closurePair(live, frozen, { mutate = async () => {}, values = live.values } = {}) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SET LOCAL session_replication_role=replica");
+    await mutate(client);
+    return [(await client.query(live.text, values)).rows.length, (await client.query(frozen, values)).rows.length];
+  } finally {
+    await client.query("ROLLBACK");
+    client.release();
+  }
+}
+const withoutDay = (json, day) => JSON.stringify(JSON.parse(json).filter(entry => entry.day !== day));
+
+test("v1.1 closure anti-joins refuse exactly what the frozen closures refuse under every disjunct", {
+  skip: !PG_TEST_SOCKET, timeout: 180_000,
+}, async () => {
+  await withSchema(async context => {
+    const day = new Date().toISOString().slice(0, 10);
+    const participant = await seedParticipant(context, "closure-parity");
+    const principal = await seedDevice(context, participant, "closure-parity", { v12: false });
+    const owner = { ...principal, principal };
+    const options = { ...context.options, sourceNamespace: SOURCE_NAMESPACE };
+    await pool.query(`UPDATE ${context.table("telemetry_transport_formats")} SET lifecycle='accepted'
+      WHERE schema_version='telemetry-contribution-v1.1'`);
+    await modules.live.initializePostgresTypedV11Admission(pool, options);
+    await pool.query(`INSERT INTO ${context.table("typed_v1_admission_state")}(
+      id,source_namespace,namespace_id,runtime_contract_version,next_source_row_id)
+      SELECT 1,source_namespace,namespace_id,1,3 FROM ${context.table("typed_v11_admission_state")} WHERE id=1`);
+    const v11Records = [0, 1].map(index => {
+      const { boundaryFlags, tieOrder, cacheWriteTtl, ...record } = usageAt(day, index,
+        { provider: "openai_codex", components: { ...usage().components, inputCacheWriteTokens: null } });
+      return { ...record, schemaVersion: "usage-event-v1.1" };
+    });
+    const legacyRecords = v11Records.map(record => JSON.parse(
+      modules.compatibility.telemetryV11LegacyProjection("usage", record).canonicalRecord));
+    const legacy = await seedTypedV1Chunk(modules, pool, context.schema, owner,
+      { day, stream: "usage", chunkSeq: 0, records: legacyRecords });
+    const digests = await legacy.admit({ ownerDigest: participant.ownerDigest, firstSourceRowId: 1 });
+    // The retained raw v1 rows and preservation proofs legacyGap reads.
+    const raw = await pool.connect();
+    try {
+      await raw.query("BEGIN");
+      await raw.query("SET LOCAL session_replication_role=replica");
+      for (const [index, record] of legacyRecords.entries()) {
+        await raw.query(`INSERT INTO ${context.table("telemetry_v1_records")}(id,chunk_row_id,participant_id,device_id,
+          stream,occurrence_id,observed_at,observed_day,provider,model_id,session_uuid,record_json)
+          VALUES ($1,$2,$3,$4,'usage',$5,$6,$7::date,$8,$9,$10,$11)`, [index + 1, legacy.chunkRowId, participant.participantId,
+          principal.deviceId, v11Records[index].eventId, v11Records[index].eventTime, day, record.provider, record.modelId,
+          v11Records[index].sessionUuid, JSON.stringify(record)]);
+        await raw.query(`INSERT INTO ${context.table("typed_v1_preservation_proofs")}(source_row_id,canonical_digest)
+          VALUES ($1,decode($2,'hex'))`, [index + 1, digests[index]]);
+      }
+      await raw.query("COMMIT");
+    } finally { raw.release(); }
+    await modules.live.grantPostgresTelemetryV11Consent(pool, { ...principal, sessionId: participant.sessionId },
+      telemetryV11RequiredConsent(), Date.now(), options);
+    const domain = modules.live.createPostgresTelemetryV11Domain(pool, options);
+    const first = await stageScaleV11Day(modules, pool, context.schema, options, principal, day, v11Records);
+    assert.equal((await domain.activate(principal, scaleV11DomainManifest(await domain.createPredecessor(principal), [first]))).replay, false);
+    const extra = (() => { const { boundaryFlags, tieOrder, cacheWriteTtl, ...record } = usageAt(day, 2,
+      { provider: "openai_codex", components: { ...usage().components, inputCacheWriteTokens: null } });
+    return { ...record, schemaVersion: "usage-event-v1.1" }; })();
+    const second = await stageScaleV11Day(modules, pool, context.schema, options, principal, day, [...v11Records, extra]);
+    statementCapture = [];
+    let captured;
+    try {
+      assert.equal((await domain.activate(principal, scaleV11DomainManifest(await domain.createPredecessor(principal),
+        [second]))).replay, false);
+    } finally { captured = statementCapture; statementCapture = null; }
+    const find = marker => { const found = captured.filter(entry => entry.text.includes(marker)); assert.equal(found.length, 1, marker); return found[0]; };
+    const s = `"${context.schema}"`;
+    const closures = {
+      uncovered: [find("winner_records AS MATERIALIZED"), modules.closureOracle.frozenUncoveredSql(s), 2],
+      legacyGap: [find(`${s}."telemetry_v1_records" old_row`), modules.closureOracle.frozenLegacyGapSql(s), 2],
+      previousGap: [find(`${s}."telemetry_v11_domain_days" previous_day`), modules.closureOracle.frozenPreviousGapSql(s), 1],
+    };
+    const successor = (await pool.query(`SELECT typed_record_id::text AS id FROM ${context.table("typed_v11_record_admissions")}
+      WHERE manifest_id=$1 ORDER BY typed_record_id LIMIT 1`, [second.manifestId])).rows[0].id;
+    const typedV1 = (await pool.query(`SELECT id::text AS id,owner_id::text AS owner_id,chunk_id::text AS chunk_id
+      FROM ${context.table("typed_telemetry_records")} WHERE format=10 ORDER BY source_row_id LIMIT 1`)).rows[0];
+    const blob = value => Buffer.from(modules.codec.encodeTypedTelemetryId(value));
+    const update = (sql, values) => client => client.query(sql, values);
+    const proofs = context.table("typed_v11_record_proofs");
+    const cases = {
+      uncovered: [
+        ["unmutated", false],
+        ["candidate day missing (D1)", true, { values: ([a, b, c, d]) => [a, b, withoutDay(c, day), d] }],
+        ["owner decodes to another participant (D4 true)", true,
+          { mutate: update(`UPDATE ${context.table("typed_telemetry_owners")} SET original_id=$2 WHERE id=$1`, [typedV1.owner_id, blob(`participant:${randomUUID()}`)]) }],
+        ["owner id undecodable (D4 NULL)", false,
+          { mutate: update(`UPDATE ${context.table("typed_telemetry_owners")} SET original_id=$2 WHERE id=$1`, [typedV1.owner_id, Buffer.from([0xee, ...randomBytes(16)])]) }],
+        ["chunk decodes to another chunk (D6)", true,
+          { mutate: update(`UPDATE ${context.table("typed_telemetry_chunks")} SET original_id=$2 WHERE id=$1`, [typedV1.chunk_id, blob(`chunk:${randomUUID()}`)]) }],
+        ["observed day moved (D7)", true,
+          { mutate: update(`UPDATE ${context.table("typed_telemetry_records")} SET observed_at_ms=observed_at_ms+${DAY_MS},observed_day=observed_day+1 WHERE id=$1`, [typedV1.id]) }],
+        ["successor legacy digest differs (D8)", true,
+          { mutate: update(`UPDATE ${proofs} SET legacy_digest=$2 WHERE typed_record_id=$1`, [successor, randomBytes(32)]) }],
+      ],
+      legacyGap: [
+        ["unmutated", false],
+        ["preservation proof missing", true, { mutate: update(`DELETE FROM ${context.table("typed_v1_preservation_proofs")} WHERE source_row_id=1`, []) }],
+        ["candidate day missing", true, { values: ([a, b, c, d]) => [a, b, withoutDay(c, day), d] }],
+        ["successor legacy digest differs", true,
+          { mutate: update(`UPDATE ${proofs} SET legacy_digest=$2 WHERE typed_record_id=$1`, [successor, randomBytes(32)]) }],
+        ["successor legacy occurrence differs", true,
+          { mutate: update(`UPDATE ${proofs} SET legacy_occurrence_blob=$2 WHERE typed_record_id=$1`, [successor, blob(`event:v2:${"f".repeat(64)}`)]) }],
+      ],
+      previousGap: [
+        ["unmutated", false],
+        ["candidate day missing", true, { values: ([a, b, c]) => [a, withoutDay(b, day), c] }],
+        ["successor occurrence differs", true,
+          { mutate: update(`UPDATE ${proofs} SET occurrence_blob=$2 WHERE typed_record_id=$1`, [successor, blob(`event:v2:${"f".repeat(64)}`)]) }],
+        ["successor base digest differs", true,
+          { mutate: update(`UPDATE ${proofs} SET base_digest=$2 WHERE typed_record_id=$1`, [successor, randomBytes(32)]) }],
+      ],
+    };
+    for (const [name, [live, frozen]] of Object.entries(closures)) {
+      for (const [label, refuses, { mutate, values } = {}] of cases[name]) {
+        const [liveRows, frozenRows] = await closurePair(live, frozen,
+          { mutate, values: values ? values(live.values) : live.values });
+        assert.equal(frozenRows > 0, refuses, `${name}/${label}: frozen outcome`);
+        assert.equal(liveRows > 0, frozenRows > 0, `${name}/${label}: live and frozen agree`);
+      }
+    }
+  });
+});
+
+test("v1.1 closures probe successors once per manifest, not once per retained row", {
+  skip: !PG_TEST_SOCKET, timeout: 180_000,
+}, async () => {
+  await withSchema(async context => {
+    const participant = await seedParticipant(context, "closure-plan");
+    const principal = await seedDevice(context, participant, "closure-plan", { v12: false });
+    const options = { ...context.options, sourceNamespace: SOURCE_NAMESPACE };
+    await initializeScaleV11(modules, pool, context.schema, options);
+    await grantScaleV11(modules, pool, participant, principal, options);
+    const PER_DAY = 300;
+    const days = scaleDays(2, new Date(Date.now() - DAY_MS).toISOString().slice(0, 10));
+    const records = (day, extra = 0) => [scaleSession(11, day, days.indexOf(day)), ...Array.from({ length: PER_DAY + extra },
+      (_, index) => scaleUsage(11, day, index, { session: days.indexOf(day) }))];
+    const domain = modules.live.createPostgresTelemetryV11Domain(pool, options);
+    const first = [];
+    for (const day of days) first.push(await stageScaleV11Day(modules, pool, context.schema, options, principal, day, records(day)));
+    assert.equal((await domain.activate(principal, scaleV11DomainManifest(await domain.createPredecessor(principal), first))).replay, false);
+    const second = [first[0], await stageScaleV11Day(modules, pool, context.schema, options, principal, days[1], records(days[1], 1))];
+    for (const { tablename } of (await pool.query("SELECT tablename FROM pg_tables WHERE schemaname=$1", [context.schema])).rows) {
+      await pool.query(`ANALYZE ${context.table(tablename)}`);
+    }
+    statementCapture = [];
+    let captured;
+    try {
+      assert.equal((await domain.activate(principal, scaleV11DomainManifest(await domain.createPredecessor(principal),
+        second))).replay, false);
+    } finally { captured = statementCapture; statementCapture = null; }
+    const live = captured.find(entry => entry.text.includes(`"${context.schema}"."telemetry_v11_domain_days" previous_day`));
+    const loops = async text => {
+      const plan = (await pool.query(`EXPLAIN (ANALYZE, FORMAT JSON) ${text}`, live.values)).rows[0]["QUERY PLAN"][0].Plan;
+      return Math.max(...[...planNodes(plan)].filter(node => node["Relation Name"] === "typed_v11_record_proofs")
+        .map(node => node["Actual Loops"]));
+    };
+    const frozenLoops = await loops(modules.closureOracle.frozenPreviousGapSql(`"${context.schema}"`));
+    const liveLoops = await loops(live.text);
+    assert.ok(frozenLoops >= PER_DAY, `the frozen probe rescans a manifest per retained row (${frozenLoops})`);
+    assert.ok(liveLoops <= 4, `the anti-join reads each manifest's proofs a bounded number of times (${liveLoops})`);
+  });
+});
 
 test("migration76 is a forward-only addition to the current75 ledger and fences both reader generations", {
   skip: !PG_TEST_SOCKET, timeout: 120_000,

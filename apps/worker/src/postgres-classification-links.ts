@@ -234,7 +234,8 @@ function candidateSql(s: string, format: 11 | 12): string {
     WHERE chunk.participant_id=$2 AND chunk.device_id=$3 AND manifest.state='ready' AND manifest.chunk_day=day.day`;
 }
 
-function oldSql(s: string, format: PostgresClassificationFormat, allDevices=false): string {
+/** Every device's retained history of one format; a caller restricts it by source_device_id. */
+function oldSql(s: string, format: PostgresClassificationFormat): string {
   if(format===12) return `SELECT record.id,CASE record.stream WHEN 'usage' THEN 1 WHEN 'session' THEN 3 ELSE 2 END AS stream,
       record.occurrence_id,record.observed_at_ms,record.observed_day,record.canonical_digest,record.provider_id,usage.model_id,usage.session_id,
       chunk.device_id AS source_device_id
@@ -242,7 +243,7 @@ function oldSql(s: string, format: PostgresClassificationFormat, allDevices=fals
     JOIN ${t(s,"telemetry_v12_chunks")} chunk ON chunk.id=record.chunk_id
     JOIN ${t(s,"telemetry_v12_day_manifests")} retained_manifest ON retained_manifest.id=record.manifest_id
     LEFT JOIN ${t(s,"telemetry_v12_typed_usage")} usage ON usage.record_id=record.id
-    WHERE chunk.participant_id=$2 ${allDevices?"":"AND chunk.device_id=$3"} AND (
+    WHERE chunk.participant_id=$2 AND (
       EXISTS (SELECT 1 FROM ${t(s,"telemetry_v12_domain_heads")} head
         JOIN ${t(s,"telemetry_v12_domain_days")} day ON day.generation_id=head.generation_id
         WHERE head.participant_id=$2 AND day.manifest_id=record.manifest_id)
@@ -269,7 +270,7 @@ function oldSql(s: string, format: PostgresClassificationFormat, allDevices=fals
     JOIN ${t(s,"typed_telemetry_devices")} device ON device.id=record.device_id
     LEFT JOIN ${t(s,"typed_telemetry_usage")} usage ON usage.record_id=record.id
     LEFT JOIN ${t(s,"typed_telemetry_identifiers")} session ON session.id=usage.session_id ${parent}
-    WHERE record.format=${format} ${allDevices?"":`AND ${t(s,"typed_legacy_admission_decode_id")}(device.original_id)=$3`} ${accepted}`;
+    WHERE record.format=${format} ${accepted}`;
 }
 
 function vector(input: PostgresClassificationActivation): string {
@@ -279,6 +280,96 @@ function vector(input: PostgresClassificationActivation): string {
 function predecessorCte():string{
   return `predecessor_days AS MATERIALIZED (SELECT day::date,manifest_id,manifest_digest
     FROM jsonb_to_recordset($1::jsonb->'predecessor') AS bound(day text,manifest_id text,manifest_digest text))`;
+}
+
+/** One activation's record and pair sets. Each is built once from the
+ * candidateSql/oldSql text the per-page CTEs re-ran, then paged by index.
+ * Session-private: dropped once the proof passes, and discarded with the
+ * caller's rollback on any refusal or error (ON COMMIT DROP otherwise). */
+type WorkSet = "candidate" | `source_${PostgresClassificationFormat}` | `${"foreign" | "exact"}_${PostgresClassificationFormat}`;
+function work(name: WorkSet): string { return `pg_temp.${quotePostgresIdentifier(`classification_${name}`)}`; }
+const WORK_SETS: readonly WorkSet[] = ["candidate", "source_10", "source_11", "source_12",
+  "foreign_10", "foreign_11", "foreign_12", "exact_10", "exact_11", "exact_12"];
+// Every set statement binds the same three values; the unused scope CTE only
+// types them, so oldSql(10|11) may leave $3 unreferenced.
+function workPrelude(): string {
+  return `WITH candidate_days AS MATERIALIZED (SELECT day::date,manifest_id
+    FROM jsonb_to_recordset($1::jsonb->'candidate') AS input(day text,manifest_id text)),${predecessorCte()},
+    activation_scope AS (SELECT $2::text AS participant_id,$3::text AS device_id)`;
+}
+
+class ClassificationWork {
+  private readonly built = new Set<WorkSet>();
+  private sessionIndexed = false;
+  constructor(private readonly client: PostgresClient, private readonly s: string,
+    private readonly input: PostgresClassificationActivation) {}
+  private async records(name: WorkSet, sql: string): Promise<number> {
+    const created = await this.client.query(`CREATE TEMP TABLE ${work(name)} ON COMMIT DROP AS ${workPrelude()}
+      SELECT * FROM (${sql}) records`, [vector(this.input), this.input.participantId, this.input.deviceId]);
+    this.built.add(name);
+    // Temporary tables have no autovacuum statistics; the pair joins need them.
+    await this.client.query(`ANALYZE ${work(name)}`);
+    return number(created.rowCount);
+  }
+  candidate(): Promise<number> { return this.records("candidate", candidateSql(this.s, this.input.format)); }
+  async source(format: PostgresClassificationFormat): Promise<string> {
+    if (!this.built.has(`source_${format}`)) await this.records(`source_${format}`, oldSql(this.s, format));
+    return work(`source_${format}`);
+  }
+  /** The exact pair multiset each original per-page statement joined. */
+  async pairs(kind: "foreign" | "exact", format: PostgresClassificationFormat): Promise<void> {
+    const old = await this.source(format);
+    const join = kind === "foreign"
+      ? `SELECT old_source.id AS before_id,candidate.id AS after_id
+          FROM ${old} old_source JOIN ${work("candidate")} candidate
+            ON candidate.stream=old_source.stream AND candidate.occurrence_id=old_source.occurrence_id
+         WHERE old_source.source_device_id<>$1 AND old_source.stream IN (1,3)`
+      // The original exact statement read only this device's history.
+      : `SELECT old_source.id AS before_id,candidate.id AS after_id,old_source.stream
+          FROM ${old} old_source JOIN ${work("candidate")} candidate
+            ON candidate.stream=old_source.stream AND candidate.occurrence_id=old_source.occurrence_id
+           AND candidate.observed_at_ms=old_source.observed_at_ms AND candidate.observed_day=old_source.observed_day
+         WHERE old_source.source_device_id=$1 AND old_source.stream IN (1,3)
+           AND (old_source.provider_id IS DISTINCT FROM candidate.provider_id
+             OR (old_source.stream=1 AND old_source.model_id IS DISTINCT FROM candidate.model_id))`;
+    await this.client.query(`CREATE TEMP TABLE ${work(`${kind}_${format}`)} ON COMMIT DROP AS ${join}`, [this.input.deviceId]);
+    this.built.add(`${kind}_${format}`);
+    await this.client.query(`CREATE INDEX ON ${work(`${kind}_${format}`)} (before_id,after_id)`);
+  }
+  /** Same keyset, order and 201-row page the per-page statements returned. */
+  async page<T extends object>(kind: "foreign" | "exact", format: PostgresClassificationFormat, oldCursor: string,
+    newCursor: string): Promise<readonly T[]> {
+    // Qualified: a bare ORDER BY name would sort the text output columns.
+    return (await this.client.query<T>(`SELECT pair.before_id::text AS before_id,pair.after_id::text AS after_id
+      ${kind === "exact" ? ",pair.stream" : ""} FROM ${work(`${kind}_${format}`)} pair
+      WHERE (pair.before_id,pair.after_id)>($1::bigint,$2::bigint) ORDER BY pair.before_id,pair.after_id LIMIT 201`,
+    [oldCursor, newCursor])).rows;
+  }
+  /** The session closure's original-or-candidate usage rows for one session. */
+  async session(sessionId: Uint8Array, formatCursor: number,
+    recordCursor: string): Promise<readonly {format:PostgresClassificationFormat;id:string}[]> {
+    const sources = [await this.source(10), await this.source(11), await this.source(12)];
+    if (!this.sessionIndexed) {
+      for (const name of ["candidate", "source_10", "source_11", "source_12"] as const) {
+        await this.client.query(`CREATE INDEX ON ${work(name)} (session_id) WHERE stream=1`);
+      }
+      this.sessionIndexed = true;
+    }
+    return (await this.client.query<{format:PostgresClassificationFormat;id:string}>(`WITH
+      original AS (
+        SELECT 10 AS format,id,stream,session_id FROM ${sources[0]}
+        UNION ALL SELECT 11,id,stream,session_id FROM ${sources[1]}
+        UNION ALL SELECT 12,id,stream,session_id FROM ${sources[2]}),
+      selected AS (SELECT format,id FROM original WHERE stream=1 AND session_id=$1
+        UNION SELECT $2::integer,id FROM ${work("candidate")} WHERE stream=1 AND session_id=$1)
+      SELECT format,id::text FROM selected WHERE (format,id)>($3::integer,$4::bigint) ORDER BY format,id LIMIT 201`,
+    [sessionId, this.input.format, formatCursor, recordCursor])).rows;
+  }
+  async drop(): Promise<void> {
+    const names = WORK_SETS.filter(name => this.built.has(name));
+    if (names.length) await this.client.query(`DROP TABLE ${names.map(work).join(",")}`);
+    this.built.clear();
+  }
 }
 
 /** Prepare links within the caller's existing activation transaction. Nothing
@@ -317,21 +408,24 @@ export async function preparePostgresClassificationActivation(client: PostgresCl
       WHERE link.participant_id=$1 AND link.state='active' AND owner.state='active'`,[input.participantId])).rows;
   // An ordinary owner without a journal bridge may still take the exact path.
   // A differing classification can never invent an owner link.
-  let owner=ownership.length===1?ownership[0]:null;
+  const owner=ownership.length===1?ownership[0]!:null;
   if(ownership.length>1) fail();
+  const sets=new ClassificationWork(client,s,input);
+  // Every pair joins a candidate row, so an empty candidate proves both pair
+  // sets empty without reading history, as the per-page joins did.
+  if(await sets.candidate()>0) await prepareClassificationPairs(client,s,input,owner,sets);
+  await assertSessionClassificationClosure(client,s,input,sets);
+  await sets.drop();
+}
+
+async function prepareClassificationPairs(client: PostgresClient, s: string, input: PostgresClassificationActivation,
+  owner: {owner_digest:string;revision:string;authority_epoch:string}|null, sets: ClassificationWork): Promise<void> {
   for(const beforeFormat of [10,11,12] as const){
     if(beforeFormat>input.format) continue;
     let foreignOldCursor="0",foreignNewCursor="0";
+    await sets.pairs("foreign",beforeFormat);
     for(;;){
-      const foreign=(await client.query<{before_id:string;after_id:string}>(`WITH candidate_days AS MATERIALIZED (
-        SELECT day::date,manifest_id FROM jsonb_to_recordset($1::jsonb->'candidate') AS input(day text,manifest_id text)),${predecessorCte()},
-        candidate AS MATERIALIZED (${candidateSql(s,input.format)}),old_source AS MATERIALIZED (${oldSql(s,beforeFormat,true)})
-        SELECT old_source.id::text AS before_id,candidate.id::text AS after_id
-        FROM old_source JOIN candidate ON candidate.stream=old_source.stream AND candidate.occurrence_id=old_source.occurrence_id
-        WHERE old_source.source_device_id<>$3 AND old_source.stream IN (1,3)
-          AND (old_source.id,candidate.id)>($4::bigint,$5::bigint)
-        ORDER BY old_source.id,candidate.id LIMIT 201`,
-        [vector(input),input.participantId,input.deviceId,foreignOldCursor,foreignNewCursor])).rows;
+      const foreign=await sets.page<{before_id:string;after_id:string}>("foreign",beforeFormat,foreignOldCursor,foreignNewCursor);
       const page=foreign.slice(0,PAGE);if(!page.length) break;
       const before=await readPostgresClassificationRecords(client,s,beforeFormat,page.map(row=>row.before_id));
       const after=await readPostgresClassificationRecords(client,s,input.format,page.map(row=>row.after_id));
@@ -349,17 +443,9 @@ export async function preparePostgresClassificationActivation(client: PostgresCl
       foreignOldCursor=page.at(-1)!.before_id;foreignNewCursor=page.at(-1)!.after_id;if(foreign.length<=PAGE) break;
     }
     let oldCursor="0",newCursor="0";
+    await sets.pairs("exact",beforeFormat);
     for(;;){
-      const rows=(await client.query<{before_id:string;after_id:string;stream:number}>(
-        `WITH candidate_days AS MATERIALIZED (SELECT day::date,manifest_id FROM jsonb_to_recordset($1::jsonb->'candidate') AS input(day text,manifest_id text)),${predecessorCte()},
-          candidate AS MATERIALIZED (${candidateSql(s,input.format)}),old_source AS MATERIALIZED (${oldSql(s,beforeFormat)})
-         SELECT old_source.id::text AS before_id,candidate.id::text AS after_id,old_source.stream
-           FROM old_source JOIN candidate ON candidate.stream=old_source.stream AND candidate.occurrence_id=old_source.occurrence_id
-             AND candidate.observed_at_ms=old_source.observed_at_ms AND candidate.observed_day=old_source.observed_day
-          WHERE old_source.stream IN (1,3) AND (old_source.provider_id IS DISTINCT FROM candidate.provider_id
-            OR (old_source.stream=1 AND old_source.model_id IS DISTINCT FROM candidate.model_id))
-            AND (old_source.id,candidate.id)>($4::bigint,$5::bigint)
-          ORDER BY old_source.id,candidate.id LIMIT 201`,[vector(input),input.participantId,input.deviceId,oldCursor,newCursor])).rows;
+      const rows=await sets.page<{before_id:string;after_id:string;stream:number}>("exact",beforeFormat,oldCursor,newCursor);
       const page=rows.slice(0,PAGE); if(!page.length) break;
       if(!owner || !HEX.test(owner.owner_digest)) fail();
       const before=await readPostgresClassificationRecords(client,s,beforeFormat,page.map(row=>row.before_id));
@@ -425,7 +511,6 @@ export async function preparePostgresClassificationActivation(client: PostgresCl
       if(rows.length<=PAGE) break;
     }
   }
-  await assertSessionClassificationClosure(client,s,input);
 }
 
 /** Archived method1 variants remain independent evidence. Consume only an
@@ -488,7 +573,8 @@ async function assertArchivedSessionProviders(client:PostgresClient,s:string,inp
 
 /** Unknown sessions stay pending. An attempted known session must prove the
  * complete current/candidate usage set across every day at final activation. */
-async function assertSessionClassificationClosure(client: PostgresClient,s:string,input:PostgresClassificationActivation):Promise<void>{
+async function assertSessionClassificationClosure(client: PostgresClient,s:string,input:PostgresClassificationActivation,
+ sets:ClassificationWork):Promise<void>{
   let sessionCursor="0";
   for(;;){
     const sessions=(await client.query<{id:string}>(`SELECT DISTINCT after_record_id AS id
@@ -501,17 +587,7 @@ async function assertSessionClassificationClosure(client: PostgresClient,s:strin
     for(const session of after.values()){
       let formatCursor=0,recordCursor="0";const providers=new Set<string>();
       for(;;){
-        const rows=(await client.query<{format:PostgresClassificationFormat;id:string}>(`WITH candidate_days AS MATERIALIZED (
-          SELECT day::date,manifest_id FROM jsonb_to_recordset($1::jsonb->'candidate') AS input(day text,manifest_id text)),${predecessorCte()},
-          candidate AS MATERIALIZED (${candidateSql(s,input.format)}),
-          original AS MATERIALIZED (
-            SELECT 10 AS format,* FROM (${oldSql(s,10,true)}) old_v1
-            UNION ALL SELECT 11,* FROM (${oldSql(s,11,true)}) old_v11
-            UNION ALL SELECT 12,* FROM (${oldSql(s,12,true)}) old_v12),
-          selected AS (SELECT format,id FROM original WHERE stream=1 AND session_id=$4
-            UNION SELECT $5::integer,id FROM candidate WHERE stream=1 AND session_id=$4)
-          SELECT format,id::text FROM selected WHERE (format,id)>($6::integer,$7::bigint) ORDER BY format,id LIMIT 201`,
-          [vector(input),input.participantId,input.deviceId,encodeTypedTelemetryId(session.occurrenceId),input.format,formatCursor,recordCursor])).rows;
+        const rows=await sets.session(encodeTypedTelemetryId(session.occurrenceId),formatCursor,recordCursor);
         const page=rows.slice(0,PAGE);if(!page.length) break;
         for(const format of [10,11,12] as const){
           const ids=page.filter(row=>row.format===format).map(row=>row.id);if(!ids.length) continue;

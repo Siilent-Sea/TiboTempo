@@ -1931,6 +1931,20 @@ export function createPostgresTelemetryV11Domain(
 }
 
 /**
+ * The candidate manifests' admissions, decoded once. Successor probes join
+ * this set; probing typed_v11_record_admissions per row would re-decode every
+ * proof of the manifest for each old row, since its occurrence ids are
+ * computed view columns no index can serve.
+ */
+function candidateSuccessors(s: string): string {
+  return `successor AS MATERIALIZED (
+       SELECT admission.manifest_id, admission.stream, admission.occurrence_id, admission.base_digest,
+              admission.legacy_occurrence_id, admission.legacy_digest, admission.typed_record_id
+         FROM candidate_days candidate
+         JOIN ${t(s, "typed_v11_record_admissions")} admission ON admission.manifest_id = candidate.manifest_id)`;
+}
+
+/**
  * ingestion-isolation 0007's usage-correction tolerance, as one SQL
  * predicate over a retained (before) and a successor (after) typed record
  * id: while the correction runtime is active, two usage rows whose every
@@ -2012,33 +2026,43 @@ async function assertTypedV1Transition(
     [principal.participantId, predecessor.winners_json],
   );
   if (partial.rows.length) throw new DomainRefusal("compatibility_unproven");
+  // A row refuses when any disjunct of the D1 guard is true. The scalar
+  // disjuncts and the successor probe are separate branches so the probe is
+  // one hash anti-join over the candidate's admissions instead of a per-row
+  // rescan of its whole manifest by decoded occurrence (quadratic per day).
   const uncovered = await client.query(
     `WITH ${winners},
      candidate_days AS MATERIALIZED (
        SELECT entry.day::date AS day, entry.manifest_id
-         FROM jsonb_to_recordset($3::jsonb) AS entry(day text, manifest_id text))
-     SELECT 1 FROM ${t(s, "telemetry_v1_chunks")} c
-       JOIN ${t(s, "typed_v1_record_admissions")} p ON p.chunk_id = c.id
-       JOIN ${t(s, "typed_telemetry_records")} r ON r.id = p.typed_record_id
-       JOIN ${t(s, "typed_telemetry_owners")} old_owner ON old_owner.id = r.owner_id
-       JOIN ${t(s, "typed_telemetry_devices")} old_device ON old_device.id = r.device_id
-       JOIN ${t(s, "typed_telemetry_chunks")} old_chunk ON old_chunk.id = r.chunk_id
-       LEFT JOIN candidate_days candidate ON candidate.day = c.chunk_day
-      WHERE c.participant_id = $1 AND c.superseded_at IS NULL
-        AND (c.participant_id, c.chunk_day, c.device_id) IN (SELECT participant_id, chunk_day, device_id FROM winners)
-        AND (candidate.manifest_id IS NULL OR r.format <> 10
-          OR r.namespace_id <> (SELECT namespace_id FROM ${t(s, "typed_v1_admission_state")})
-          OR ${t(s, "typed_legacy_admission_decode_id")}(old_owner.original_id) <> c.participant_id
-          OR ${t(s, "typed_legacy_admission_decode_id")}(old_device.original_id) <> c.device_id
-          OR ${t(s, "typed_legacy_admission_decode_id")}(old_chunk.original_id) <> c.id
-          OR r.observed_day <> (c.chunk_day - DATE '1970-01-01')
-          OR NOT EXISTS (
-            SELECT 1 FROM ${t(s, "typed_v11_record_admissions")} successor
-             WHERE successor.manifest_id = candidate.manifest_id AND successor.stream = c.stream
-               AND successor.legacy_occurrence_id = ${t(s, "typed_legacy_admission_decode_id")}(r.occurrence_id)
-               AND (successor.legacy_digest = r.canonical_digest
-                 OR ${correctedUsageEquivalent(s, "r.id", "successor.typed_record_id")}
-                 OR ${postgresClassificationLinkPredicate(s,"r.id","successor.typed_record_id",10,11,"$4::text")})))
+         FROM jsonb_to_recordset($3::jsonb) AS entry(day text, manifest_id text)),
+     ${candidateSuccessors(s)},
+     winner_records AS MATERIALIZED (
+       SELECT c.stream, r.id, r.occurrence_id, r.canonical_digest, candidate.manifest_id,
+              (candidate.manifest_id IS NULL OR r.format <> 10
+                OR r.namespace_id <> (SELECT namespace_id FROM ${t(s, "typed_v1_admission_state")})
+                OR ${t(s, "typed_legacy_admission_decode_id")}(old_owner.original_id) <> c.participant_id
+                OR ${t(s, "typed_legacy_admission_decode_id")}(old_device.original_id) <> c.device_id
+                OR ${t(s, "typed_legacy_admission_decode_id")}(old_chunk.original_id) <> c.id
+                OR r.observed_day <> (c.chunk_day - DATE '1970-01-01')) AS mismatched
+         FROM ${t(s, "telemetry_v1_chunks")} c
+         JOIN ${t(s, "typed_v1_record_admissions")} p ON p.chunk_id = c.id
+         JOIN ${t(s, "typed_telemetry_records")} r ON r.id = p.typed_record_id
+         JOIN ${t(s, "typed_telemetry_owners")} old_owner ON old_owner.id = r.owner_id
+         JOIN ${t(s, "typed_telemetry_devices")} old_device ON old_device.id = r.device_id
+         JOIN ${t(s, "typed_telemetry_chunks")} old_chunk ON old_chunk.id = r.chunk_id
+         LEFT JOIN candidate_days candidate ON candidate.day = c.chunk_day
+        WHERE c.participant_id = $1 AND c.superseded_at IS NULL
+          AND (c.participant_id, c.chunk_day, c.device_id) IN (SELECT participant_id, chunk_day, device_id FROM winners))
+     SELECT 1 FROM winner_records r WHERE r.mismatched
+     UNION ALL
+     SELECT 1 FROM winner_records r
+      WHERE r.mismatched IS NOT TRUE AND NOT EXISTS (
+        SELECT 1 FROM successor
+         WHERE successor.manifest_id = r.manifest_id AND successor.stream = r.stream
+           AND successor.legacy_occurrence_id = ${t(s, "typed_legacy_admission_decode_id")}(r.occurrence_id)
+           AND (successor.legacy_digest = r.canonical_digest
+             OR ${correctedUsageEquivalent(s, "r.id", "successor.typed_record_id")}
+             OR ${postgresClassificationLinkPredicate(s,"r.id","successor.typed_record_id",10,11,"$4::text")}))
       LIMIT 1`,
     [principal.participantId, predecessor.winners_json, candidateDays,activationDigest],
   );
@@ -2115,27 +2139,31 @@ async function assertDomainClosure(
   );
   if (duplicate.rows.length) throw new DomainRefusal("occurrence_conflict");
   // Every legacy winning occurrence must survive with identical base semantics.
+  // `proof IS NULL OR manifest IS NULL OR NOT EXISTS (...)` is exactly the
+  // NOT EXISTS below: a NULL manifest or a missing proof admits no successor.
+  // Without the OR the probe is a hash anti-join, not a per-row manifest scan.
   const legacyGap = await client.query(
     `WITH candidate_days AS MATERIALIZED (
        SELECT entry.day::date AS day, entry.manifest_id
          FROM jsonb_to_recordset($3::jsonb) AS entry(day text, manifest_id text)),
      winners AS MATERIALIZED (
        SELECT winner->>0 AS participant_id, (winner->>1)::date AS observed_day, winner->>2 AS device_id
-         FROM jsonb_array_elements($2::jsonb) winner)
+         FROM jsonb_array_elements($2::jsonb) winner),
+     ${candidateSuccessors(s)}
      SELECT 1 FROM ${t(s, "telemetry_v1_records")} old_row
        LEFT JOIN ${t(s, "typed_v1_preservation_proofs")} old_proof ON old_proof.source_row_id = old_row.id
        LEFT JOIN candidate_days candidate ON candidate.day = old_row.observed_day
       WHERE old_row.participant_id = $1
         AND (old_row.participant_id, old_row.observed_day, old_row.device_id) IN (
           SELECT participant_id, observed_day, device_id FROM winners)
-        AND (old_proof.source_row_id IS NULL OR candidate.manifest_id IS NULL OR NOT EXISTS (
-          SELECT 1 FROM ${t(s, "typed_v11_record_admissions")} new_row
-           WHERE new_row.manifest_id = candidate.manifest_id AND new_row.stream = old_row.stream
-             AND new_row.legacy_occurrence_id = old_row.occurrence_id
+        AND NOT EXISTS (
+          SELECT 1 FROM successor new_row
+           WHERE new_row.manifest_id = candidate.manifest_id AND old_proof.source_row_id IS NOT NULL
+             AND new_row.stream = old_row.stream AND new_row.legacy_occurrence_id = old_row.occurrence_id
              AND (new_row.legacy_digest = old_proof.canonical_digest OR EXISTS (
                SELECT 1 FROM ${t(s,"typed_telemetry_records")} old_typed
                 WHERE old_typed.format=10 AND old_typed.source_row_id=old_row.id
-                  AND ${postgresClassificationLinkPredicate(s,"old_typed.id","new_row.typed_record_id",10,11,"$4::text")}))))
+                  AND ${postgresClassificationLinkPredicate(s,"old_typed.id","new_row.typed_record_id",10,11,"$4::text")})))
       LIMIT 1`,
     [principal.participantId, predecessor.winners_json, candidateDays,manifest.manifestDigest],
   );
@@ -2143,20 +2171,22 @@ async function assertDomainClosure(
   // Every admitted row of the previous generation must survive: the same
   // base digest, or (active correction runtime) an exact-total correction.
   if (manifest.predecessor.previousGenerationId !== null) {
+    // As legacyGap: `manifest IS NULL OR NOT EXISTS (...)` is the bare NOT EXISTS.
     const previousGap = await client.query(
       `WITH candidate_days AS MATERIALIZED (
          SELECT entry.day::date AS day, entry.manifest_id
-           FROM jsonb_to_recordset($2::jsonb) AS entry(day text, manifest_id text))
+           FROM jsonb_to_recordset($2::jsonb) AS entry(day text, manifest_id text)),
+       ${candidateSuccessors(s)}
        SELECT 1 FROM ${t(s, "telemetry_v11_domain_days")} previous_day
          JOIN ${t(s, "typed_v11_record_admissions")} old_row ON old_row.manifest_id = previous_day.manifest_id
          LEFT JOIN candidate_days candidate ON candidate.day = previous_day.observed_day
-        WHERE previous_day.generation_id = $1 AND (candidate.manifest_id IS NULL OR NOT EXISTS (
-          SELECT 1 FROM ${t(s, "typed_v11_record_admissions")} new_row
+        WHERE previous_day.generation_id = $1 AND NOT EXISTS (
+          SELECT 1 FROM successor new_row
            WHERE new_row.manifest_id = candidate.manifest_id AND new_row.stream = old_row.stream
              AND new_row.occurrence_id = old_row.occurrence_id
              AND (new_row.base_digest = old_row.base_digest
                OR ${correctedUsageEquivalent(s, "old_row.typed_record_id", "new_row.typed_record_id")}
-               OR ${postgresClassificationLinkPredicate(s,"old_row.typed_record_id","new_row.typed_record_id",11,11,"$3::text")})))
+               OR ${postgresClassificationLinkPredicate(s,"old_row.typed_record_id","new_row.typed_record_id",11,11,"$3::text")}))
         LIMIT 1`,
       [manifest.predecessor.previousGenerationId, candidateDays,manifest.manifestDigest],
     );
