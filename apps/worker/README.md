@@ -439,7 +439,7 @@ postgres-test/classification-correction.spec.mjs` with an owned local
 whole-session provider closure, replay and the populated migration75-to76
 receipt fence. It also compares the bounded proof and the v1.1 closures with the
 frozen edca848 oracles in `postgres-test/fixtures/classification/` and bounds
-their plans. `postgres-test/classification-activation-scale.bench.mjs` reports
+their plans. `scripts/classification-activation-scale-bench.mjs` reports
 local, aggregate-only statement timings at synthetic scale; it is evidence, not
 a gate. Migration, image rollout and installed-client acceptance remain separate
 operational gates. GCP performance admission stays retired.

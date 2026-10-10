@@ -3,7 +3,7 @@
 // identifiers or record content are printed. Not part of any gate.
 //
 //   PG_TEST_SOCKET=/private/tmp/tibotattle-pg-<name>/socket PG_TEST_PORT=55567 \
-//     node postgres-test/classification-activation-scale.bench.mjs --format 11 --days 8 --per-day 1000
+//     node scripts/classification-activation-scale-bench.mjs --format 11 --days 8 --per-day 1000
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { lstat, realpath, stat } from "node:fs/promises";
@@ -12,13 +12,13 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import pg from "pg";
 import { createServer } from "vite";
-import { applyPostgresMigrations } from "../scripts/postgres-migrations.mjs";
+import { applyPostgresMigrations } from "./postgres-migrations.mjs";
 import analyticsV2Config from "../vitest.analytics-v2.config.mjs";
 import {
   enableScaleV12, grantScaleV11, initializeScaleV11, prepareScaleSchema, scaleDays, scaleSession, scaleUsage,
   scaleV11DomainManifest, scaleV12DomainManifest, seedScaleDevice, seedScaleParticipant, stageScaleV11Day,
   stageScaleV12Day, statementTimer, summarize, SCALE_NAMESPACE,
-} from "./fixtures/classification-scale.mjs";
+} from "../postgres-test/fixtures/classification-scale.mjs";
 
 const WORKER_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const { values } = parseArgs({ options: {
