@@ -1,4 +1,4 @@
-import { createAdminAllowancePreviewPayload, createAdminPro10AllowancePreviewPayload, withSeptember29AdminHistory } from "./fixtures/admin-allowance.js";
+import { createAdminAllowancePreviewPayload, createAdminPro10AllowancePreviewPayload, createAdminPro20PromaxAllowancePreviewPayload, withSeptember29AdminHistory } from "./fixtures/admin-allowance.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -1597,7 +1597,7 @@ test("admin preview refuses crossed v0.3/v0.4 claims, plan sets, factors and man
     const other = source === old ? current : old;
     for (const mutate of [
       value => { value.schemaVersion = other.schemaVersion; },
-      value => { value.schemaVersion = "admin-community-allowance-preview-v0.5"; },
+      value => { value.schemaVersion = "admin-community-allowance-preview-v0.6"; },
       value => { value.basis = other.basis; },
       value => { value.models.basis = other.models.basis; },
       value => { value.models.gate = "unknown"; },
@@ -1620,8 +1620,9 @@ test("admin preview refuses crossed v0.3/v0.4 claims, plan sets, factors and man
   assert.throws(() => projectAdminAllowancePreview(missingProMax), { code: "ADMIN_ALLOWANCE_PREVIEW_INVALID" });
 });
 
-test("both admin preview bases read the exact live 43-model catalog without relabeling or dropping values", () => {
-  for (const build of [createAdminAllowancePreviewPayload, createAdminPro10AllowancePreviewPayload]) {
+test("every admin preview basis reads the exact live 43-model catalog without relabeling or dropping values", () => {
+  for (const build of [createAdminAllowancePreviewPayload, createAdminPro10AllowancePreviewPayload,
+    createAdminPro20PromaxAllowancePreviewPayload]) {
     const input = withSeptember29AdminHistory(build());
     const result = projectAdminAllowancePreview(input);
     assert.equal(result.schemaVersion, input.schemaVersion);
@@ -1644,6 +1645,58 @@ test("both admin preview bases read the exact live 43-model catalog without rela
     ]) {
       const invalid = structuredClone(input); mutate(invalid);
       assert.throws(() => projectAdminAllowancePreview(invalid), { code: "ADMIN_ALLOWANCE_PREVIEW_INVALID" });
+    }
+  }
+});
+
+
+test("admin preview v0.5 (Pro 20x, Pro Max x0.8) dispatches exactly and refuses crossed v0.3/v0.4 claims", () => {
+  const payload = createAdminPro20PromaxAllowancePreviewPayload();
+  const projected = projectAdminAllowancePreview(payload);
+  assert.equal(projected.schemaVersion, "admin-community-allowance-preview-v0.5");
+  assert.equal(projected.basis, payload.basis);
+  assert.equal(projected.models.basis, payload.models.basis);
+  assert.equal(projected.spanFloorPp, 25);
+  assert.deepEqual(projected.plans.map(plan => [plan.planType, plan.label, plan.multiplier]),
+    [["pro", "Pro 20x", 1], ["prolite", "Pro 5x", 4], ["promax", "Pro Max 25x", 0.8], ["plus", "Plus", 20]]);
+  assert.deepEqual(projected.days, payload.days, "published reference values are never rescaled");
+  for (const other of [createAdminAllowancePreviewPayload(), createAdminPro10AllowancePreviewPayload()]) {
+    for (const mutate of [
+      value => { value.schemaVersion = other.schemaVersion; },
+      value => { value.basis = other.basis; },
+      value => { value.models.basis = other.models.basis; },
+      value => { value.plans = structuredClone(other.plans); },
+    ]) {
+      const invalid = createAdminPro20PromaxAllowancePreviewPayload(); mutate(invalid);
+      assert.throws(() => projectAdminAllowancePreview(invalid), { code: "ADMIN_ALLOWANCE_PREVIEW_INVALID" }, mutate.toString());
+    }
+  }
+  for (const mutate of [
+    value => { value.plans[2].multiplier = 0.4; },
+    value => { value.plans[3].multiplier = 10; },
+    value => { value.plans[0].label = "Pro 10x"; },
+    value => { value.plans = value.plans.filter(plan => plan.planType !== "promax"); },
+    value => { value.plans = [value.plans[0], value.plans[1], value.plans[3], value.plans[2]]; },
+    value => { delete value.days[0].byPlanType.promax; },
+    value => { value.days.at(-1).byPlanType.unknown = structuredClone(value.days.at(-1).combined); },
+    value => { value.schemaVersion = "admin-community-allowance-preview-v0.6"; },
+    value => { value.spanFloorPp = 40; },
+    value => { value.qualification = "unknown"; },
+    value => { value.models.gate = "unknown"; },
+    value => { delete value.models; },
+  ]) {
+    const invalid = createAdminPro20PromaxAllowancePreviewPayload(); mutate(invalid);
+    assert.throws(() => projectAdminAllowancePreview(invalid), { code: "ADMIN_ALLOWANCE_PREVIEW_INVALID" }, mutate.toString());
+  }
+  // Nor can a v0.3 or v0.4 envelope carry any part of the v0.5 claim.
+  for (const build of [createAdminAllowancePreviewPayload, createAdminPro10AllowancePreviewPayload]) {
+    for (const mutate of [
+      value => { value.basis = payload.basis; },
+      value => { value.models.basis = payload.models.basis; },
+      value => { value.plans = structuredClone(payload.plans); },
+    ]) {
+      const invalid = build(); mutate(invalid);
+      assert.throws(() => projectAdminAllowancePreview(invalid), { code: "ADMIN_ALLOWANCE_PREVIEW_INVALID" }, mutate.toString());
     }
   }
 });

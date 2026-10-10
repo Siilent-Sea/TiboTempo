@@ -84,6 +84,23 @@ export function createAdminPro10AllowancePreviewPayload() {
   return preview;
 }
 
+// Owner option B' (2026-10-10): Pro 20x unit with Pro Max 25x at x0.8.
+// Same values/dates as the other fixtures so a basis change cannot hide a
+// reader-side rescaling.
+export function createAdminPro20PromaxAllowancePreviewPayload() {
+  const preview = createAdminPro10AllowancePreviewPayload();
+  preview.schemaVersion = "admin-community-allowance-preview-v0.5";
+  preview.basis = "seven_day_codex_pro20x_equivalent_personal_plans_trailing_30d_promax25_preview";
+  preview.models.basis = "seven_day_codex_pro20x_equivalent_per_model_composition_promax25";
+  preview.plans = [
+    { planType: "pro", label: "Pro 20x", multiplier: 1 },
+    { planType: "prolite", label: "Pro 5x", multiplier: 4 },
+    { planType: "promax", label: "Pro Max 25x", multiplier: 0.8 },
+    { planType: "plus", label: "Plus", multiplier: 20 },
+  ];
+  return preview;
+}
+
 // Known live-origin catalog shape, with synthetic dollar values only.
 export function withSeptember29AdminHistory(preview) {
   preview.models.modelConfig = SEPTEMBER29_ADMIN_MODEL_CONFIG;

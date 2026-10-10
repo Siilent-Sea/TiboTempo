@@ -64,6 +64,18 @@ const ADMIN_ALLOWANCE_PREVIEW_CONTRACTS = Object.freeze({
     ]),
     modelBasis: "seven_day_codex_pro10x_equivalent_per_model_composition",
   }),
+  // Owner option B (2026-10-10): every plan in Pro 20x-week units, with Pro
+  // Max 25x at x0.8. A new identity; v0.3 and v0.4 keep their exact contracts.
+  "admin-community-allowance-preview-v0.5": Object.freeze({
+    basis: "seven_day_codex_pro20x_equivalent_personal_plans_trailing_30d_promax25_preview",
+    plans: Object.freeze([
+      Object.freeze({ planType: "pro", label: "Pro 20x", multiplier: 1 }),
+      Object.freeze({ planType: "prolite", label: "Pro 5x", multiplier: 4 }),
+      Object.freeze({ planType: "promax", label: "Pro Max 25x", multiplier: 0.8 }),
+      Object.freeze({ planType: "plus", label: "Plus", multiplier: 20 }),
+    ]),
+    modelBasis: "seven_day_codex_pro20x_equivalent_per_model_composition_promax25",
+  }),
 });
 const ADMIN_ALLOWANCE_MODELS_GATE =
   "shared_composition_kernel_identification";
