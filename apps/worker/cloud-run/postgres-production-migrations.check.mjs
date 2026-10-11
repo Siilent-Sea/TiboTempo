@@ -440,7 +440,7 @@ test("contract classification finds drops, renames, tightenings and dynamic SQL,
   ]) assert.deepEqual(kinds(sql), [], sql);
 });
 
-test("the promoted primary tail 0001-0076 is classified once and pinned in CONTRACT_MIGRATIONS", () => {
+test("the promoted primary tail 0001-0077 is classified once and pinned in CONTRACT_MIGRATIONS", () => {
   const classified = Object.fromEntries(primary.map((migration) => [migration.name, classifyContractOperations(migration.sql)])
     .filter(([, operations]) => operations.length > 0));
   assert.deepEqual(Object.keys(CONTRACT_MIGRATIONS).sort(), Object.keys(classified).sort());
@@ -461,7 +461,10 @@ test("the promoted primary tail 0001-0076 is classified once and pinned in CONTR
   // (0069) drop the manifest_version defaults they add: reviewed, one entry.
   // KM-CORE's catalog store (0070), REV-SEED's revision floor (0071),
   // K-PERCARD's price cards (0072) and E-OWNERSET's owner sets (0073) are
-  // additive: no entry.
+  // additive: no entry. The reprice tables (0077) are additive too: their one
+  // trigger on an existing table, analytics_v2_published_daily, logs the
+  // replaced head AFTER UPDATE, and every publication advances the revision,
+  // so a previous revision's writes cannot collide in the log.
   const RUN_STAMPS = "0069_analytics_v2_run_stamps.sql";
   const DISTRIBUTION_VISIBILITY = "0075_github_distribution_manifest_visibility.sql";
   assert.deepEqual(primary.filter(({ version }) => version > residue.version).map(({ name }) => name), [
@@ -477,6 +480,7 @@ test("the promoted primary tail 0001-0076 is classified once and pinned in CONTR
     "0074_analytics_v2_pricing_classes.sql",
     DISTRIBUTION_VISIBILITY,
     "0076_classification_correction_links.sql",
+    "0077_analytics_v2_reprice.sql",
   ]);
   for (const migration of primary.filter(({ version, name }) => version > residue.version && name !== RUN_STAMPS && name !== DISTRIBUTION_VISIBILITY)) {
     assert.deepEqual([...classifyContractOperations(migration.sql)], [], migration.name);
@@ -555,7 +559,7 @@ test("history versus manifest: behind and current proceed; ahead and non-prefix 
   assert.deepEqual({ ...compareHistoryToManifest(rows(primary.slice(0, 40)), primary) },
     { applied: 40, pending: primary.length - 40 });
   assert.deepEqual({ ...compareHistoryToManifest(rows(primary), primary) }, { applied: primary.length, pending: 0 });
-  assert.equal(primary.length, 76);
+  assert.equal(primary.length, 77);
   const newer = rows(withExtraMigration(primary, "w2_opsdb_newer.sql", "SELECT 1;"));
   assert.throws(() => compareHistoryToManifest(newer, primary), isCode("MIGRATION_STATE_NEWER_THAN_IMAGE"));
   const diverged = [
@@ -587,7 +591,7 @@ test("a fresh scratch target: read-only history first, then schema, forward runn
   assert.equal(verifyProductionMigrationReceipt(receipt).digest, receipt.digest);
   assert.equal(receipt.schema, PRODUCTION_MIGRATION_RECEIPT_SCHEMA);
   assert.equal(receipt.target.kind, "scratch");
-  assert.equal(receipt.migrations.count, 76);
+  assert.equal(receipt.migrations.count, 77);
   assert.equal(receipt.migrations.manifestSha256, primaryManifestSha256(primary));
   assert.equal(receipt.migrations.contractReviewed, 27);
   assert.equal(receipt.migrations.simpResidue, REAL_RESIDUE);
@@ -621,12 +625,12 @@ test("a non-scratch target needs the SIMP residue in the image manifest; refused
     isCode("PRODUCTION_SIMP_RESIDUE_MISSING"));
   assert.deepEqual(refused.counts, { identity: 1, manifest: 1, pools: 0, apply: 0, closes: 0 });
   assert.deepEqual(refused.events, []);
-  // The real 76-migration manifest is accepted for a non-scratch target.
+  // The real 77-migration manifest is accepted for a non-scratch target.
   const accepted = harness();
   const receipt = await runProductionMigrations({ env, dependencies: accepted.dependencies });
   assert.equal(receipt.target.kind, "environment");
   assert.equal(receipt.migrations.simpResidue, REAL_RESIDUE);
-  assert.equal(verifyProductionMigrationReceipt(receipt).migrations.count, 76);
+  assert.equal(verifyProductionMigrationReceipt(receipt).migrations.count, 77);
   // A synthetic residue named from the manifest length also satisfies the guard.
   const synthetic = withExtraMigration(residueFree, "simp_append_only_residue.sql", "SELECT 1;\n");
   const syntheticRun = harness({ migrations: synthetic, contractMigrations: residueFreeContracts });
