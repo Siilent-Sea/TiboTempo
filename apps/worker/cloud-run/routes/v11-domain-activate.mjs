@@ -39,7 +39,7 @@ export function createTelemetryV11DomainActivateRouteModule(dependencies) {
       const body = await readBoundedJson(request, deps.readBoundedRequestBody, deps.maxRequestBytes);
       const domain = deps.createDomain(deps.primaryPool, { schema: deps.schema });
       return jsonResponse(201, await domain.activate(
-        { participantId: device.participantId, deviceId: device.deviceId }, body.value, Date.now(),
+        { participantId: device.participantId, deviceId: device.deviceId }, body.value, deps.clock(),
       ));
     } catch (error) {
       return routeErrorResponse(error, routeRequestId(deps, request));

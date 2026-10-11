@@ -43,7 +43,7 @@ export function createTelemetryV11DomainPredecessorRouteModule(dependencies) {
       }
       const domain = deps.createDomain(deps.primaryPool, { schema: deps.schema });
       return jsonResponse(201, await domain.createPredecessor(
-        { participantId: device.participantId, deviceId: device.deviceId }, Date.now(),
+        { participantId: device.participantId, deviceId: device.deviceId }, deps.clock(),
       ));
     } catch (error) {
       return routeErrorResponse(error, routeRequestId(deps, request));

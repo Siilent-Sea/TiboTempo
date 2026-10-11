@@ -67,6 +67,8 @@ const SOURCE_ID = "synthetic-intake-journal";
 const NAMESPACE = "synthetic-intake-namespace";
 const KEY_ID = "key:synthetic-intake";
 const DAY_MS = 86_400_000;
+/** The v1.1 intake routes' test clock: the day after the Q-1 fixtures' 2026-09-30. */
+const INTAKE_NOW_MS = Date.parse("2026-10-01T12:00:00.000Z");
 const CONTRIBUTIONS_PATH = "/api/v1/contributions";
 const UPLOAD_AUTHORIZATIONS_PATH = "/api/v1/device/upload-authorizations";
 const V1_CONSENT = Object.freeze({
@@ -290,6 +292,11 @@ async function withOrigin(run) {
         },
         async createGoogleAccessTokenProvider() { return async () => "synthetic-access-token"; },
         createGcsQuarantineObjectStore: () => store,
+        // The v1.1 routes, and the shipped v1.1 clients below, run at the Q-1
+        // fixtures' next day, so the predecessor span (day 2026-09-30 through
+        // "today") never grows with the wall clock and the day-manifest count
+        // is fixed.
+        intakeClock: () => INTAKE_NOW_MS,
       },
     }));
     assert.equal(runtime.postgresTestHostMode, "fastpath-test");
@@ -428,7 +435,7 @@ test("a shipped social v1.1 client runs consent, day manifests, chunks, predeces
   const sync = (options = {}) => runTelemetryV11Sync({
     serverBaseUrl: ORIGIN, deviceAuthorization: owner.deviceAuthorization, consent: telemetryV11RequiredConsent(),
     days: [q1.day], readDay: q1.readDay, createEnvelope: v11EnvelopeFactory(fetchImpl), fetchImpl,
-    maxDurationMs: 240_000, ...options,
+    clock: () => INTAKE_NOW_MS, maxDurationMs: 240_000, ...options,
   });
 
   // Before consent the shipped client stops at the capability read.
@@ -510,7 +517,7 @@ test("a shipped accountless v1.1-only client enrolls, uploads under the v1.1 gra
   const sync = () => runTelemetryV11Sync({
     serverBaseUrl: ORIGIN, deviceAuthorization, authorization: ACCOUNTLESS_AUTHORIZATION, laboratory: true,
     days: [q1.day], readDay: q1.readDay, createEnvelope: v11EnvelopeFactory(fetchImpl), fetchImpl,
-    maxDurationMs: 240_000,
+    clock: () => INTAKE_NOW_MS, maxDurationMs: 240_000,
   });
   const first = await sync();
   assert.equal(first.status, "complete", JSON.stringify(first.failure));

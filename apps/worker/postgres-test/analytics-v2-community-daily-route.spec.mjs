@@ -545,6 +545,21 @@ function expectedAllowanceBreakdowns() {
 }
 
 /** Hand-derived current contract; the legacy expected HTTP bytes stay frozen. */
+/**
+ * v1.4's public model metadata (b89f5fc56): the reviewed current catalog
+ * (reviewed-model-catalog-2026-09-29.1), written out so the route is held to
+ * an expectation rather than to its own builder. v1.3 keeps manifest-0001's.
+ */
+const CURRENT_MODEL_CONFIG = Object.freeze([
+  { id: "gpt-6-astra", label: "GPT-6 Astra", family: "astra", order: 0 },
+  { id: "gpt-6.1-sol", label: "GPT-6.1 Sol", family: "sol", order: 1 },
+  { id: "gpt-6-sol", label: "GPT-6 Sol", family: "sol", order: 2 },
+  { id: "gpt-6-luna", label: "GPT-6 Luna", family: "luna", order: 3 },
+  { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", family: "terra", order: 4 },
+  { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", family: "sol", order: 5 },
+  { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", family: "luna", order: 6 },
+]);
+
 function expectedCurrentAllowanceBreakdowns() {
   const legacy = expectedAllowanceBreakdowns();
   return {
@@ -553,6 +568,7 @@ function expectedCurrentAllowanceBreakdowns() {
     basis: "seven_day_codex_pro10x_equivalent_personal_plans_trailing_30d_promax25",
     normalization: "pro_x1_prolite_x2_promax_x0_4_plus_x10",
     modelBasis: "seven_day_codex_pro10x_equivalent_per_model_composition",
+    modelConfig: CURRENT_MODEL_CONFIG,
     days: legacy.days.map((day, index) => ({
       ...day,
       combined: index === 0 ? EMPTY_SUMMARY : { ...day.combined, centralUsd: index === 1 ? 600 : 900 },
@@ -720,7 +736,7 @@ test("breakdowns v1.4: real current preview changes plan amounts and preserves t
   const expected = { ...expectedResponse(), allowanceBreakdowns: expectedCurrentAllowanceBreakdowns() };
   assert.equal(text, JSON.stringify(expected));
   const { base, metadata } = modules.v14.reducePublicAllowanceBreakdownsV14(JSON.parse(text).allowanceBreakdowns);
-  assert.deepEqual(metadata, expectedModelConfig());
+  assert.deepEqual(metadata, CURRENT_MODEL_CONFIG);
   assert.equal(base.schemaVersion, "community-allowance-breakdowns-v1.2");
   assert.deepEqual(base.days[2].byPlanType.promax, EMPTY_SUMMARY);
   for (const secret of [OWNER_A, OWNER_B, "synthetic-participant", "capacityByPlanType"]) {

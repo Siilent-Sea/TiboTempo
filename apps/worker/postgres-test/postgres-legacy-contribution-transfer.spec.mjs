@@ -621,7 +621,7 @@ describe.skipIf(!PG_TEST_SOCKET)("D-PT4X legacy contributions, pending registrat
       .rejects.toMatchObject({ code: "P1005", message: "community_aggregate_exclusion_append_only" });
     const operationalReceipts = await main.ownerPrimary.query(`SELECT source_table, disposition, target_table, state,
         source_row_count::int AS source_rows, target_row_count::int AS target_rows
-      FROM tibotattle_transfer.transfer_table_receipts WHERE stage = 'post-import' ORDER BY source_table`);
+      FROM tibotattle_transfer.transfer_table_receipts WHERE stage = 'post-import' ORDER BY source_table COLLATE "C"`);
     expect(operationalReceipts.rows).toEqual([
       { source_table: "admin_metric_snapshots", disposition: "mapped:admin-metrics-history",
         target_table: "analytics_admin_metric_snapshots", state: "complete", source_rows: 3, target_rows: 8 },
