@@ -186,6 +186,17 @@ and print the argv; they run no `gcloud` and make no request.
    The build is qualified only if its storage source is in that bucket under
    `source/`.
 
+   Its options must be exactly the reviewed set: `CLOUD_LOGGING_ONLY` logging,
+   `SHA256` source provenance and `VERIFIED`, plus, when Cloud Build reads them
+   back, an empty `pool` and `workerRelease: legacy`. `legacy` (Docker Engine
+   20.10, Debian 11) is Cloud Build's default worker host until 2027-03-28,
+   when the default becomes the `regular`
+   [release channel](https://docs.cloud.google.com/build/docs/release-channels).
+   Any other worker release or option key fails `build` with
+   `ROLLOUT_BUILD_PROVENANCE_UNQUALIFIED` after the image is pushed, and no
+   digest is reported. Treat that image as unqualified until the new release
+   or option is reviewed in `assessProductionBuild`.
+
    ```bash
    node scripts/gcp-production-rollout.mjs build --environment=<env> --commit=<commit> \
      --authorize=build:<env>:<commit> --execute

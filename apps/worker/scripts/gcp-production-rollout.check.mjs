@@ -1206,6 +1206,50 @@ function cloudBuild(archiveSha256 = ARCHIVE_SHA256) {
   };
 }
 
+/**
+ * The readback shape Cloud Build returned for the 2026-10-10 production builds
+ * (identities and times synthetic): every field it carried, including the
+ * options.workerRelease `legacy` and the empty pool that the earlier
+ * readbacks did not report.
+ */
+function currentCloudBuild(archiveSha256 = ARCHIVE_SHA256) {
+  const build = cloudBuild(archiveSha256);
+  const span = (startTime, endTime) => ({ startTime, endTime });
+  const sourceUri = `gs://${SOURCE.bucket}/${SOURCE.object}#${SOURCE.generation}`;
+  return {
+    ...build,
+    createTime: "2026-10-10T16:31:42.503120652Z",
+    startTime: "2026-10-10T16:31:43.130467451Z",
+    finishTime: "2026-10-10T16:32:51.595487Z",
+    queueTtl: "3600s",
+    timeout: "3600s",
+    logUrl: `https://console.cloud.google.com/cloud-build/builds;region=us-east1/${build.id}?project=123456789012`,
+    options: { ...build.options, pool: {}, workerRelease: "legacy" },
+    steps: [{ ...build.steps[0],
+      pullTiming: span("2026-10-10T16:31:47.857032172Z", "2026-10-10T16:32:06.495492980Z"),
+      timing: span("2026-10-10T16:31:47.857032172Z", "2026-10-10T16:32:41.152621623Z") }],
+    artifacts: { images: [BUILD_TAG] },
+    sourceProvenance: { ...build.sourceProvenance, fileHashes: { [sourceUri]: { fileHash: [
+      ...build.sourceProvenance.fileHashes[sourceUri].fileHash,
+      { type: "MD5", value: "AAAAAAAAAAAAAAAAAAAAAA==" },
+    ] } } },
+    results: {
+      ...build.results,
+      buildStepOutputs: [""],
+      images: [{ ...build.results.images[0],
+        artifactRegistryPackage:
+          `projects/${PROJECT}/locations/us-east1/repositories/synthetic/packages/synthetic/versions/${DIGEST}`,
+        pushTiming: span("2026-10-10T16:32:41.193591911Z", "2026-10-10T16:32:51.402840193Z") }],
+    },
+    timing: {
+      BUILD: span("2026-10-10T16:31:47.247225623Z", "2026-10-10T16:32:41.193455305Z"),
+      FETCHSOURCE: span("2026-10-10T16:31:43.467625065Z", "2026-10-10T16:31:47.246929432Z"),
+      PUSH: span("2026-10-10T16:32:41.193590916Z", "2026-10-10T16:32:51.402988631Z"),
+      STORAGE_SOURCE: span("2026-10-10T16:31:43.467625065Z", "2026-10-10T16:31:47.246929432Z"),
+    },
+  };
+}
+
 test("build writes the audited archive, submits that file and qualifies the build against the archive's own sha256",
   async (t) => {
     const estate = fakeEstate();
@@ -1242,11 +1286,23 @@ test("build writes the audited archive, submits that file and qualifies the buil
     assert.match(rendered, new RegExp(`_IMAGE: ${TARGET.imageRepository}:source-${COMMIT}`, "u"));
     assert.doesNotMatch(rendered, /\$\{(?!_IMAGE\})/u, "every placeholder but the Cloud Build substitution is rendered");
     assert.deepEqual(lock.events, ["acquire", "assert", "release"]);
+    // The 2026-10-10 readback also reports options.workerRelease "legacy"; build --execute
+    // refused it with ROLLOUT_BUILD_PROVENANCE_UNQUALIFIED after the image was pushed.
+    const currentLock = fakeLock();
+    const current = await runRollout(buildArgv, dependencies(estate, currentLock,
+      { run: runWith(currentCloudBuild()), tmpdir: () => directory }));
+    assert.deepEqual({ digest: current.digest, image: current.image, buildId: current.buildId,
+      sourceArchiveSha256: current.sourceArchiveSha256, sourceGeneration: current.sourceGeneration },
+    { digest: DIGEST, image: IMAGE, buildId: cloudBuild().id, sourceArchiveSha256: ARCHIVE_SHA256,
+      sourceGeneration: SOURCE.generation });
+    assert.deepEqual(currentLock.events, ["acquire", "assert", "release"]);
     const sourceUri = `gs://${SOURCE.bucket}/${SOURCE.object}#${SOURCE.generation}`;
     const edits = [
       (build) => { build.status = "FAILURE"; },
       (build) => { delete build.options.requestedVerifyOption; },
       (build) => { build.options.substitutionOption = "ALLOW_LOOSE"; },
+      (build) => { build.options.workerRelease = "regular"; },
+      (build) => { build.options.machineType = "E2_HIGHCPU_8"; },
       (build) => { build.id = "build-1"; },
       (build) => { build.projectId = "other-project-x"; },
       (build) => { build.name = build.name.replace("us-east1", "us-west1"); },
@@ -1278,13 +1334,15 @@ test("build writes the audited archive, submits that file and qualifies the buil
           build.sourceProvenance.fileHashes[sourceUri] };
       },
     ];
-    for (const edit of edits) {
-      const bad = structuredClone(cloudBuild());
-      edit(bad);
-      const badLock = fakeLock();
-      await assert.rejects(runRollout(buildArgv, dependencies(estate, badLock, { run: runWith(bad), tmpdir: () => directory })),
-        isCode("ROLLOUT_BUILD_PROVENANCE_UNQUALIFIED"), edit.toString());
-      assert.deepEqual(badLock.events.filter((event) => event !== "assert"), ["acquire", "release"]);
+    for (const shape of [cloudBuild, currentCloudBuild]) {
+      for (const edit of edits) {
+        const bad = structuredClone(shape());
+        edit(bad);
+        const badLock = fakeLock();
+        await assert.rejects(runRollout(buildArgv, dependencies(estate, badLock, { run: runWith(bad), tmpdir: () => directory })),
+          isCode("ROLLOUT_BUILD_PROVENANCE_UNQUALIFIED"), `${shape.name}: ${edit.toString()}`);
+        assert.deepEqual(badLock.events.filter((event) => event !== "assert"), ["acquire", "release"]);
+      }
     }
     // The archive tool's receipt must name the bytes it wrote; nothing is submitted otherwise.
     submitted = null;
@@ -1298,6 +1356,36 @@ test("build writes the audited archive, submits that file and qualifies the buil
     assert.equal(assessProductionBuild(urlSafe, { target: TARGET, commit: COMMIT, builderImage: BUILDER_IMAGE,
       archiveSha256: ARCHIVE_SHA256 }).digest, DIGEST);
   });
+
+test("build qualifies only the legacy worker release and still refuses every unreviewed option key", () => {
+  const qualify = (build) => assessProductionBuild(build, { target: TARGET, commit: COMMIT, builderImage: BUILDER_IMAGE,
+    archiveSha256: ARCHIVE_SHA256 });
+  const refused = (build, message) => assert.throws(() => qualify(build), isCode("ROLLOUT_BUILD_PROVENANCE_UNQUALIFIED"),
+    message);
+  // Readbacks before 2026-10 omitted workerRelease and pool; both shapes qualify.
+  for (const build of [cloudBuild(), currentCloudBuild()]) {
+    assert.deepEqual(qualify(build), { digest: DIGEST, buildId: build.id, sourceGeneration: SOURCE.generation });
+  }
+  // Any other channel or version is a different build host, and only the exact string qualifies.
+  for (const workerRelease of ["regular", "rapid", "stable", "2026.09", "LEGACY", " legacy", "", null, ["legacy"],
+    { name: "legacy" }]) {
+    const build = currentCloudBuild();
+    build.options = { ...build.options, workerRelease };
+    refused(build, `workerRelease ${JSON.stringify(workerRelease)}`);
+  }
+  // Admitting workerRelease admits no other key, beside it or without it.
+  for (const [key, value] of [["machineType", "E2_HIGHCPU_8"], ["env", ["NODE_ENV=production"]],
+    ["dynamicSubstitutions", true], ["workerPool", `projects/${PROJECT}/locations/us-east1/workerPools/private`],
+    ["worker_release", "legacy"], ["workerReleases", ["legacy"]]]) {
+    for (const build of [cloudBuild(), currentCloudBuild()]) {
+      build.options = { ...build.options, [key]: value };
+      refused(build, `unknown option ${key} beside ${Object.keys(build.options).join(",")}`);
+    }
+  }
+  const pooled = currentCloudBuild();
+  pooled.options = { ...pooled.options, pool: { name: `projects/${PROJECT}/locations/us-east1/workerPools/private` } };
+  refused(pooled, "a private pool");
+});
 
 test("BUILD-SOURCE: build refuses an absent, foreign, public or unreadable source bucket before the lock, uploading nothing",
   async (t) => {

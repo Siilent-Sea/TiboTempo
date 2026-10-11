@@ -71,14 +71,24 @@ test('stringify-preserving variants retain exact thresholds, validation failures
       assert.notDeepEqual(run('descriptor'),expected,'descriptor prototype must expose its semantic mismatch');
     }
     // JSON.stringify exceptions and undefined returns still run after the walk.
-    for(const result of [undefined,1n,()=>{throw Error('synthetic serialization failure');},()=>{const loop={};loop.loop=loop;return loop;}]) {
+    // The overflow hook recurses to V8's stack limit, so its call count measures
+    // caller stack bytes and JIT tier, not semantics: pin its failure, require recursion.
+    const overflow=()=>{const loop={};loop.loop=loop;return loop;};
+    for(const result of [undefined,1n,()=>{throw Error('synthetic serialization failure');},overflow]) {
       const run=name=> {
         const inherited=Object.prototype.toJSON;let calls=0;
         Object.prototype.toJSON=function(){calls++;return typeof result==='function'?result():result;};
         try {return {result:capture(()=>h.variants[name]({n:1},{maxSerializedBytes:1})),calls};}
         finally {if(inherited===undefined)delete Object.prototype.toJSON;else Object.prototype.toJSON=inherited;}
       };
-      const expected=run('oracle');for(const name of ['scan','buffer']) {assert.deepEqual(run(name),expected);comparisons++;}
+      const expected=run('oracle');
+      if(result===overflow) assert.ok(expected.result.code==='TELEMETRY_RECORD_INVALID'&&expected.result.detailCode==='serialization_failed'&&expected.calls>1);
+      for(const name of ['scan','buffer']) {
+        const actual=run(name);
+        if(result===overflow) {assert.deepEqual(actual.result,expected.result);assert.ok(actual.calls>1);}
+        else assert.deepEqual(actual,expected);
+        comparisons++;
+      }
     }
     assert.equal(comparisons,334);
   }finally{await h.close();}

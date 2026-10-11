@@ -52,7 +52,8 @@ test("admin model history fails closed on extra fields, raw IDs, invalid tuples 
     { ...current(), values: [["gpt-6-astra", 1, 1, "private-canary"]] },
     { ...current(), values: [["gpt-6-astra", null, 0]] },
     ...[0, -1, NaN, Infinity, "1"].map((value) => ({ ...current(), values: [["gpt-6-astra", value, 1]] })),
-    ...[0, -1, 3, 0.5, Number.MAX_SAFE_INTEGER + 1].map((value) => ({ ...current(), values: [["gpt-6-astra", 1, value]] })),
+    ...[0, -1, 3, 0.5, WIDEST_ACCEPTED_HISTORY_COUNT + 1, Number.MAX_SAFE_INTEGER + 1]
+      .map((value) => ({ ...current(), values: [["gpt-6-astra", 1, value]] })),
   ];
   for (const value of bad) {
     assert.equal(projectAdminModelHistoryDay(value), null);
@@ -79,16 +80,19 @@ test("admin model history fails closed on extra fields, raw IDs, invalid tuples 
 //   - dollars are the widest finite double (23 characters), because nothing
 //     bounds a fitted capacity;
 //   - counts are an ASSUMPTION, stated here and measured both ways below. The
-//     validators (adminHistoryCount, validCount) accept any safe integer, so no
-//     contract bounds a count. The gate assumes at most eight digits. The one
+//     preview validator (validCount) accepts any safe integer; the model
+//     history validator (adminHistoryCount) accepts at most fourteen digits
+//     (ADMIN_PREVIEW_COUNT_MAX, a wire-size ceiling). Neither bounds a count to
+//     the width assumed here. The gate assumes at most eight digits. The one
 //     bound source does give is on the producer side: a publication capture
 //     refuses a cohort over MAX_COHORT_BYTES (2 MiB) of canonical owner
 //     identities, each at least a 64-character digest, so a cohort has at most
 //     32,768 owners. The gate reads that bound and requires a thousandfold
 //     margin under the assumed width (also covering several fits per owner).
 //     That is a producer-side anchor for one capture path, not a validator;
-//   - the same preview at the widest count the validators accept (every count
-//     a 16-digit safe integer) is reported on every run. At that width the
+//   - the same preview at the widest count the validators accept (every
+//     preview count a 16-digit safe integer, every model history count 14
+//     digits) is reported on every run. At that width the
 //     preview does NOT fit the ceiling with any spare model, so the spare-model
 //     figure below is conditional on the assumption and on nothing else;
 //   - the plan roster is read from source, never fewer than the four the
@@ -103,6 +107,8 @@ test("admin model history fails closed on extra fields, raw IDs, invalid tuples 
 const WIDEST_DOLLARS = 1.7976931348623157e308;
 const ASSUMED_COUNT_MAX = 99_999_999;
 const WIDEST_ACCEPTED_COUNT = Number.MAX_SAFE_INTEGER;
+// adminHistoryCount's ADMIN_PREVIEW_COUNT_MAX in packages/telemetry-contract.
+const WIDEST_ACCEPTED_HISTORY_COUNT = 99_999_999_999_999;
 const MIN_OWNER_IDENTITY_BYTES = 64;
 const COUNT_MARGIN_OVER_COHORT = 1000;
 const PREVIEW_DAYS = 70;
@@ -159,7 +165,8 @@ function cohortOwnerBound() {
   return Math.floor(Number(cap[1]) * Number(cap[2]) * Number(cap[3]) / MIN_OWNER_IDENTITY_BYTES);
 }
 
-function modelHistoryDays(primaryIds, count) {
+function modelHistoryDays(primaryIds, previewCount) {
+  const count = Math.min(previewCount, WIDEST_ACCEPTED_HISTORY_COUNT);
   const day = { day: "2026-09-03", catalogVersion: ADMIN_MODEL_HISTORY_CATALOG_VERSION,
     values: primaryIds.map((id) => [id, WIDEST_DOLLARS, count]),
     fittedParticipantCount: count, unstableParticipantCount: 0,
@@ -228,7 +235,7 @@ test("70 complete catalog days plus the whole preview stay under the storage cei
   const absoluteSpare = Math.floor((ceiling - absolute) / bytesPerPrimaryModel(WIDEST_ACCEPTED_COUNT));
   t.diagnostic(`assumed eight-digit counts: preview ${total} B of ${ceiling} B (models ${modelBytes} B, ${planCount()} plans); `
     + `room for ${spareModels} more primary models at ${perModel} B each`);
-  t.diagnostic(`validator-accepted sixteen-digit counts (no contract bounds them): preview ${absolute} B of ${ceiling} B, `
+  t.diagnostic(`validator-accepted sixteen-digit preview and fourteen-digit model history counts: preview ${absolute} B of ${ceiling} B, `
     + `${absolute <= ceiling ? `room for ${absoluteSpare} more primary models` : `${absolute - ceiling} B over`}`);
   assert.ok(total < ceiling, `the widest preview is ${total} B and would exceed the ${ceiling} B storage ceiling; `
     + "compact the wire (see the receipt) or raise the guard and the CHECK together by migration");

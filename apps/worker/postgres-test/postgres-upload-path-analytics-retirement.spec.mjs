@@ -535,12 +535,19 @@ const V1_SECOND_DEVICE = `${OWNERS.v1}-device-1`;
 const V11_DEVICE = `${OWNERS.v11}-device-0`;
 
 /** Run the writes in order, returning each write's state before and after. */
-async function runUploadFlows({ pool, schema, t, modules }) {
+/**
+ * The upload-path writes, in order. Today's v1.2 activation reads relations
+ * later primary migrations add (0060's typed_v11_record_admissions, through
+ * the classification links since 29e8bb029), so it runs only at the head of
+ * the chain: the pre-retirement control and the isolated retirement compare
+ * the other writes, and the "once retired" case qualifies the v1.2 activation.
+ */
+async function runUploadFlows({ pool, schema, t, modules }, { v12 = true } = {}) {
   const flows = [
     ["social v1 upload", OWNERS.v1, () => socialV1Upload(pool, schema, t, OWNERS.v1, V1_DEVICE)],
     ["second-device social v1 upload", OWNERS.v1, () => socialV1Upload(pool, schema, t, OWNERS.v1, V1_SECOND_DEVICE)],
     ["v1.1 head change", OWNERS.v11, () => v11HeadChange(pool, t, OWNERS.v11, V11_DEVICE)],
-    ["v1.2 activation", OWNERS.v12, () => v12Activation(pool, schema, t, modules, OWNERS.v12, V12_DEVICE)],
+    ...(v12 ? [["v1.2 activation", OWNERS.v12, () => v12Activation(pool, schema, t, modules, OWNERS.v12, V12_DEVICE)]] : []),
     ["v0.2 contribution", OWNERS.v02, () => v02Contribution(pool, t, OWNERS.v02)],
   ];
   const observations = [];
@@ -568,7 +575,7 @@ async function runUploadFlows({ pool, schema, t, modules }) {
 test("PG17 control: before the retirement every write feeds current_queue, and the social v1 uploads flip publication_state, queue rebuild work, invalidate history and composition days, and wipe preview_cache", {
   skip: SKIP, timeout: 240_000,
 }, async () => withSchema({ retire: false, seed: seedUploadOwners, domain: true }, async (context) => {
-  const [v1, v1Second, v11, v12, v02] = await runUploadFlows(context);
+  const [v1, v1Second, v11, v02] = await runUploadFlows(context, { v12: false });
   // The accepted append.
   assert.equal(v1.before.retired.publicationState[0].publication_state, "ready");
   assert.equal(v1.after.retired.publicationState[0].publication_state, "updating",
@@ -595,12 +602,12 @@ test("PG17 control: before the retirement every write feeds current_queue, and t
   assert.ok(v1Second.after.retired.historyDependencies[0].dependency_revision
     > v1Second.before.retired.historyDependencies[0].dependency_revision);
   // 0010 moved mutation_epoch (and so the flag and the cache) only for v1
-  // chunks; the other three writes' retired effect was the queue.
-  for (const observation of [v11, v12, v02]) {
+  // chunks; the other writes' retired effect was the queue.
+  for (const observation of [v11, v02]) {
     assert.deepEqual(observation.after.control, observation.before.control,
       `0010 left the publication flag and caches alone on a ${observation.label}`);
   }
-  for (const observation of [v1, v1Second, v11, v12, v02]) {
+  for (const observation of [v1, v1Second, v11, v02]) {
     assert.ok(observation.after.queue.dirty_generation > observation.before.queue.dirty_generation,
       `0010 marks the ${observation.label} owner dirty in current_queue`);
     assert.equal(observation.after.queue.pending, true);
@@ -657,7 +664,7 @@ test("PG17 the writes move the kept mutation_control counters identically with a
   skip: SKIP, timeout: 300_000,
 }, async () => {
   const deltas = async (retire) => withSchema({ retire, seed: seedUploadOwners, domain: true }, async (context) => {
-    const observations = await runUploadFlows(context);
+    const observations = await runUploadFlows(context, { v12: false });
     return observations.map(({ label, before, after }) => ({
       label,
       revision: after.revision - before.revision,
@@ -673,7 +680,6 @@ test("PG17 the writes move the kept mutation_control counters identically with a
     ["social v1 upload", true],
     ["second-device social v1 upload", false],
     ["v1.1 head change", false],
-    ["v1.2 activation", false],
     ["v0.2 contribution", false],
   ]);
   assert.ok(retired[1].invalidationEpoch > 0, "the second-device upload advances the invalidation epoch");

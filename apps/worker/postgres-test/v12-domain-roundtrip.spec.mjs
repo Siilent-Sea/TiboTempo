@@ -239,8 +239,10 @@ it("current v1.2 domain activates and replays on real local PostgreSQL", async (
     };
     incompleteDomain.manifestDigest = createHash("sha256")
       .update(telemetryV12DomainManifestDigestInput(incompleteDomain)).digest("hex");
+    // A staged (not ready) manifest is incomplete: the ready-manifest check
+    // runs before the same-day successor closure (29e8bb029, as D1 does).
     await assert.rejects(domain.activate(principal, incompleteDomain),
-      { code: "TELEMETRY_MANIFEST_CONFLICT" });
+      { code: "TELEMETRY_MANIFEST_INCOMPLETE" });
     const retainedHead = await pool.query(`SELECT generation_id, revision::text AS revision
       FROM ${s}.telemetry_v12_domain_heads WHERE participant_id = $1`, [participantId]);
     assert.equal(retainedHead.rows[0]?.generation_id, nextActivation.generationId);

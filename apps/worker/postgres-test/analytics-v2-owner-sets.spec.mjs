@@ -302,12 +302,28 @@ test("PG17: the owner-sets migration is append-only, deletes only for the purge'
   [DAY_1, A, "c".repeat(64), RUN])]))?.code, "23514");
 
   // No update, no truncate, no delete without the purge flag naming the owner.
+  // Each table is referenced by a foreign key (0077's price inputs reference
+  // the contributions), so a plain TRUNCATE is refused by the key check before
+  // any trigger fires: truncate with CASCADE, and pin each table's own
+  // no-truncate trigger in the catalog, since a CASCADE refusal can come from
+  // a referencing table's trigger with the same message.
   for (const statement of [
     `UPDATE ${sets} SET provenance = 2`, `UPDATE ${contributions} SET devices = 2`,
-    `DELETE FROM ${contributions}`, `DELETE FROM ${sets}`, `TRUNCATE ${contributions}`, `TRUNCATE ${sets} CASCADE`,
+    `DELETE FROM ${contributions}`, `DELETE FROM ${sets}`, `TRUNCATE ${contributions} CASCADE`, `TRUNCATE ${sets} CASCADE`,
   ]) {
     await assert.rejects(pool.query(statement), appendOnly, statement);
   }
+  assert.deepEqual((await pool.query(`SELECT c.relname, t.tgname, p.proname FROM pg_trigger t
+      JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+      JOIN pg_proc p ON p.oid = t.tgfoid
+      WHERE n.nspname = $1 AND NOT t.tgisinternal AND t.tgname LIKE '%\\_no\\_truncate'
+        AND c.relname IN ('analytics_v2_daily_owner_sets', 'analytics_v2_daily_contributions')
+      ORDER BY c.relname COLLATE "C"`, [schema])).rows, [
+    { relname: "analytics_v2_daily_contributions", tgname: "analytics_v2_daily_contributions_no_truncate",
+      proname: "analytics_v2_owner_sets_no_truncate" },
+    { relname: "analytics_v2_daily_owner_sets", tgname: "analytics_v2_daily_owner_sets_no_truncate",
+      proname: "analytics_v2_owner_sets_no_truncate" },
+  ]);
   const purge = (ownerDigest, ...statements) => inTransaction([
     (client) => client.query("SELECT set_config('tibotattle.analytics_v2_offline_purge', $1, true)", [ownerDigest]),
     ...statements.map((statement) => (client) => client.query(statement)),

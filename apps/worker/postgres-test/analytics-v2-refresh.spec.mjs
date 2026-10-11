@@ -25,7 +25,8 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { access, copyFile, mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
+import { IMAGE_NODE } from "./image-node.mjs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -1140,10 +1141,15 @@ test("PG17: K-STAMP stamps every row with the registry kernel, refuses conflicts
         await client.query("BEGIN");
         await client.query(`SET LOCAL search_path TO "${schema}"`);
         await client.query(sql);
-        // REV-SEED's floor, which the store reads, follows the run stamps.
-        await client.query(await readFile(join(FLOOR_STAGED_FILE.directory, FLOOR_STAGED_FILE.name), "utf8"));
-        // K-PERCARD's tables (additive; the store writes them with every run).
-        await client.query(await priceMigrationSql());
+        // Every promoted migration after the run stamps, in order: the store
+        // reads REV-SEED's floor, writes K-PERCARD's tables and E-OWNERSET's
+        // sets with every run, and checks kernel regressions across the
+        // reprice runs (0077), so the schema must be the current one.
+        for (const migration of await readPostgresMigrations({ role: "primary" })) {
+          if (migration.version > kernelVersion) {
+            await client.query(await readFile(join(PRIMARY_MIGRATIONS_DIRECTORY, migration.name), "utf8"));
+          }
+        }
         await client.query("COMMIT");
         assert.equal(await count(pool, schema, "analytics_v2_kernels"), 0, "no kernel is seeded");
         for (const table of ["analytics_v2_runs", "analytics_v2_owner_day", "analytics_v2_published_daily"]) {
@@ -1588,15 +1594,6 @@ test("PG17: the store refuses to write without the refresh lock when another ses
   });
 });
 
-/** K-PERCARD's migration text, staged or promoted (found by its name suffix). */
-async function priceMigrationSql() {
-  for (const directory of [join(WORKER_ROOT, "postgres", "staged-migrations", "primary"), PRIMARY_MIGRATIONS_DIRECTORY]) {
-    const name = (await readdir(directory).catch(() => [])).find((entry) => /^\d{4}_analytics_v2_price_cards\.sql$/u.test(entry));
-    if (name !== undefined) return readFile(join(directory, name), "utf8");
-  }
-  throw new Error("the analytics_v2_price_cards migration is neither staged nor promoted");
-}
-
 function minimalOutputs(overrides = {}) {
   const nowMs = Date.parse(NOW_1);
   const outputs = {
@@ -1910,7 +1907,7 @@ test("(f) --now is refused without the test-clock flag, before any database work
   }
 });
 
-const NODE_22 = join(homedir(), ".nvm/versions/node/v22.16.0/bin/node");
+const NODE_22 = IMAGE_NODE;
 
 test("the source entry runs --help and refuses --now under Node v22.16.0", async () => {
   const binary = NODE_22;
@@ -4734,7 +4731,7 @@ test("PG17: the time guard refuses with a receipt before the deadline and writes
 test("the source entry prints a deadline refusal's figures and exits 1, before any connection", { timeout: 120_000 }, async () => {
   // A one-minute task leaves no time after the exit margin and the write: it
   // is refused at the start, before modules, pools or the lock.
-  const node22 = join(homedir(), ".nvm/versions/node/v22.16.0/bin/node");
+  const node22 = IMAGE_NODE;
   const available = await access(node22).then(() => true, () => false);
   assert.ok(available, "Node v22.16.0 is required for the image runtime check");
   const result = await execFileAsync(node22,

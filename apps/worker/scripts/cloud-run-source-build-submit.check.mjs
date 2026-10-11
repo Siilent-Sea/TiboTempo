@@ -206,3 +206,48 @@ test("source-only submit rejects unexpected API source identity and HTTP errors 
     await rm(prepared.scratch, { recursive: true, force: true });
   }
 });
+
+test("source-only submit accepts the legacy worker release Cloud Build fills in and refuses any other", async () => {
+  const prepared = await preparedSubmission();
+  try {
+    const observations = { archive: prepared.archive, spawnCalls: [], requests: [] };
+    const reviewed = operationFixture(prepared.config).metadata.build.options;
+    const created = (options, build = {}) => operationFixture(prepared.config, { build: { ...build, options } });
+    // Since 2026-10-07 Cloud Build fills options.workerRelease "legacy" and an empty pool
+    // into builds that set neither; the create response carries the same Build resource.
+    const current = created({ ...reviewed, pool: {}, workerRelease: "legacy" }, {
+      createTime: "2026-10-10T16:31:42.503120652Z",
+      logUrl: "https://console.cloud.google.com/cloud-build/builds;region="
+        + `${GCP_PRIVATE_TEST_TARGET.region}/${buildId}?project=${GCP_PRIVATE_TEST_TARGET.projectNumber}`,
+      artifacts: { images: [GCP_PRIVATE_TEST_BUILD.imageTag] },
+    });
+    assert.deepEqual(
+      await submitCloudRunSourceBuild(successfulDependencies(prepared.config, current, observations)),
+      { status: "submitted", buildId, operationName: current.name },
+    );
+
+    const privatePool = `projects/${GCP_PRIVATE_TEST_TARGET.project}/locations/`
+      + `${GCP_PRIVATE_TEST_TARGET.region}/workerPools/private`;
+    const refusedOptions = [
+      // Another channel or version is a different build host; only the exact string qualifies.
+      ...["regular", "rapid", "stable", "2026.09", "LEGACY", "", null, ["legacy"], { name: "legacy" }]
+        .map((workerRelease) => ({ ...reviewed, pool: {}, workerRelease })),
+      // Admitting workerRelease admits no other option key, beside it or without it.
+      ...[["machineType", "E2_HIGHCPU_8"], ["env", ["NODE_ENV=production"]], ["worker_release", "legacy"]]
+        .flatMap(([key, value]) => [
+          { ...reviewed, [key]: value },
+          { ...reviewed, workerRelease: "legacy", [key]: value },
+        ]),
+      { ...reviewed, workerRelease: "legacy", pool: { name: privatePool } },
+    ];
+    for (const options of refusedOptions) {
+      await assert.rejects(
+        submitCloudRunSourceBuild(successfulDependencies(prepared.config, created(options), observations)),
+        (error) => error.code === "CLOUD_BUILD_SOURCE_CREATE_RESPONSE_UNEXPECTED",
+        JSON.stringify(options),
+      );
+    }
+  } finally {
+    await rm(prepared.scratch, { recursive: true, force: true });
+  }
+});
