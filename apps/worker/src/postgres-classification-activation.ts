@@ -119,10 +119,18 @@ function predecessorCte():string{
  * candidateSql/oldSql text the per-page CTEs re-ran, then paged by index.
  * Session-private: dropped once the proof passes, and discarded with the
  * caller's rollback on any refusal or error (ON COMMIT DROP otherwise). */
-type WorkSet = "candidate" | `source_${PostgresClassificationFormat}` | `${"foreign" | "exact"}_${PostgresClassificationFormat}`;
+type WorkSet = "candidate" | "rekey_twins" | `source_${PostgresClassificationFormat}`
+  | `${"foreign" | "exact"}_${PostgresClassificationFormat}`;
 function work(name: WorkSet): string { return `pg_temp.${quotePostgresIdentifier(`classification_${name}`)}`; }
-const WORK_SETS: readonly WorkSet[] = ["candidate", "source_10", "source_11", "source_12",
+const WORK_SETS: readonly WorkSet[] = ["candidate", "rekey_twins", "source_10", "source_11", "source_12",
   "foreign_10", "foreign_11", "foreign_12", "exact_10", "exact_11", "exact_12"];
+// Typed stream codes (STREAM_CODES of the effective readers) whose v1
+// occurrence ids each successor format keeps. The clients' v1.1 records reuse
+// the v1 usage eventId and session sessionUuid, and v1.2 projects the v1.1
+// records unchanged; a v1 quota id ('q:<ms>:<limit>:<slot>') is replaced by
+// design with a 'quota-occurrence:v1:' id that admission maps only through
+// typed_v11_record_admissions.legacy_occurrence_id (assertTypedV1Transition).
+const V1_STABLE_STREAMS = "1,3";
 // Every set statement binds the same three values; the unused scope CTE only
 // types them, so oldSql(10|11) may leave $3 unreferenced.
 function workPrelude(): string {
@@ -149,32 +157,91 @@ class ClassificationWork {
     if (!this.built.has(`source_${format}`)) await this.records(`source_${format}`, oldSql(this.s, format));
     return work(`source_${format}`);
   }
-  /** Whether this device's accepted history in an older format holds a record
-   * the candidate re-keyed: its (stream, occurrence) is absent from the
-   * candidate on its observed day while the candidate has a record of the same
-   * stream at the same instant. Effective readers union legacy and v1.2
-   * candidates per day by occurrence id, so both copies would count. A record
-   * absent with no same-instant twin keeps only its legacy copy and passes.
-   * One hash semi-join and one hash anti-join over the analyzed working sets.
-   * It counts rather than stopping at the first row: a LIMIT lets the planner
-   * pick a fast-start nested-loop anti-join that rescans the candidate per
-   * legacy row (synthetic 2.75M candidate and 2.12M v1.1 rows: over 60 s,
-   * against about 2 s for the two hash joins). */
-  async rekeyed(formats: readonly (10 | 11)[]): Promise<boolean> {
-    const legacy: string[] = [];
-    for (const format of formats) {
-      legacy.push(`SELECT stream,occurrence_id,observed_at_ms,observed_day FROM ${await this.source(format)}
-        WHERE source_device_id=$1`);
+  private async setting(name: string): Promise<string> {
+    const value = (await this.client.query<{setting:string}>("SELECT current_setting($1) AS setting", [name])).rows[0]?.setting;
+    if (!value) fail();
+    return value;
+  }
+  /** Whether activating would introduce a re-keyed twin of this device's
+   * accepted older-format history (v1 for v1.1; v1 and v1.1 for v1.2). The
+   * effective readers union legacy and v1.2 candidates per observed day by
+   * occurrence id, so an event re-emitted under a new id at the same instant
+   * counts twice. A twin is a candidate record that
+   *  - shares (stream, day, instant) with a legacy record of this device whose
+   *    (stream, occurrence) the candidate lacks on that day,
+   *  - matches no legacy record of this device by (stream, occurrence): a
+   *    same-instant sibling kept under its own id is not a twin (nor is a
+   *    re-keyed copy kept beside its original id, which has the same shape),
+   *  - is not already in this device's accepted history of the activating
+   *    format (every accepted v1.2 generation, which the v1.2 reader reads
+   *    whole; the accepted v1.1 set), so a twin an earlier proof accepted
+   *    neither wedges the device nor counts as newly introduced. Pinned
+   *    predecessor days are not that history: they are each day's earliest
+   *    READY manifest, which a refused activation leaves pinned.
+   * v1 quota is excluded (V1_STABLE_STREAMS): its id change is designed.
+   * Quota observations of one snapshot share an instant and the working sets
+   * carry no limit or slot, so dropping one accepted quota observation while
+   * adding a different, genuinely new one at the same instant also refuses.
+   *
+   * The working sets have no indexes, so the set statements run with
+   * nested loops disabled transaction-locally (restored before returning):
+   * the earlier single-statement v1-only form planned a nested-loop
+   * semi-join that rescans the candidate per unmatched legacy row and
+   * exceeded the 60 s budget (synthetic 2.75M candidate, 1M v1 rows). Only
+   * the v1.2 history probe keeps the planner default: it looks up each twin
+   * on the (manifest, stream, occurrence) unique key. */
+  async rekeyed(): Promise<boolean> {
+    // Built here under the planner defaults: each is the v1.1 baseline or
+    // legacy history the pair work reads next for either activation format.
+    const v1 = await this.source(10), v11 = await this.source(11);
+    const legacy = [`SELECT stream,occurrence_id,observed_at_ms,observed_day FROM ${v1}
+        WHERE source_device_id=$1 AND stream IN (${V1_STABLE_STREAMS})`];
+    if (this.input.format === 12) legacy.push(`SELECT stream,occurrence_id,observed_at_ms,observed_day
+        FROM ${v11} WHERE source_device_id=$1`);
+    const candidate = work("candidate"), twins = work("rekey_twins");
+    const nestloop = await this.setting("enable_nestloop");
+    await this.client.query("SELECT set_config('enable_nestloop','off',true)");
+    const found = number((await this.client.query(`CREATE TEMP TABLE ${twins} ON COMMIT DROP AS
+      WITH rekeyed_legacy AS NOT MATERIALIZED (${legacy.join(" UNION ALL ")}),
+      dropped AS MATERIALIZED (SELECT DISTINCT legacy.stream,legacy.observed_day,legacy.observed_at_ms
+        FROM rekeyed_legacy legacy WHERE NOT EXISTS (SELECT 1 FROM ${candidate} kept WHERE kept.stream=legacy.stream
+          AND kept.observed_day=legacy.observed_day AND kept.occurrence_id=legacy.occurrence_id))
+      SELECT twin.stream,twin.observed_day,twin.occurrence_id FROM ${candidate} twin
+       WHERE EXISTS (SELECT 1 FROM dropped WHERE dropped.stream=twin.stream AND dropped.observed_day=twin.observed_day
+           AND dropped.observed_at_ms=twin.observed_at_ms)
+         AND NOT EXISTS (SELECT 1 FROM rekeyed_legacy matched WHERE matched.stream=twin.stream
+           AND matched.occurrence_id=twin.occurrence_id)`, [this.input.deviceId])).rowCount);
+    this.built.add("rekey_twins");
+    let introduced = 0;
+    if (found > 0) {
+      await this.client.query(`ANALYZE ${twins}`);
+      if (this.input.format === 11) {
+        introduced = number((await this.client.query<{introduced:string}>(`SELECT count(*)::text AS introduced
+          FROM ${twins} twin WHERE NOT EXISTS (SELECT 1 FROM ${v11} accepted
+            WHERE accepted.source_device_id=$1 AND accepted.stream=twin.stream AND accepted.observed_day=twin.observed_day
+              AND accepted.occurrence_id=twin.occurrence_id)`, [this.input.deviceId])).rows[0]?.introduced);
+      } else {
+        await this.client.query("SELECT set_config('enable_nestloop',$1,true)", [nestloop]);
+        introduced = number((await this.client.query<{introduced:string}>(`WITH twin_days AS MATERIALIZED (
+            SELECT DISTINCT observed_day FROM ${twins}),
+          accepted AS MATERIALIZED (SELECT DISTINCT day.manifest_id,(day.observed_day-DATE '1970-01-01')::integer AS observed_day
+            FROM ${t(this.s,"telemetry_v12_domains")} generation
+            JOIN ${t(this.s,"telemetry_v12_domain_days")} day ON day.generation_id=generation.id
+            JOIN ${t(this.s,"telemetry_v12_day_manifests")} manifest ON manifest.id=day.manifest_id
+             AND manifest.participant_id=generation.participant_id AND manifest.device_id=generation.device_id
+             AND manifest.chunk_day=day.observed_day AND manifest.manifest_digest=day.manifest_digest AND manifest.state='ready'
+            WHERE generation.participant_id=$1 AND generation.device_id=$2
+              AND (day.observed_day-DATE '1970-01-01')::integer IN (SELECT observed_day FROM twin_days))
+          SELECT count(*)::text AS introduced FROM ${twins} twin WHERE NOT EXISTS (
+            SELECT 1 FROM accepted JOIN ${t(this.s,"telemetry_v12_typed_records")} record ON record.manifest_id=accepted.manifest_id
+              AND record.stream=CASE twin.stream WHEN 1 THEN 'usage' WHEN 3 THEN 'session' ELSE 'quota' END
+              AND record.occurrence_id=twin.occurrence_id
+             WHERE accepted.observed_day=twin.observed_day)`,
+        [this.input.participantId, this.input.deviceId])).rows[0]?.introduced);
+      }
     }
-    const candidate = work("candidate");
-    const counted = await this.client.query<{rekeyed:string}>(`SELECT count(*)::text AS rekeyed
-      FROM (${legacy.join(" UNION ALL ")}) rekeyed_legacy
-      WHERE EXISTS (SELECT 1 FROM ${candidate} twin WHERE twin.stream=rekeyed_legacy.stream
-          AND twin.observed_day=rekeyed_legacy.observed_day AND twin.observed_at_ms=rekeyed_legacy.observed_at_ms)
-        AND NOT EXISTS (SELECT 1 FROM ${candidate} kept WHERE kept.stream=rekeyed_legacy.stream
-          AND kept.observed_day=rekeyed_legacy.observed_day AND kept.occurrence_id=rekeyed_legacy.occurrence_id)`,
-    [this.input.deviceId]);
-    return number(counted.rows[0]?.rekeyed) > 0;
+    await this.client.query("SELECT set_config('enable_nestloop',$1,true)", [nestloop]);
+    return introduced > 0;
   }
   /** The exact pair multiset each original per-page statement joined. */
   async pairs(kind: "foreign" | "exact", format: PostgresClassificationFormat): Promise<void> {
@@ -284,7 +351,7 @@ export async function preparePostgresClassificationActivation(client: PostgresCl
   // sets empty without reading history, as the per-page joins did. A
   // cross-format re-key refuses before any pair work, so it fails fast.
   if(await sets.candidate()>0){
-    if(await sets.rekeyed(input.format===12?[10,11]:[10])) fail();
+    if(await sets.rekeyed()) fail();
     await prepareClassificationPairs(client,s,input,owner,sets);
   }
   await assertSessionClassificationClosure(client,s,input,sets);

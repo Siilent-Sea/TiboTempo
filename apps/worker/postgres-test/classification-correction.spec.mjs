@@ -1015,11 +1015,14 @@ async function proofInput(context, format, principal, manifest, token) {
 /** One proof implementation inside a transaction that is always rolled back. */
 async function runProof(prepare, context, input, { explain = false } = {}) {
   const client = await pool.connect();
-  const statements = [], plans = [], setWorkMem = [];
+  const statements = [], plans = [], setWorkMem = [], guardNestloop = [];
   const proofClient = { async query(text, values) {
     const pairs = /^CREATE TEMP TABLE pg_temp\."classification_((?:exact|foreign)_\d+)"/u.exec(text);
     if (/^CREATE TEMP TABLE pg_temp\."classification_/u.test(text)) {
       setWorkMem.push((await client.query("SELECT current_setting('work_mem') AS v")).rows[0].v);
+    }
+    if (/^CREATE TEMP TABLE pg_temp\."classification_rekey_twins"|FROM pg_temp\."classification_rekey_twins" twin/u.test(text)) {
+      guardNestloop.push((await client.query("SELECT current_setting('enable_nestloop') AS v")).rows[0].v);
     }
     if (explain && pairs) plans.push({ set: pairs[1], plan: (await client.query(`EXPLAIN (FORMAT JSON) ${text}`, values)).rows[0]["QUERY PLAN"][0].Plan });
     statements.push(text);
@@ -1029,16 +1032,18 @@ async function runProof(prepare, context, input, { explain = false } = {}) {
     await client.query("BEGIN");
     await client.query("SET LOCAL statement_timeout='60000ms'");
     let outcome = ACCEPTED;
-    const workMem = async () => (await client.query("SELECT current_setting('work_mem') AS v")).rows[0].v;
-    const workMemBefore = await workMem();
+    const setting = async name => (await client.query("SELECT current_setting($1) AS v", [name])).rows[0].v;
+    const workMemBefore = await setting("work_mem"), nestloopBefore = await setting("enable_nestloop");
     try { await prepare(proofClient, `"${context.schema}"`, input); }
     catch (error) { if (error?.code !== "POSTGRES_CLASSIFICATION_CORRECTION_INVALID") throw error; outcome = REFUSED; }
-    const workMemAfter = outcome === ACCEPTED ? await workMem() : null;
+    const workMemAfter = outcome === ACCEPTED ? await setting("work_mem") : null;
+    const nestloopAfter = outcome === ACCEPTED ? await setting("enable_nestloop") : null;
     const links = (await client.query(`SELECT * FROM ${context.table("telemetry_classification_correction_links")}
       WHERE generation_id=$1 ORDER BY id`, [input.generationId])).rows.map(({ id, created_at, ...row }) => row);
     const leftovers = (await client.query(`SELECT count(*)::integer AS n FROM pg_class
       WHERE relpersistence='t' AND relname LIKE 'classification\\_%' AND pg_table_is_visible(oid)`)).rows[0].n;
-    return { outcome, links, statements, plans, leftovers, workMemBefore, workMemAfter, setWorkMem };
+    return { outcome, links, statements, plans, leftovers, workMemBefore, workMemAfter, setWorkMem,
+      nestloopBefore, nestloopAfter, guardNestloop };
   } finally {
     await client.query("ROLLBACK");
     client.release();
@@ -1055,8 +1060,10 @@ async function proofParity(context, format, principal, manifest, token, expected
   if (live.outcome === ACCEPTED) {
     assert.equal(live.leftovers, 0, `${label}: working sets dropped`);
     assert.equal(live.workMemAfter, live.workMemBefore, `${label}: work_mem restored after the proof`);
+    assert.equal(live.nestloopAfter, live.nestloopBefore, `${label}: enable_nestloop restored after the proof`);
   }
   assert.ok(live.setWorkMem.every(value => value === "64MB"), `${label}: every working set builds under 64MB work_mem`);
+  if (live.guardNestloop.length) assert.equal(live.guardNestloop[0], "off", `${label}: the re-key set joins run without nested loops`);
   return { input, live, frozen };
 }
 
@@ -1359,9 +1366,9 @@ test("session closure reads every usage row of a large session in numeric order"
 // ---- Cross-format re-key guard (2026-10-11) ---------------------------------
 // Client occurrence ids are positional, so a re-parse can emit the same event
 // at the same instant under a new id. Effective readers union a participant's
-// accepted legacy candidates with its v1.2 head per day by occurrence id, so
-// an activation that re-keys this device's accepted older-format record would
-// count it twice. edca848 (the frozen oracle) had no such guard.
+// accepted legacy candidates with its v1.2 generations per day by occurrence
+// id, so an activation that re-keys this device's accepted older-format record
+// would count it twice. edca848 (the frozen oracle) had no such guard.
 const V11_TABLES = ["telemetry_classification_correction_links", "telemetry_v11_domains", "telemetry_v11_domain_days",
   "telemetry_v11_domain_heads", "telemetry_v11_domain_predecessors", "storage_v11_event_sources",
   "storage_ingestion_changes", "storage_owner_revisions", "input_versions", "community_analytical_input_versions"];
@@ -1376,10 +1383,12 @@ const asV12 = (record, patch = {}) => ({ ...record, schemaVersion: "usage-event-
 const rekeyedId = label => `event:v2:${sha256Hex(`rekeyed:${label}`)}`;
 const pairWork = statements => statements.filter(sql => /classification_(?:foreign|exact)_\d+/u.test(sql));
 const guardStatement = statements => {
-  const found = statements.filter(sql => /\) rekeyed_legacy\s/u.test(sql));
-  assert.equal(found.length, 1, "the proof runs exactly one re-key guard statement");
+  const found = statements.filter(sql => /^CREATE TEMP TABLE pg_temp\."classification_rekey_twins"/u.test(sql));
+  assert.equal(found.length, 1, "the proof runs exactly one re-key twin statement");
   return found[0];
 };
+// The accepted-history probe runs only when the twin statement found a twin.
+const historyProbes = statements => statements.filter(sql => /FROM pg_temp\."classification_rekey_twins" twin/u.test(sql));
 
 /** The live proof refuses a re-key the frozen edca848 proof accepted, before any pair work. */
 async function rekeyRefusal(context, format, principal, manifest, token, label) {
@@ -1390,6 +1399,9 @@ async function rekeyRefusal(context, format, principal, manifest, token, label) 
   assert.equal(live.outcome, REFUSED, `${label}: the guard refuses`);
   assert.equal(live.links.length, 0, `${label}: no link written`);
   assert.deepEqual(pairWork(live.statements), [], `${label}: refused before any pair set or page`);
+  assert.equal(historyProbes(live.statements).length, 1, `${label}: the twin was checked against accepted history`);
+  // v1.1 compares working sets (no nested loops); v1.2 probes indexed history under the default.
+  assert.deepEqual(live.guardNestloop, ["off", format === 11 ? "off" : live.nestloopBefore], `${label}: planner settings`);
   return guardStatement(live.statements);
 }
 
@@ -1399,6 +1411,8 @@ async function syntheticGuardPlan(text, deviceId, rows) {
   try {
     await client.query("BEGIN");
     await client.query("SELECT set_config('work_mem','64MB',true)");
+    // As the proof runs the twin statement (pinned by runProof's guardNestloop).
+    await client.query("SELECT set_config('enable_nestloop','off',true)");
     for (const [name, streamType] of [["candidate", "integer"], ["source_10", "smallint"], ["source_11", "smallint"]]) {
       await client.query(`CREATE TEMP TABLE pg_temp."classification_${name}" ON COMMIT DROP AS
         SELECT (i%3+1)::${streamType} AS stream,decode(md5(i::text),'hex') AS occurrence_id,
@@ -1471,11 +1485,12 @@ test("v1.2 activation refuses a same-instant re-key of this device's accepted v1
     assert.equal(await rekeyRefusal(context, 12, principal, rekeyed.manifest, rekeyed.predecessor.token, "v1.1 re-key"), guard);
     await refused(context, principal, rekeyed.manifest);
     assert.deepEqual((await evidence(context, participant, range)).usage, accepted.usage);
-    // The same statement plans as two set joins over large working sets,
+    // The same statement plans as set joins over large working sets (the
+    // kept anti-join, the same-instant semi-join and the legacy-id anti-join),
     // never a per-row rescan of the candidate.
     const joins = [...planNodes(await syntheticGuardPlan(guard, principal.deviceId, 20_000))]
       .filter(node => /Join|Nested Loop/u.test(node["Node Type"]));
-    assert.equal(joins.length, 2);
+    assert.ok(joins.length >= 3, `the twin statement joins three times (${joins.length})`);
     for (const node of joins) {
       assert.ok(["Hash Join", "Merge Join"].includes(node["Node Type"]), `the guard joins as a set (${node["Node Type"]})`);
     }
@@ -1547,6 +1562,214 @@ test("the re-key guard covers v1 history for v1.1 and v1.2 activations, scoped t
       [asV12(v11[0]), asV12(v11[1]), ownAtForeignInstant, asV12(v2Rekeyed)])]);
     await rekeyRefusal(context, 12, principal, rekeyedV12.manifest, rekeyedV12.predecessor.token, "v1 re-key into v1.2");
     await refused(context, principal, rekeyedV12.manifest);
+  });
+});
+
+// Domains whose activations run the frozen edca848 proof (production before
+// this guard), to reproduce history that proof accepted.
+let deployed;
+async function deployedDomains() {
+  await setup();
+  if (deployed) return deployed;
+  const oracle = resolve(WORKER_ROOT, "postgres-test/fixtures/classification/activation-oracle.ts");
+  const importers = [];
+  const server = await createServer({ root: WORKER_ROOT, configFile: false, logLevel: "silent",
+    plugins: [{ name: "classification-deployed-proof", enforce: "pre", resolveId(source, importer) {
+      if (source !== "./postgres-classification-activation" || !importer?.startsWith(resolve(WORKER_ROOT, "src"))) return null;
+      importers.push(importer.slice(WORKER_ROOT.length));
+      return oracle;
+    } }, ...(analyticsV2Config.plugins ?? [])], resolve: analyticsV2Config.resolve,
+    server: { middlewareMode: true, hmr: false, ws: false, watch: null }, appType: "custom" });
+  deployed = { server,
+    v12: await server.ssrLoadModule("/src/postgres-typed-v12-domain.ts"),
+    live: await server.ssrLoadModule("/src/postgres-telemetry-v11-live-admission.ts") };
+  assert.deepEqual([...new Set(importers)].sort(), ["/src/postgres-telemetry-v11-live-admission.ts", "/src/postgres-typed-v12-domain.ts"],
+    "both domains run the frozen proof");
+  return deployed;
+}
+after(async () => { await deployed?.server.close(); });
+
+const quotaV11 = (day, index, patch = {}) => ({ schemaVersion: "quota-observation-v1.1",
+  observationId: `quota-occurrence:v1:${sha256Hex(`quota:${day}:${index}`)}`,
+  observedTime: `${day}T06:00:00.000Z`, provider: "openai_codex", planType: "pro", planVariant: "unknown",
+  limitId: "codex", slot: "primary", usedPercent: 12, windowDurationMinutes: 300, resetsAt: `${day}T10:00:00.000Z`,
+  accountPlanAttribution: { accountBasis: "unavailable", accountTrackId: null, planBasis: "same_source_occurrence",
+    planType: "pro", planEraId: null }, ...patch });
+const usageCounts = async (context, participant, fromDay, throughDay) => {
+  const read = await modules.occurrences.readOwnerOccurrences({ pool, schema: context.schema, nowMs: Date.now() },
+    { ownerDigest: participant.ownerDigest, fromDay, throughDay, stream: "usage" });
+  return Object.fromEntries([...read].map(([day, rows]) => [day, rows.length]));
+};
+const v1Ready = async (context, participant) => {
+  await pool.query(`UPDATE ${context.table("telemetry_transport_formats")} SET lifecycle='accepted'
+    WHERE schema_version='telemetry-contribution-v1.1'`);
+  await modules.live.initializePostgresTypedV11Admission(pool, { ...context.options, sourceNamespace: SOURCE_NAMESPACE });
+  await pool.query(`INSERT INTO ${context.table("typed_v1_admission_state")}(
+    id,source_namespace,namespace_id,runtime_contract_version,next_source_row_id)
+    SELECT 1,source_namespace,namespace_id,1,100 FROM ${context.table("typed_v11_admission_state")} WHERE id=1`);
+};
+
+test("v1 quota's designed id change and a same-instant sibling kept under its own id are not re-keys", {
+  skip: !PG_TEST_SOCKET, timeout: 180_000,
+}, async () => {
+  await withSchema(async context => {
+    const today = new Date().toISOString().slice(0, 10);
+    const participant = await seedParticipant(context, "rekey-designed");
+    const principal = await seedDevice(context, participant, "rekey-designed", { v12: false });
+    const options = { ...context.options, sourceNamespace: SOURCE_NAMESPACE };
+    await v1Ready(context, participant);
+    // v1 names a quota observation by instant, limit and slot; v1.1 and v1.2
+    // name the same observation 'quota-occurrence:v1:...' (the clients'
+    // telemetry-v1-chunks.js and telemetry-v11-chunks.js), mapped only through
+    // legacy_occurrence_id. Usage and session ids are kept across formats.
+    const quota = quotaV11(today, 0);
+    const v1Quota = modules.compatibility.telemetryV11LegacyProjection("quota", quota);
+    assert.match(v1Quota.occurrenceId, /^q:\d+:codex:primary$/u);
+    const v1 = await seedTypedV1Chunk(modules, pool, context.schema, { ...principal, principal },
+      { day: today, stream: "quota", chunkSeq: 0, records: [JSON.parse(v1Quota.canonicalRecord)] });
+    await v1.admit({ ownerDigest: participant.ownerDigest, firstSourceRowId: 1 });
+    await grantScaleV11(modules, pool, participant, principal, options);
+    const v11Domain = modules.live.createPostgresTelemetryV11Domain(pool, options);
+    // A and B are two events at one instant.
+    const a = v11At(today, 0), b = v11At(today, 1, { eventTime: a.eventTime }), c = v11At(today, 2);
+    const v11Day = await stageScaleV11Day(modules, pool, context.schema, options, principal, today, [quota, a, b, c]);
+    const v11Predecessor = await v11Domain.createPredecessor(principal);
+    const v11Manifest = scaleV11DomainManifest(v11Predecessor, [v11Day]);
+    // The v1 quota id is absent while the candidate holds a quota record at its instant.
+    const quotaProof = await proofParity(context, 11, principal, v11Manifest, v11Predecessor.token, ACCEPTED,
+      "v1 quota under its v1.1 id");
+    assert.deepEqual(historyProbes(quotaProof.live.statements), [], "no twin is found");
+    assert.equal((await v11Domain.activate(principal, v11Manifest)).replay, false);
+    assert.deepEqual(await usageCounts(context, participant, today, today), { [today]: 3 });
+
+    // A is simply absent and B keeps its id at A's instant: B is a sibling,
+    // not a twin. The v1 quota id is absent again beside its v1.1 id.
+    await enableV12(context, principal);
+    const fresh = async days => { const predecessor = await context.domain.createPredecessor(principal);
+      return { predecessor, manifest: domainManifest(predecessor, days) }; };
+    const quotaV12 = { ...quota, schemaVersion: "quota-observation-v1.2" };
+    const sibling = await fresh([await stageScaleV12Day(modules, pool, context.schema, context.options, principal, today,
+      [quotaV12, asV12(b), asV12(c)])]);
+    const siblingProof = await proofParity(context, 12, principal, sibling.manifest, sibling.predecessor.token, ACCEPTED,
+      "same-instant sibling");
+    assert.deepEqual(historyProbes(siblingProof.live.statements), [], "a sibling matching its own legacy id is not a twin");
+    assert.equal((await context.domain.activate(principal, sibling.manifest)).replay, false);
+    assert.deepEqual(await usageCounts(context, participant, today, today), { [today]: 3 },
+      "A keeps its legacy copy; B and C count once");
+
+    // Documented residual: the sets carry no limit or slot, so dropping an
+    // accepted quota observation while adding a different, new one at the
+    // same instant refuses.
+    const otherSlot = quotaV11(today, 1, { schemaVersion: "quota-observation-v1.2", slot: "secondary" });
+    const swapped = await fresh([await stageScaleV12Day(modules, pool, context.schema, context.options, principal, today,
+      [otherSlot, asV12(b), asV12(c)])]);
+    await rekeyRefusal(context, 12, principal, swapped.manifest, swapped.predecessor.token, "quota slot swap");
+  });
+});
+
+test("a twin this device's accepted v1.2 history already holds does not wedge it; a new twin still refuses on retry", {
+  skip: !PG_TEST_SOCKET, timeout: 180_000,
+}, async () => {
+  const { v12: deployedV12 } = await deployedDomains();
+  await withSchema(async context => {
+    const [twoDaysAgo, yesterday, today] = [2, 1, 0].map(back => new Date(Date.now() - back * DAY_MS).toISOString().slice(0, 10));
+    const participant = await seedParticipant(context, "rekey-accepted");
+    const principal = await seedDevice(context, participant, "rekey-accepted", { v12: false });
+    const options = { ...context.options, sourceNamespace: SOURCE_NAMESPACE };
+    await initializeScaleV11(modules, pool, context.schema, options);
+    await grantScaleV11(modules, pool, participant, principal, options);
+    const v11Domain = modules.live.createPostgresTelemetryV11Domain(pool, options);
+    const legacy = Object.fromEntries([[twoDaysAgo, 2], [yesterday, 2], [today, 3]].map(([day, count]) =>
+      [day, Array.from({ length: count }, (_, index) => v11At(day, index))]));
+    const v11Days = [];
+    for (const [day, records] of Object.entries(legacy)) {
+      v11Days.push(await stageScaleV11Day(modules, pool, context.schema, options, principal, day, records));
+    }
+    assert.equal((await v11Domain.activate(principal, scaleV11DomainManifest(await v11Domain.createPredecessor(principal),
+      v11Days))).replay, false);
+    await enableV12(context, principal);
+    const counts = () => usageCounts(context, participant, twoDaysAgo, today);
+    assert.deepEqual(await counts(), { [twoDaysAgo]: 2, [yesterday]: 2, [today]: 3 });
+
+    // Production's proof before this guard accepted a re-key of today's third
+    // event, so this device's accepted v1.2 history holds the twin and the
+    // union already counts that event twice.
+    const rekeyedToday = await stage(context, principal, today, "usage",
+      [asV12(legacy[today][0]), asV12(legacy[today][1]), asV12({ ...legacy[today][2], eventId: rekeyedId("accepted") })]);
+    const first = domainManifest(await context.domain.createPredecessor(principal), [rekeyedToday]);
+    assert.equal((await deployedV12.createPostgresTypedV12Domain(pool, context.options).activate(principal, first)).replay, false);
+    assert.deepEqual(await counts(), { [twoDaysAgo]: 2, [yesterday]: 2, [today]: 4 });
+    const fresh = async days => { const predecessor = await context.domain.createPredecessor(principal);
+      return { predecessor, manifest: domainManifest(predecessor, days) }; };
+
+    // Adding a new day introduces nothing: the twin is found, matched in the
+    // accepted history and the activation proceeds.
+    const yesterdayDay = await stage(context, principal, yesterday, "usage", legacy[yesterday].map(record => asV12(record)));
+    const next = await fresh([yesterdayDay, rekeyedToday]);
+    const nextProof = await proofParity(context, 12, principal, next.manifest, next.predecessor.token, ACCEPTED,
+      "twin already accepted");
+    assert.equal(historyProbes(nextProof.live.statements).length, 1, "the twin was checked against accepted history");
+    assert.deepEqual(nextProof.live.guardNestloop, ["off", nextProof.live.nestloopBefore]);
+    assert.equal((await context.domain.activate(principal, next.manifest)).replay, false);
+    assert.deepEqual(await counts(), { [twoDaysAgo]: 2, [yesterday]: 2, [today]: 4 }, "no further double count");
+
+    // A new twin beside the accepted one still refuses. Its refused manifest
+    // stays the day's earliest READY one, which every later predecessor pins
+    // (so pinned predecessor days are no accepted baseline): a retry refuses.
+    const rekeyedOld = await stage(context, principal, twoDaysAgo, "usage",
+      [asV12(legacy[twoDaysAgo][0]), asV12({ ...legacy[twoDaysAgo][1], eventId: rekeyedId("introduced") })]);
+    for (const label of ["new twin beside an accepted one", "retry with the refused day pinned"]) {
+      const retry = await fresh([rekeyedOld, yesterdayDay, rekeyedToday]);
+      const pinned = (await pool.query(`SELECT days_json FROM ${context.table("telemetry_v12_domain_predecessors")}
+        WHERE token_hash=$1`, [sha256Hex(retry.predecessor.token)])).rows[0].days_json;
+      assert.ok(JSON.parse(pinned).some(day => day.manifestId === rekeyedOld.manifestId), `${label}: pinned`);
+      await rekeyRefusal(context, 12, principal, retry.manifest, retry.predecessor.token, label);
+      await refused(context, principal, retry.manifest);
+    }
+    assert.deepEqual(await counts(), { [twoDaysAgo]: 2, [yesterday]: 2, [today]: 4 });
+  });
+});
+
+test("a twin this device's accepted v1.1 history already holds does not wedge a v1.1 activation", {
+  skip: !PG_TEST_SOCKET, timeout: 180_000,
+}, async () => {
+  const { live: deployedLive } = await deployedDomains();
+  await withSchema(async context => {
+    const [yesterday, today] = [1, 0].map(back => new Date(Date.now() - back * DAY_MS).toISOString().slice(0, 10));
+    const participant = await seedParticipant(context, "rekey-accepted-v11");
+    const principal = await seedDevice(context, participant, "rekey-accepted-v11", { v12: false });
+    const other = await seedDevice(context, participant, "rekey-accepted-v11-other", { v12: false });
+    const options = { ...context.options, sourceNamespace: SOURCE_NAMESPACE };
+    await v1Ready(context, participant);
+    const project = record => JSON.parse(modules.compatibility.telemetryV11LegacyProjection("usage", record).canonicalRecord);
+    const own = [0, 1, 2].map(index => v11At(today, index));
+    const ownV1 = await seedTypedV1Chunk(modules, pool, context.schema, { ...principal, principal },
+      { day: today, stream: "usage", chunkSeq: 0, records: own.map(project) });
+    await ownV1.admit({ ownerDigest: participant.ownerDigest, firstSourceRowId: 1 });
+    // Another device's newer v1 chunk wins the day, so the v1-to-v1.1
+    // transition closure requires its event, not this device's.
+    await new Promise(done => setTimeout(done, 20));
+    const winner = v11At(today, 5);
+    const otherV1 = await seedTypedV1Chunk(modules, pool, context.schema, { ...other, principal: other },
+      { day: today, stream: "usage", chunkSeq: 0, records: [project(winner)] });
+    await otherV1.admit({ ownerDigest: participant.ownerDigest, firstSourceRowId: 4 });
+    await grantScaleV11(modules, pool, participant, principal, options);
+    // Production's proof before this guard accepted this device's re-key of its third v1 event.
+    const rekeyedToday = await stageScaleV11Day(modules, pool, context.schema, options, principal, today,
+      [own[0], own[1], { ...own[2], eventId: rekeyedId("accepted-v11") }, winner]);
+    const deployedV11 = deployedLive.createPostgresTelemetryV11Domain(pool, options);
+    assert.equal((await deployedV11.activate(principal, scaleV11DomainManifest(await deployedV11.createPredecessor(principal),
+      [rekeyedToday]))).replay, false);
+    // Adding a new day introduces nothing, so it activates.
+    const v11Domain = modules.live.createPostgresTelemetryV11Domain(pool, options);
+    const yesterdayDay = await stageScaleV11Day(modules, pool, context.schema, options, principal, yesterday,
+      [v11At(yesterday, 0)]);
+    const predecessor = await v11Domain.createPredecessor(principal);
+    const manifest = scaleV11DomainManifest(predecessor, [yesterdayDay, rekeyedToday]);
+    const proof = await proofParity(context, 11, principal, manifest, predecessor.token, ACCEPTED, "v1.1 twin already accepted");
+    assert.equal(historyProbes(proof.live.statements).length, 1, "the twin was checked against accepted v1.1 history");
+    assert.deepEqual(proof.live.guardNestloop, ["off", "off"]);
+    assert.equal((await v11Domain.activate(principal, manifest)).replay, false);
   });
 });
 

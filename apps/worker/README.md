@@ -438,28 +438,54 @@ multi-million-row histories hash in memory within the 60 s statement budget.
 
 Client occurrence ids are positional, so a re-parsed rollout can re-emit an
 event at the same instant under a new id. The effective readers union a
-participant's accepted v1 and v1.1 candidates with its v1.2 head per observed
-day by occurrence id, and the proof's other checks compare only same-id records
-or same-format baselines. Before any pair work, the proof therefore refuses an
-activation when the activating device's accepted history in a strictly older
-format (v1 for a v1.1 activation; v1 and v1.1 for a v1.2 activation) holds a
-record whose stream and occurrence id are absent from the candidate on its
-observed day while the candidate has a record of the same stream at the same
-instant: activating it would count that event twice. The refusal uses the
-callers' existing 409 codes (`TELEMETRY_MANIFEST_CONFLICT` for v1.2,
-`TELEMETRY_COMPATIBILITY_PROOF_UNAVAILABLE` for v1.1). A legacy record that is
-absent with no same-instant candidate record does not refuse, because the union
-keeps its legacy copy, and other devices' history is out of scope. The check
-is one count over the existing working sets, a hash semi-join and a hash
-anti-join; it reads every row rather than stopping at the first, because a
-`LIMIT` lets the planner choose a nested-loop anti-join that rescans the
-candidate per legacy row. With synthetic sets of 2.75M candidate and 2.12M
-v1.1 rows it took about 2 s locally (about 3.5 s with 1M more v1 rows).
-Because the same-day closure keeps every occurrence of a day's earliest READY
-v1.2 manifest in each successor, a device whose earliest READY manifest for a
-day already holds such a twin stays refused for that day while the legacy
-record remains accepted. The guard prevents the double count; it does not
-reconcile the two copies.
+participant's accepted v1 and v1.1 candidates with every accepted v1.2
+generation per observed day by occurrence id, and the proof's other checks
+compare only same-id records or same-format baselines. Before any pair work,
+the proof therefore refuses an activation that would introduce a re-keyed twin
+of the activating device's accepted history in a strictly older format (v1 for
+a v1.1 activation; v1 and v1.1 for a v1.2 activation). A twin is a candidate
+record that shares stream, observed day and instant with a legacy record of
+that device whose stream and occurrence id the candidate lacks on that day,
+matches no legacy record of the device by stream and occurrence id, and is not
+already in the device's accepted history of the activating format (any of its
+accepted v1.2 generations, all of which the reader reads, or its accepted v1.1
+set). The refusal uses the callers' existing 409 codes
+(`TELEMETRY_MANIFEST_CONFLICT` for v1.2,
+`TELEMETRY_COMPATIBILITY_PROOF_UNAVAILABLE` for v1.1).
+
+These pass: a legacy record absent with no same-instant candidate record (the
+union keeps its legacy copy); a same-instant sibling kept under its own id (as
+does a re-keyed copy kept beside its original id, which has the same shape);
+and a twin an earlier activation already accepted, which adds no new
+occurrence, so a device that production's earlier proof let through is not
+wedged. The guard prevents a new double count; it does not reconcile an
+existing one. Other devices' history is out of scope. v1 quota is excluded:
+the clients' v1.1 and v1.2 records keep the v1 usage `eventId` and session
+`sessionUuid` but replace the v1 quota id `q:<ms>:<limit>:<slot>` with a
+`quota-occurrence:v1:` id by design, which admission maps only through
+`typed_v11_record_admissions.legacy_occurrence_id`. The analytics-v2 candidate
+selection does not apply that map, so a day holding accepted v1 and v1.1 copies
+of one quota observation selects two quota candidates; that reader property
+predates this guard and is outside it. The working sets carry no quota limit or
+slot, so dropping an accepted quota observation while adding a different new
+one at the same instant also refuses. Pinned predecessor days are each day's
+earliest READY manifest, accepted or not, so they are no accepted baseline: a
+refused re-key stays pinned, and because the same-day closure keeps its
+occurrences in every successor, that day stays refused.
+
+The working sets have no indexes, so the twin statement (the kept anti-join,
+the same-instant join and the legacy-id anti-join, materializing any twins in a
+temporary table) runs with `enable_nestloop` off transaction-locally and
+restored before returning, as `work_mem` is. With nested loops allowed, the
+earlier single-statement v1-only form planned a nested-loop semi-join that
+rescans the candidate per unmatched legacy row and exceeded the 60 s statement
+budget with synthetic 2.75M candidate and 1M v1 rows. The history probe runs
+only when a twin exists: v1.1 anti-joins the accepted v1.1 set, and v1.2 looks
+each twin up on the `(manifest_id, stream, occurrence_id)` unique key of the
+device's accepted day manifests under the planner default. With synthetic sets
+of 2.75M candidate, 2.33M v1.1 and 1M v1 rows, the twin statement took about
+1.6 to 2.1 s for v1.2 and 0.6 to 0.8 s for v1.1 locally; the v1.2 probe took
+about 15 ms for 2,424 twins and about 8 s for 1.79M.
 
 The proof lives in `src/postgres-classification-activation.ts`, outside the
 analytics kernel's compute closure; the overlay readers and link predicate stay
@@ -474,9 +500,13 @@ whole-session provider closure, replay and the populated migration75-to76
 receipt fence. It also compares the bounded proof and the v1.1 closures with the
 frozen edca848 oracles in `postgres-test/fixtures/classification/` and bounds
 their plans. The re-key cases show the frozen proof accepting each same-instant
-re-key that the live proof refuses, with nothing written, and the two agreeing
-when ids are preserved, a record is absent without a twin, or the history is
-another device's. `scripts/classification-activation-scale-bench.mjs` reports
+re-key that the live proof refuses, with nothing written, including a new twin
+beside an accepted one and its retry with the refused day pinned. The two agree
+when ids are preserved, a record is absent without a twin, the history is
+another device's, a v1 quota observation takes its v1.1 id, a same-instant
+sibling keeps its id, or the twin is already in the device's accepted v1.2 or
+v1.1 history (reproduced through domains running the frozen proof).
+`scripts/classification-activation-scale-bench.mjs` reports
 local, aggregate-only statement timings at synthetic scale; it is evidence, not
 a gate. Migration, image rollout and installed-client acceptance remain separate
 operational gates. GCP performance admission stays retired.

@@ -16,6 +16,8 @@ const DAY_MS = 86_400_000;
 const sha256Hex = (value) => createHash("sha256").update(value).digest("hex");
 const q = (schema, name) => `"${schema}"."${name}"`;
 const hex64 = (seed) => sha256Hex(`classification-scale:${seed}`);
+const recordStream = (record) => record.schemaVersion.split("-")[0] === "usage" ? "usage"
+  : record.schemaVersion.split("-")[0] === "quota" ? "quota" : "session";
 
 export function scaleDays(count, firstDay = "2026-06-01") {
   return Array.from({ length: count }, (_, index) =>
@@ -132,7 +134,7 @@ export async function stageScaleV12Day(modules, pool, schema, options, principal
   { parserVersion = "synthetic-scale-pg17" } = {}) {
   const consent = telemetryV12RequiredConsent();
   const byStream = { quota: [], session: [], usage: [] };
-  for (const record of records) byStream[record.schemaVersion.startsWith("usage") ? "usage" : "session"].push(record);
+  for (const record of records) byStream[recordStream(record)].push(record);
   const chunks = [];
   for (const stream of ["quota", "session", "usage"]) {
     for (let offset = 0; offset < byStream[stream].length; offset += 200) {
@@ -195,7 +197,7 @@ export async function grantScaleV11(modules, pool, participant, principal, optio
 export function makeScaleV11Day(day, records, parserVersion = "synthetic-scale-v11") {
   const consent = telemetryV11RequiredConsent();
   const byStream = { quota: [], session: [], usage: [] };
-  for (const record of records) byStream[record.schemaVersion.startsWith("usage") ? "usage" : "session"].push(record);
+  for (const record of records) byStream[recordStream(record)].push(record);
   const chunks = [];
   for (const stream of ["quota", "session", "usage"]) {
     for (let offset = 0; offset < byStream[stream].length; offset += 200) {
@@ -285,10 +287,11 @@ export function statementTimer(pool) {
 /** Closed statement families; anything else is "other". */
 export function statementFamily(text) {
   const rules = [
+    [/^CREATE TEMP TABLE pg_temp\."classification_rekey_twins"/u, () => "proof:rekeyed"],
     [/^CREATE TEMP TABLE\s+(\S+)/u, (m) => `temp:${m[1]}`],
     [/^CREATE INDEX\s+ON\s+(\S+)/u, (m) => `temp_index:${m[1]}`],
     [/^ANALYZE\s+(\S+)/u, (m) => `temp_analyze:${m[1]}`],
-    [/\) rekeyed_legacy\s/u, () => "proof:rekeyed"],
+    [/FROM pg_temp\."classification_rekey_twins" twin/u, () => "proof:rekeyed_history"],
     [/candidate AS MATERIALIZED[\s\S]*original AS MATERIALIZED/u, () => "proof:session_closure"],
     [/old_source\.source_device_id<>\$3/u, () => "proof:foreign"],
     [/candidate AS MATERIALIZED[\s\S]*old_source AS MATERIALIZED/u, () => "proof:exact"],
