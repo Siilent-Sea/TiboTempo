@@ -24,7 +24,10 @@
  *      PG_TEST_PORT=55433 node --test postgres-test/analytics-v2-pricing-classes.spec.mjs
  *
  * ANALYTICS_V2_PRICING_CLASS_BENCH=<owner-days>x<events> also times the
- * transition proof both ways on that many synthetic stored owner-days.
+ * transition proof both ways on that many synthetic stored owner-days. The
+ * measurement is not a gate: it is registered only when that variable is set,
+ * so the zero-skip PostgreSQL 17 suite never sees it. Run it alone with
+ * --test-name-pattern "PG17 bench".
  */
 
 import assert from "node:assert/strict";
@@ -32,7 +35,8 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { access, copyFile, mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
+import { IMAGE_NODE } from "./image-node.mjs";
 import { promisify } from "node:util";
 import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -58,7 +62,7 @@ import { cloudRunBuildPlugins } from "../cloud-run/node-host-build.mjs";
 const WORKER_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CLOUD_RUN_ROOT = join(WORKER_ROOT, "cloud-run");
 const VENDOR_ROOT = join(WORKER_ROOT, "vendor", "analytics-d43c8f92");
-const NODE_22 = join(homedir(), ".nvm/versions/node/v22.16.0/bin/node");
+const NODE_22 = IMAGE_NODE;
 const NODE_22_SKIP = await access(NODE_22).then(() => false,
   () => "the built Job runs under Node v22.16.0 (the image runtime), which is not installed");
 const execFileAsync = promisify(execFile);
@@ -847,8 +851,8 @@ test("PG17 built bundles: a kernel bump within one pricing class writes every an
 
 const BENCH = /^(\d+)x(\d+)$/u.exec(process.env.ANALYTICS_V2_PRICING_CLASS_BENCH ?? "");
 
-test("PG17 bench: the transition proof's run-start time by full reprice and by pricing-class identity", {
-  skip: PG_SKIP || (BENCH === null ? "set ANALYTICS_V2_PRICING_CLASS_BENCH=<owner-days>x<events>" : false),
+if (BENCH !== null) test("PG17 bench: the transition proof's run-start time by full reprice and by pricing-class identity", {
+  skip: PG_SKIP,
   timeout: 3_600_000,
 }, async () => {
   const ownerDays = Number(BENCH[1]), perDay = Number(BENCH[2]);

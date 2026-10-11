@@ -464,6 +464,8 @@ export async function createRuntime({ databaseOnly = false, dependencies = {} } 
       uploadIngress: createUploadIngressAuthority(),
       statusDispatchers,
       composeIntake: originIntakeServedInMode(postgresTestMode),
+      // A test clock for the v1.1 intake routes, honoured in fastpath-test only.
+      intakeClock: postgresTestMode === FASTPATH_TEST_MODE ? dependencies.intakeClock ?? null : null,
       // Only a fastpath-test origin adds the analytics-v2 module.
       routeModules: postgresTestMode === FASTPATH_TEST_MODE
         ? fastpathTestRouteModules({

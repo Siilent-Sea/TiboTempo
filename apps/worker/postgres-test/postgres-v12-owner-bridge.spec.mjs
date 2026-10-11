@@ -167,19 +167,31 @@ function tableIn(schema) {
 
 /**
  * Run `body` against a fresh schema at the pre-bridge baseline, plus 0055
- * unless `bridged` is false.
+ * unless `bridged` is false. With `fullChain`, the schema instead receives the
+ * whole promoted primary chain through the runner, 0055 in its place, as
+ * production does: a test that drives today's v1.2 activation needs the
+ * relations later migrations add (0060's typed_v11_record_admissions, which the
+ * classification links read since 29e8bb029), so it qualifies the bridge's
+ * behaviour on the current schema, while the 0055-only checks keep the exact
+ * pre-bridge baseline.
  */
-async function withSchema(body, { bridged = true } = {}) {
+async function withSchema(body, { bridged = true, fullChain = false } = {}) {
   const pool = await connection();
   const schema = `v12_bridge_${randomBytes(6).toString("hex")}`;
   const quoted = `"${schema}"`;
   const table = tableIn(schema);
   await pool.query(`CREATE SCHEMA ${quoted}`);
   try {
-    const rootDirectory = await baselineMigrationsRoot();
-    const applied = await applyPostgresMigrations({ role: "primary", schema, pool, rootDirectory });
-    assert.ok(applied.migrations.at(-1).version < BRIDGE_VERSION);
-    if (bridged) await applyBridge(pool, schema);
+    if (fullChain) {
+      const applied = await applyPostgresMigrations({ role: "primary", schema, pool });
+      assert.ok(applied.migrations.some(({ name }) => name === BRIDGE_MIGRATION), "the chain carries 0055");
+      assert.ok(applied.migrations.at(-1).version > BRIDGE_VERSION);
+    } else {
+      const rootDirectory = await baselineMigrationsRoot();
+      const applied = await applyPostgresMigrations({ role: "primary", schema, pool, rootDirectory });
+      assert.ok(applied.migrations.at(-1).version < BRIDGE_VERSION);
+      if (bridged) await applyBridge(pool, schema);
+    }
     await body({ pool, schema, quoted, table });
   } finally {
     await pool.query(`DROP SCHEMA IF EXISTS ${quoted} CASCADE`);
@@ -612,7 +624,7 @@ test("PG17 a v1.2-only accountless activation bridges one link, receipt and owne
     [`${quoted}.storage_v12_bridge_backfill(integer)`, `${quoted}.storage_journal_append(text,text,text,text,text)`]);
     assert.deepEqual(executable.rows[0], { backfill: false, append: false },
       "the backfill is a maintenance entrypoint, not executable by PUBLIC");
-  }));
+  }, { fullChain: true }));
 
 const PARITY_OWNERS = Object.freeze(["synthetic-parity-p", "synthetic-parity-q", "synthetic-parity-r", "synthetic-parity-d"]);
 
@@ -722,7 +734,7 @@ test("PG17 social owners are bridged and an existing v1/v1.1 link keeps its dige
       [linked.ownerDigest, "owner-active", 1, 1, 2],
     ]);
     assert.deepEqual(rows.map((row) => row.object_digest), [freshReceipt, existingReceipt].map((r) => r.event_digest));
-  }));
+  }, { fullChain: true }));
 
 test("PG17 lapsed leases, revoked devices without a marker and deleting participants mint nothing",
   { skip: SKIP, timeout: 180_000 }, async () => withSchema(async ({ pool, quoted, table }) => {
@@ -863,7 +875,7 @@ test("PG17 without storage_source_state nothing is minted; the pending read and 
       { status: "complete", bridged: 0, batches: 0, pending: 0 }, "a repeated backfill is a no-op");
     assert.equal((await pool.query(`SELECT ${quoted}.storage_v12_bridge_backfill(500) AS bridged`)).rows[0].bridged, 0);
     assert.equal((await journal(pool, table)).length, 2);
-  }));
+  }, { fullChain: true }));
 
 test("PG17 the migration's one-time backfill bridges eligible heads once and is a no-op without a source",
   { skip: SKIP, timeout: 240_000 }, async () => {
@@ -1073,7 +1085,7 @@ test("PG17 the backfill bridges one head per transaction and never waits on anot
     for (const code of ["40P01", "55P03", "23505"]) {
       assert.equal(activationPool.errors.includes(code), false, `the activation saw no ${code}`);
     }
-  }));
+  }, { fullChain: true }));
 
 test("PG17 the backfill and an activation of the same owner bridge each head once, in either order",
   { skip: SKIP, timeout: 240_000 }, async () => withSchema(async ({ pool, schema, quoted, table }) => {
@@ -1128,7 +1140,7 @@ test("PG17 the backfill and an activation of the same owner bridge each head onc
     for (const code of ["40P01", "55P03", "23505"]) {
       assert.equal(activationPool.errors.includes(code), false, `the activation saw no ${code}`);
     }
-  }));
+  }, { fullChain: true }));
 
 test("PG17 a retained v1.2 owner is bridged once, and a marker retirement under way is never reversed",
   { skip: SKIP, timeout: 240_000 }, async () => withSchema(async ({ pool, schema, quoted, table }) => {

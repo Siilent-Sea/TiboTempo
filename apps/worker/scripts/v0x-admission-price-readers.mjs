@@ -196,20 +196,40 @@ export const D1_READER_FILES = Object.freeze(ALLOWED.filter(({ role }) => role =
  *                             (the community daily read and the v0.1
  *                             admission), moved, not added.
  *   src/postgres-*.ts         GCP ports; each imports only helper functions.
+ * Reviewed again for the allowance projection (11fab51d0) and current public
+ * model metadata (b89f5fc56), 2026-10-09: the origin's community daily route
+ * (cloud-run/server.mjs and the production host) and the admin console's
+ * allowance preview reach the D1 modules through src/analytics-v2/
+ * allowance-projection.ts, public-model-metadata-current.ts and
+ * public-allowance-breakdowns-v14.ts, and src/public-allowance-breakdowns.ts.
+ * Each of those imports only constants and pure validators or projections
+ * (the allowance basis, gate, normalization and model config, the cached
+ * preview validator, the public graph projection) from admin-community-
+ * allowance.ts and community-allowance.ts, never a reader; the bundle proof
+ * shows the origin ships no column-naming text from either D1 reader.
  * A new edge into this graph is a decision, not a fix: route the new code
  * through stored quantities and the current registry instead.
  */
 export const D1_REACH = Object.freeze({
   "server.mjs": Object.freeze(Object.fromEntries(Object.entries({
-    "cloud-run/postgres-production-host.mjs": ["src/postgres-community-daily.ts", "src/postgres-legacy-contribution-admission.ts"],
-    "cloud-run/server.mjs": ["cloud-run/postgres-production-host.mjs"],
+    "cloud-run/postgres-production-host.mjs": ["cloud-run/routes/admin-console.mjs", "src/analytics-v2/community-daily-route.ts",
+      "src/postgres-community-daily.ts", "src/postgres-legacy-contribution-admission.ts"],
+    "cloud-run/routes/admin-console.mjs": ["src/postgres-admin-allowance-preview.ts"],
+    "cloud-run/server.mjs": ["cloud-run/postgres-production-host.mjs", "src/analytics-v2/community-daily-route.ts"],
     "src/admin-community-allowance.ts": ["src/community-allowance.ts", "src/community-publication.ts"],
+    "src/analytics-v2/allowance-projection.ts": ["src/admin-community-allowance.ts", "src/analytics-v2/public-allowance-breakdowns-v14.ts",
+      "src/public-allowance-breakdowns.ts"],
+    "src/analytics-v2/community-daily-route.ts": ["src/analytics-v2/allowance-projection.ts", "src/analytics-v2/public-model-metadata-current.ts"],
+    "src/analytics-v2/public-allowance-breakdowns-v14.ts": ["src/admin-community-allowance.ts", "src/community-allowance.ts"],
+    "src/analytics-v2/public-model-metadata-current.ts": ["src/admin-community-allowance.ts", "src/analytics-v2/public-allowance-breakdowns-v14.ts"],
     "src/community-allowance.ts": ["src/quota-analysis.ts"],
     "src/community-daily-aggregates.ts": ["src/admin-community-allowance.ts", "src/community-allowance.ts", "src/community-publication.ts", "src/community-refresh-lanes.ts"],
     "src/community-publication.ts": ["src/community-allowance.ts"],
     "src/community-refresh-lanes.ts": ["src/community-allowance.ts"],
+    "src/postgres-admin-allowance-preview.ts": ["src/analytics-v2/allowance-projection.ts"],
     "src/postgres-community-daily.ts": ["src/community-allowance.ts", "src/community-daily-aggregates.ts"],
     "src/postgres-legacy-contribution-admission.ts": ["src/telemetry-repository.ts"],
+    "src/public-allowance-breakdowns.ts": ["src/admin-community-allowance.ts", "src/community-allowance.ts"],
     "src/quota-analysis.ts": [],
     "src/telemetry-repository.ts": ["src/quota-analysis.ts"],
   }).map(([importer, imports]) => [importer, Object.freeze(imports)]))),

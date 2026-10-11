@@ -47,11 +47,13 @@ const NODE_PLAN = Object.freeze({
   "cloud-run-check": Object.freeze([TOOLCHAIN_NODE]),
   "postgres-17-suite": Object.freeze([IMAGE_NODE, TOOLCHAIN_NODE]),
 });
-// Every job checks out depth 1 except the Cloud Run check, which runs the
-// cutover seal check. That check reads pinned commits (the restore-base
-// generator commit and the Cloudflare production line) as git objects and
-// fails as an environment gap without them, so this job needs full history.
-const FETCH_DEPTH = Object.freeze({ "worker-gate": 1, "cloud-run-check": 0, "postgres-17-suite": 1 });
+// The Worker gate checks out depth 1. The Cloud Run check runs the cutover
+// seal check, which reads pinned commits (the restore-base generator commit
+// and the Cloudflare production line) as git objects and fails as an
+// environment gap without them. The PostgreSQL 17 suite runs the
+// READ-EXPANSION specs, which `git archive` their pinned base commit
+// (scripts/gcp-read-expansion-ab.mjs DEFAULT_BASE). Both need full history.
+const FETCH_DEPTH = Object.freeze({ "worker-gate": 1, "cloud-run-check": 0, "postgres-17-suite": 0 });
 const INSTALL_COMMANDS = Object.freeze(["npm --prefix apps/worker ci", "npm --prefix apps/worker/cloud-run ci"]);
 // The components of gcp:production-tooling:local-check. The first is split: its
 // offline half runs inside the Cloud Run check and its PostgreSQL-backed spec in
@@ -59,6 +61,7 @@ const INSTALL_COMMANDS = Object.freeze(["npm --prefix apps/worker ci", "npm --pr
 const SPLIT_PRODUCTION_TOOLING = "postgres:production-migrations:check";
 const OFFLINE_PRODUCTION_TOOLING = Object.freeze([
   "gcp:production-rollout:check",
+  "gcp:barrier-capture:check",
   "gcp:ops:infra:check",
   "postgres:cutover-seal:check",
 ]);
@@ -600,8 +603,8 @@ function productionToolingFailures(workflow, { localCheck, migrationsCheck, clou
     }
   }
   const pgFiles = rest.flatMap(nodeTestFiles);
-  if (!(pgFiles.length === 1 && pgFiles[0].startsWith("./postgres-test/"))) {
-    failures.push(`${SPLIT_PRODUCTION_TOOLING} no longer ends with one PostgreSQL-backed spec`);
+  if (!(pgFiles.length > 0 && pgFiles.every((file) => file.startsWith("./postgres-test/")))) {
+    failures.push(`${SPLIT_PRODUCTION_TOOLING} no longer ends with PostgreSQL-backed specs only`);
   }
   if (!/EXTRA_REGISTRATION_SCRIPTS = Object\.freeze\(\[[^\]]*"postgres:production-migrations:check"/u.test(suite)) {
     failures.push(`the PostgreSQL 17 suite does not register ${SPLIT_PRODUCTION_TOOLING}'s spec`);
@@ -843,6 +846,8 @@ test("hosted CI contract: a missing, extra or unclassified production-tooling ch
   assert.match(productionToolingFailures(workflow, unregistered).join("\n"), /does not register/u);
   const reshaped = { ...inputs, migrationsCheck: "node --test ./postgres-test/postgres-production-migrations.spec.mjs" };
   assert.match(productionToolingFailures(workflow, reshaped).join("\n"), /no longer starts with an offline/u);
+  const offlineTail = { ...inputs, migrationsCheck: `${inputs.migrationsCheck} ./scripts/other.check.mjs` };
+  assert.match(productionToolingFailures(workflow, offlineTail).join("\n"), /no longer ends with PostgreSQL-backed specs only/u);
 
   // An offline check that starts reading the PostgreSQL profile is not offline.
   const [firstFile] = [...inputs.offlineSources.keys()];

@@ -207,7 +207,7 @@ export async function readChunkRegistrationReceipts(handle) {
     if (run.rows.length !== 1) fail("CUTOVER_PARENT_RECEIPT_MISMATCH");
     const { rows } = await targetQuery(client, `SELECT stage, state, row_count::text AS row_count, prefix_chain_sha256
       FROM tibotattle_transfer.transfer_checkpoints WHERE run_id = $1 AND checkpoint_name = $2 AND state = 'complete'
-     ORDER BY stage`, [run.rows[0].run_id, CHUNK_REGISTRATIONS_CHECKPOINT]);
+     ORDER BY stage COLLATE "C"`, [run.rows[0].run_id, CHUNK_REGISTRATIONS_CHECKPOINT]);
     return Object.freeze(rows.map(row => Object.freeze({ stage: row.stage, registrations: Number(row.row_count),
       sha256: row.prefix_chain_sha256 })));
   }, { readOnly: true });

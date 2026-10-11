@@ -105,6 +105,12 @@ export const EXTRA_SCRIPT_PREREQUISITES = Object.freeze([
 /** The EDGE_E2E profile's runtime: the image's Node, named by EDGE_E2E_NODE. */
 export const EDGE_E2E_NODE_VERSION = "v22.16.0";
 export const EDGE_E2E_NODE_VARIABLE = "EDGE_E2E_NODE";
+/**
+ * The EDGE_E2E spec imports rollout tooling that reaches .ts sources (for
+ * example src/edge-origin-contract.ts), and Node before 22.18 strips types only
+ * behind this flag; the origin itself still loads from the bundled dist.
+ */
+export const EDGE_E2E_NODE_FLAGS = Object.freeze(["--experimental-strip-types"]);
 export const EDGE_E2E_GOLDEN_VARIABLE = "EDGE_E2E_GOLDEN";
 
 export function scriptRunner(script) {
@@ -1195,6 +1201,7 @@ export async function runPostgresSuite({
       if (prerequisiteFailed) continue;
       const absoluteFile = join(workerRoot, entry.file);
       const { exitCode, stdout } = await run(runtime.node, [
+        ...EDGE_E2E_NODE_FLAGS,
         "--test",
         ...(entry.testFlags ?? []).filter((flag) => !flag.startsWith("--test-reporter")),
         "--test-reporter=tap",
