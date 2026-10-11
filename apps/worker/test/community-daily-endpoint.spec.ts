@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { applyD1Migrations, reset } from "cloudflare:test";
 import type { D1Migration } from "cloudflare:test";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ADMIN_MODEL_HISTORY_CATALOG_VERSION, projectAdminModelHistoryDay } from "@app-usagemonitor/telemetry-contract";
 
 import { handleRequest } from "../src/index";
@@ -25,6 +25,15 @@ import {
 } from "../src/community-allowance";
 import type { PublicAllowanceBreakdowns } from "../src/public-allowance-breakdowns";
 import { buildCurrentPublicModelMetadata } from "../src/analytics-v2/public-model-metadata-current";
+// Simulated catalog drift: the current-metadata builder throws only while set.
+const metadataDrift = vi.hoisted(() => ({ on: false }));
+vi.mock("../src/analytics-v2/public-model-metadata-current", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/analytics-v2/public-model-metadata-current")>();
+  return { ...actual, buildCurrentPublicModelMetadata: () => {
+    if (metadataDrift.on) throw new actual.CurrentPublicModelMetadataError();
+    return actual.buildCurrentPublicModelMetadata();
+  } };
+});
 // The synthetic retained Pro 10x (v0.4) preview the 22d9d90f builder wrote.
 import retainedPro10Preview from "../analytics-v2-test/fixtures/allowance-preview-v04.json";
 import {
@@ -392,6 +401,25 @@ describe("GET /api/v1/community/daily", () => {
     expect(body).toMatchObject({ allowanceState: "ready", days: [{ day }] });
     expect(body).not.toHaveProperty("allowanceBreakdowns");
     expect(JSON.stringify(body)).not.toMatch(/pro10x|community-allowance-breakdowns-v1\.[245]/u);
+  });
+
+  it("withholds breakdowns instead of failing the response when the current model metadata drifts", async () => {
+    const nowMs = Date.now(), day = utcDay(nowMs, -1);
+    await seedReadyAllowanceState(nowMs);
+    await seedBreakdownCache(nowMs);
+    await seedDailyRevision({ day, revision: 1 });
+    metadataDrift.on = true;
+    try {
+      const response = await api(`/api/v1/community/daily?from=${day}&to=${day}`);
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body).toMatchObject({ allowanceState: "ready", days: [{ day }] });
+      expect(body).not.toHaveProperty("allowanceBreakdowns");
+    } finally {
+      metadataDrift.on = false;
+    }
+    const healthy = await api(`/api/v1/community/daily?from=${day}&to=${day}`);
+    expect(await healthy.json()).toHaveProperty("allowanceBreakdowns.schemaVersion", "community-allowance-breakdowns-v1.5");
   });
 
   it("preserves activity without any cross-snapshot preview if the optional cache schema is unavailable", async () => {

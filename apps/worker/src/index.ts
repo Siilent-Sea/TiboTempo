@@ -4030,10 +4030,17 @@ async function handleCommunityDaily(
   // The current base envelope already carries the public v1.5 label, which
   // the public reader accepts only with its closed model metadata block, so
   // this path never emits it bare. Only a current (v0.5) preview projects
-  // here; a stored retained preview is refused, never relabelled.
-  const graph = projected === null ? null : {
-    breakdowns: wrapPublicAllowanceBreakdownsV15(projected.breakdowns, buildCurrentPublicModelMetadata()),
-  };
+  // here; a stored retained preview is refused, never relabelled. Catalog
+  // drift in the current metadata withholds the breakdowns (updating) rather
+  // than failing the whole daily response, as the base build did.
+  let graph: { breakdowns: ReturnType<typeof wrapPublicAllowanceBreakdownsV15> } | null = null;
+  if (projected !== null) {
+    try {
+      graph = { breakdowns: wrapPublicAllowanceBreakdownsV15(projected.breakdowns, buildCurrentPublicModelMetadata()) };
+    } catch {
+      graph = null;
+    }
+  }
   const dailyAllowanceReady = isCurrentCommunityAllowancePublication(read.allowancePublicationState, todayStartMs);
   const allowanceState = graph !== null || dailyAllowanceReady
     ? "ready"

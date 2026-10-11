@@ -26,7 +26,7 @@ proofs and former-publication log. The CLI never applies a migration.
 This lane reprices retained daily contributions for already published days.
 It does not activate staged manifests, enroll participants, discover or union
 in today's uploader roster, advance the analytics journal, run an ordinary full
-refresh, or rebuild allowance previews. Pro 10x allowance normalization and
+refresh, or rebuild allowance previews. Allowance normalization and
 historical spend repricing are separate computations.
 
 ## Explicit planning and execution
