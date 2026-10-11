@@ -231,23 +231,13 @@ export const SERVICE_TEMPLATE_UNAVAILABLE = Object.freeze({});
 export const RETIRED_PRODUCTION_SECRET_NAMES = RETIRED_SOCIAL_SIGN_IN_SECRET_NAMES;
 
 /**
- * CR-3 optional secrets that nothing on the production estate reads, so a
- * production desired state may leave them out, and the committed file does.
- * DISTRIBUTION_GITHUB_API_TOKEN: the origin's admin distribution view reads
- * the stored GitHub snapshot through a fetcher that refuses every request
- * (src/postgres-admin-distribution.ts), the service's Worker env never
- * carries the token (cloud-run/server.mjs), and no production job syncs
- * GitHub: the D-OPS4 maintenance job's profile accepts the token as optional,
- * but its lifecycle pass (src/postgres-lifecycle-pass.ts) never reads it.
- * Leaving the container out keeps the credential out of one more store. The
- * service and the maintenance job render without the entry, as for an
- * unpinned optional version. A later reader adds the container back with a
- * desired-state change.
+ * The public GitHub inventory needs no credential. Production may omit its
+ * optional token container, as the committed file does. If an owner later
+ * pins a token for rate-limit capacity, only maintenance mounts it. The
+ * origin's forced sync also uses the public API; overview reads stay local.
  */
-export const UNREAD_PRODUCTION_SECRET_NAMES = Object.freeze(["DISTRIBUTION_GITHUB_API_TOKEN"]);
-
 /** Every CR-3 secret a production desired state may leave out. */
-export const PRODUCTION_OMITTABLE_SECRET_NAMES = Object.freeze([...UNREAD_PRODUCTION_SECRET_NAMES]);
+export const PRODUCTION_OMITTABLE_SECRET_NAMES = Object.freeze(["DISTRIBUTION_GITHUB_API_TOKEN"]);
 
 export const SERVICE_ACCOUNT_ROLES = Object.freeze([
   "runtime", "migrator", "scheduler", "builder", "edgeInvoker", "verifier",
@@ -1560,8 +1550,9 @@ export function renderServiceTemplateValues(values, { templateText, environment 
   const optional = new Set(OPTIONAL_SECRET_NAMES);
   const container = service?.spec?.template?.spec?.containers?.[0];
   if (!isRecord(container) || !Array.isArray(container.env)) fail("SERVICE_TEMPLATE_SHAPE_INVALID");
-  container.env = container.env.filter((entry) => !optional.has(entry.name)
-    || entry.valueFrom?.secretKeyRef?.key !== "");
+  container.env = container.env.filter((entry) =>
+    !(environment === "production" && entry.name === "DISTRIBUTION_GITHUB_API_TOKEN")
+    && (!optional.has(entry.name) || entry.valueFrom?.secretKeyRef?.key !== ""));
   assertServiceInvariants(service);
   // STG-PREP: each plane renders only from its own template.
   assertPlaneServiceInvariants(service, environment);
@@ -1784,15 +1775,15 @@ function jobEnv(desired, job, sourceCommit) {
 
 /**
  * The secrets a job reads that the desired state carries: the job definition's
- * list, less an unread optional secret a production file leaves out
- * (UNREAD_PRODUCTION_SECRET_NAMES; the maintenance job's
+ * list, less an optional secret a production file leaves out
+ * (PRODUCTION_OMITTABLE_SECRET_NAMES; the maintenance job's
  * DISTRIBUTION_GITHUB_API_TOKEN). Any other absent name is refused
  * (JOB_RENDER_SECRET_UNKNOWN).
  */
 export function jobSecretNames(desired, job) {
   return (jobDefinition(desired, job).secrets ?? []).filter((name) => {
     if (Object.hasOwn(desired.secrets, name)) return true;
-    if (desired.environment === "production" && UNREAD_PRODUCTION_SECRET_NAMES.includes(name)) return false;
+    if (desired.environment === "production" && PRODUCTION_OMITTABLE_SECRET_NAMES.includes(name)) return false;
     return fail(`JOB_RENDER_SECRET_UNKNOWN:${name}`);
   });
 }
@@ -1800,7 +1791,7 @@ export function jobSecretNames(desired, job) {
 /**
  * One job's secret env: each secret by Secret Manager reference at its pinned
  * version, as the service renders them. A required secret with no pinned
- * version cannot be rendered; an optional one is omitted, as is an unread one
+ * version cannot be rendered; an optional one is omitted, as is an absent one
  * a production file leaves out (jobSecretNames).
  */
 function jobSecretEnv(desired, job) {

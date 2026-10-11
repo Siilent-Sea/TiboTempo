@@ -39,14 +39,14 @@ production estate reads unclean until that instance is deleted.
   references them, and CR-3 refuses them in a deployment's environment
   (`<NAME>_RETIRED`). The staging plane's earlier inert containers stay in
   the test project, unreferenced, until the owner removes them.
-- Production may also leave out an optional CR-3 secret that nothing on the
-  production estate reads (`UNREAD_PRODUCTION_SECRET_NAMES`:
-  `DISTRIBUTION_GITHUB_API_TOKEN`), and the committed file does. The
-  origin's admin distribution view reads the stored GitHub snapshot and makes
-  no network request, the service's Worker env never carries the token, and
-  no production job syncs GitHub (D-OPS4 is not built). The service renders
-  without the entry. A future reader adds the container back with a
-  desired-state change.
+- Production may omit `DISTRIBUTION_GITHUB_API_TOKEN`
+  (`PRODUCTION_OMITTABLE_SECRET_NAMES`), and the committed file does. The
+  public release inventory is readable without authentication. Maintenance
+  now writes a complete GitHub snapshot when due; admin Sync forces a public
+  read subject to its cooldown, and the overview reads only stored snapshots.
+  If the owner later pins a token for rate-limit capacity, only the maintenance
+  job mounts it. Production service renders omit it even when pinned. Staging
+  retains its inert container and its maintenance profile never polls GitHub.
 - Production never shares its project and never names a test-estate or
   staging resource. Staging names every plane resource with the `staging`
   token and never reuses a test-estate name.
@@ -91,6 +91,18 @@ orphan safety windows remain unchanged. The validator pins the cadence to the
 job's contract constant
 (`cloud-run/postgres-maintenance-job-contract.mjs`) and refuses any other
 schedule, and `null`, as `SCHEDULER_CADENCE_MISMATCH:maintenance`.
+
+After a complete or partial production lifecycle pass, the job independently
+syncs GitHub distribution evidence when its last success is more than 15 minutes
+old. Fetches have an eight-second request timeout and a 20-second whole-inventory
+deadline, including body reads. PostgreSQL writes use five-second statement and
+500-ms lock timeouts. Network reads hold no database connection or lock. The
+singleton lease lasts two minutes; publication checks ownership and expiry and
+commits all rows, the completion manifest and success state in one transaction.
+Incomplete or failed reads record a closed failed attempt and retain the last
+good snapshot. Sync failure never changes lifecycle outcome or exit status. The
+`postgres-maintenance-job-v2` receipt adds `githubDistributionSync`, null when
+the pass skipped, refused or failed, or the plane is staging.
 
 - **Same trigger rules as the refresh trigger.** Apply creates the trigger and
   pauses it in the same apply, grants the scheduler account
@@ -249,7 +261,7 @@ created.
 |---|---|---|
 | `project`, `projectNumber`, `region`, `bucket.location` | `tibotattle-prod`, `874229235044`, `us-east1`, `US-EAST1` | OWN-5 and round 13; the project number was read back by the main session |
 | `serviceAccounts.verifier.tokenCreators` | the owner's Google account | Claude's proposal, mirroring staging, approved by the owner as a production grant in round 15 (C2; round 9 had approved it on the staging verifier only) |
-| `secrets` | the four CR-3 secrets the production estate reads, named by their variable names | Round 12 retired Google and Apple sign-in, so their two secrets are left out, and nothing on the production estate reads `DISTRIBUTION_GITHUB_API_TOKEN`. `IDENTITY_LINK_SECRET` stays: the edge-admission replay keys its subjects with it, and the session ports, credential renew and the maintenance profile check the imported identity-link pin. `scripts/gcp-identity-link-pin-check.mjs` checks the version against that pin before PROD-3 |
+| `secrets` | the four required CR-3 secrets, named by their variable names | Retired sign-in secrets are absent. Public GitHub sync needs no credential, so the optional `DISTRIBUTION_GITHUB_API_TOKEN` is omitted; a future pinned token mounts only on maintenance. `IDENTITY_LINK_SECRET` stays for the edge-admission replay, session and renewal boundaries and the imported identity-link pin; `scripts/gcp-identity-link-pin-check.mjs` checks that pin before PROD-3 |
 
 `scheduler.analytics-refresh.schedule` stays `null` (round 15, C3): the owner
 decides the refresh cadence after the production-scale measurement, so pass 1

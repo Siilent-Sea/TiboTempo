@@ -134,7 +134,7 @@ test("arguments are closed: --help alone or exactly one known --profile", () => 
 
 test("both profiles accept their synthetic environment and keep secrets out of the result", () => {
   const production = job.readPostgresMaintenanceJobConfiguration(productionJobEnv(), "maintenance-job");
-  assert.deepEqual(Object.keys(production), ["profile", "plane", "primary", "iamUser", "bucket", "historyProof"]);
+  assert.deepEqual(Object.keys(production), ["profile", "plane", "primary", "iamUser", "bucket", "historyProof", "githubApiToken"]);
   assert.equal(production.plane, "production");
   assert.deepEqual({ ...production.primary }, {
     instanceConnectionName: "synthetic-project:us-east1:origin-primary",
@@ -300,8 +300,9 @@ test("the composition opens one primary pool of two, injects the bound store and
   assert.equal(typeof storeArguments[1], "function");
   assert.deepEqual({ ...storeArguments[2] }, proof(BUCKET));
   assert.equal(result.exitCode, 0);
-  assert.deepEqual(Object.keys(result.receipt), ["schemaVersion", "entry", "profile", "status", "pass"]);
-  assert.equal(result.receipt.schemaVersion, "postgres-maintenance-job-v1");
+  assert.deepEqual(Object.keys(result.receipt), ["schemaVersion", "entry", "profile", "status", "pass", "githubDistributionSync"]);
+  assert.equal(result.receipt.schemaVersion, "postgres-maintenance-job-v2");
+  assert.equal(result.receipt.githubDistributionSync, null, "a skipped pass performs no sync");
   assert.equal(result.receipt.entry, "postgres-maintenance-job");
   assert.equal(result.receipt.status, "skipped");
   assert.equal(result.receipt.pass.code, "MAINTENANCE_IN_PROGRESS");
@@ -523,7 +524,7 @@ test("the image builds dist/postgres-maintenance-job.mjs and the bundle answers 
     const missing = run([]);
     assert.equal(missing.status, 2);
     assert.deepEqual(JSON.parse(missing.stderr), {
-      schemaVersion: "postgres-maintenance-job-v1",
+      schemaVersion: "postgres-maintenance-job-v2",
       entry: "postgres-maintenance-job",
       status: "failed",
       code: "POSTGRES_MAINTENANCE_JOB_PROFILE_MISSING",

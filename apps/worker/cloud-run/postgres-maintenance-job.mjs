@@ -13,6 +13,10 @@
  * what lets GET /api/ready on the origin read 'ready' (owner decision
  * OD-CR-4). It is a separate workload from the request-serving origin: it
  * has no HOST_MODE and serves nothing.
+ * A complete or partial production pass is followed by an independent GitHub
+ * snapshot sync when due. Its bounded public inventory read holds no database
+ * lock; failure is receipt-only and never changes the pass or exit status.
+ * Staging and skipped/refused/failed passes perform no GitHub work.
  *
  * Schedule (the D-OPS4 trigger contract): every minute,
  * POSTGRES_MAINTENANCE_JOB_SCHEDULE, as the Worker cron. The five-minute
@@ -67,6 +71,7 @@ import { fileURLToPath } from "node:url";
 import { Connector } from "@google-cloud/cloud-sql-connector";
 import { createGcsQuarantineObjectStore } from "../src/gcs-quarantine-object-store.ts";
 import { runPostgresLifecyclePass } from "../src/postgres-lifecycle-pass.ts";
+import { syncPostgresGithubDistributionSnapshots } from "../src/postgres-github-distribution-history.ts";
 import { POSTGRES_RUNTIME_MIGRATIONS } from "../src/postgres-runtime-schema.ts";
 import {
   closeCloudSqlResources,
@@ -83,9 +88,9 @@ import {
   POSTGRES_MAINTENANCE_JOB_PROFILES,
   POSTGRES_MAINTENANCE_JOB_SCHEDULE,
 } from "./postgres-maintenance-job-contract.mjs";
-import { readProductionConfiguration } from "./postgres-production-configuration.mjs";
+import { readProductionConfiguration, revealProductionSecret } from "./postgres-production-configuration.mjs";
 
-export const POSTGRES_MAINTENANCE_JOB_RECEIPT_VERSION = "postgres-maintenance-job-v1";
+export const POSTGRES_MAINTENANCE_JOB_RECEIPT_VERSION = "postgres-maintenance-job-v2";
 // The contract constants live in postgres-maintenance-job-contract.mjs (a leaf
 // the OPS-2 job definition imports) and are re-exported here unchanged.
 export {
@@ -201,6 +206,7 @@ export function readPostgresMaintenanceJobConfiguration(env, profile) {
     iamUser,
     bucket,
     historyProof: bucketHistoryProof,
+    githubApiToken: configuration.secrets.DISTRIBUTION_GITHUB_API_TOKEN,
   });
 }
 
@@ -224,7 +230,8 @@ export function safePostgresMaintenanceJobCode(error) {
 /**
  * Run the job. Dependencies are injectable for local qualification:
  * createConnector(), createIamPool(options), createAccessTokenProvider() and
- * createObjectStore(bucket, accessToken, historyProof). Returns
+ * createObjectStore(bucket, accessToken, historyProof), runLifecyclePass,
+ * syncDistribution and fetcher (synthetic local checks only). Returns
  * { status: 'help' } or { receipt, exitCode }; configuration and usage
  * refusals throw a coded Error.
  */
@@ -258,7 +265,7 @@ export async function runPostgresMaintenanceJob({
       : createGcsQuarantineObjectStore(
         configuration.bucket, accessToken, undefined, undefined, configuration.historyProof,
       );
-    const pass = await runPostgresLifecyclePass({
+    const pass = await (dependencies.runLifecyclePass ?? runPostgresLifecyclePass)({
       pool,
       objectStore,
       schema: { primarySchema: configuration.primary.schema },
@@ -266,12 +273,33 @@ export async function runPostgresMaintenanceJob({
       expectedPrimaryMigrations: POSTGRES_RUNTIME_MIGRATIONS.primary,
       clock: now,
     });
+    // Optional diagnostics follow the completed lifecycle work. A source or
+    // storage failure cannot change its outcome or exit code. Never sync on
+    // staging or when the pass skipped/refused (including a migration fence).
+    let githubDistributionSync = null;
+    if (configuration.plane === "production" && ["complete", "partial"].includes(pass.outcome)) {
+      try {
+        githubDistributionSync = await (dependencies.syncDistribution ?? syncPostgresGithubDistributionSnapshots)({
+          pool,
+          schema: configuration.primary.schema,
+          enabled: true,
+          githubApiToken: configuration.githubApiToken === undefined
+            ? undefined : revealProductionSecret(configuration.githubApiToken),
+          nowEpoch: now(),
+          clock: now,
+          fetcher: dependencies.fetcher ?? fetch,
+        });
+      } catch {
+        githubDistributionSync = { code: "GITHUB_SYNC_FAILED", observedAt: null, failureCode: "GITHUB_UNAVAILABLE" };
+      }
+    }
     const receipt = Object.freeze({
       schemaVersion: POSTGRES_MAINTENANCE_JOB_RECEIPT_VERSION,
       entry: POSTGRES_MAINTENANCE_JOB_ENTRY,
       profile: configuration.profile,
       status: pass.outcome,
       pass,
+      githubDistributionSync,
     });
     return Object.freeze({ receipt, exitCode: PASS_EXIT_CODES[pass.outcome] ?? 1 });
   } finally {

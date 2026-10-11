@@ -47,6 +47,7 @@ import { Connector } from "@google-cloud/cloud-sql-connector";
 import { EDGE_ADMISSION_BINDINGS } from "../src/edge-admission-policy.ts";
 import { canonicalRunAppOrigin } from "../src/edge-origin-contract.ts";
 import { ApiError } from "../src/errors.ts";
+import { syncPostgresGithubDistributionSnapshots } from "../src/postgres-github-distribution-history.ts";
 import {
   assertAdmissionBindings,
   assertAttemptAllowed,
@@ -363,8 +364,14 @@ export const LIFECYCLE_PASS_ADMIN_ERRORS = Object.freeze({
  * device-lifecycle backlog does not enter it, as on the Worker, although the
  * pass itself reports it as partial (MAINTENANCE_PURGE_BACKLOG).
  */
-export function createLifecyclePassMaintenance({ pool, objectStore, primarySchema }) {
+export function createLifecyclePassMaintenance({ pool, objectStore, primarySchema, distributionEnabled = false, fetcher = fetch, clock = Date.now }) {
   return Object.freeze({
+    // The origin needs no GitHub credential for the public release inventory.
+    // The audited owner action alone invokes this forced (cooldown-bound) path.
+    syncDistribution: (nowEpoch) => syncPostgresGithubDistributionSnapshots({
+      pool, schema: primarySchema, enabled: distributionEnabled, nowEpoch,
+      force: true, fetcher, clock,
+    }),
     async runMaintenance(nowEpoch) {
       const result = await runPostgresLifecyclePass({
         pool,
@@ -902,7 +909,8 @@ export async function createPostgresProductionRuntime({
         // analytics_v2 lives in primary (0059): no separate analytics pool.
         pools: { primary: dataPool },
         schemaOptions: { primarySchema },
-        maintenance: createLifecyclePassMaintenance({ pool: dataPool, objectStore, primarySchema }),
+        maintenance: createLifecyclePassMaintenance({ pool: dataPool, objectStore, primarySchema,
+          distributionEnabled: configuration.plane === "production", clock }),
       })
       : null;
     const families = composeOriginFamilies({

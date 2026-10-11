@@ -357,6 +357,37 @@ npm run docs:check
 ```
 
 
+## GCP GitHub distribution snapshots
+
+Production maintenance independently syncs the complete public GitHub release
+inventory when its last success is more than 15 minutes old. The owner console's
+audited `sync_distribution` action forces that writer with a one-minute cooldown.
+The overview reads stored snapshots and makes no GitHub request. Staging never
+syncs public GitHub inventory.
+
+`src/postgres-github-distribution-history.ts` reuses the D1 inventory reader and
+allowlisted release/asset bindings. It claims the two-minute singleton lease
+under a row lock, releases the connection during the bounded network read, then
+checks ownership and expiry before atomically publishing all rows, the manifest
+and success state. Failed or incomplete inventories record only a failed attempt;
+they cannot replace last-good counters. A sync failure never changes maintenance's
+lifecycle result or exit code. Fetches have eight-second request timeouts and a
+20-second complete-inventory deadline, including response bodies; database writes
+have five-second statement and 500-ms lock timeouts.
+
+The public inventory requires no token. The committed production desired state
+therefore keeps `DISTRIBUTION_GITHUB_API_TOKEN` absent. An owner may later pin one
+for rate-limit capacity; infra renders mount it on maintenance only. Neither the
+origin nor analytics jobs need it. Existing primary migrations 0022 and 0075
+suffice, and the analytics kernel is unchanged.
+
+Local validation (synthetic fixtures and mocked fetch only): rebuild
+`node cloud-run/build.mjs`, then run `npm --prefix cloud-run run check` and
+`PG_TEST_SOCKET=<private local PG17 socket> PG_TEST_PORT=<port> node --test
+--test-concurrency=1 postgres-test/postgres-github-distribution-sync.spec.mjs`.
+The [candidate handoff](../../docs/plans/2026-10-11-gcp-github-distribution-sync.md)
+records owner rollout steps and remaining production checks.
+
 ## GCP analytics read bounds
 
 Analytics A-1 readers use read-only repeatable-read transactions with a fixed

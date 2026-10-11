@@ -254,9 +254,10 @@ const SERVICE_SECRETS = Object.freeze({
  * identity secret: identity hand-off and sign-in purges are absent and the
  * cooldown items are constant (the D1 Worker's backend lifecycle and restore
  * replay were its readers). Production maintenance accepts the GitHub
- * distribution token as optional, but its lifecycle pass never reads it, and
- * the committed production desired state mounts it nowhere
- * (scripts/gcp-ops-infra-manifest.mjs UNREAD_PRODUCTION_SECRET_NAMES).
+ * distribution token as optional for its independent snapshot sync. The
+ * public inventory works without it, so the committed production desired
+ * state omits it. A future pinned token mounts only on maintenance; the
+ * origin's forced sync is unauthenticated and overview reads stay local.
  */
 export const PRODUCTION_PROFILE_SECRET_NAMES = Object.freeze({
   production: SERVICE_SECRETS,

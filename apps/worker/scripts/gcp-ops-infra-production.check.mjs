@@ -39,7 +39,7 @@ const executorOn = (world, job) => JSON.stringify(world.jobPolicies[job] ?? {}).
 const PROOF = Object.freeze({ bucketGeneration: "1790000000000001", bucketMetageneration: "1" });
 const KEPT_SECRETS = Object.freeze(["IDENTITY_LINK_SECRET", "POSTGRES_RATE_LIMIT_SECRET", "ENVELOPE_PUBLIC_JWK",
   "ENVELOPE_PRIVATE_JWK"]);
-// Round 12 retired the Google and Apple secrets; nothing on the production estate reads the GitHub token.
+// Sign-in secrets are retired; the default public GitHub sync needs no token.
 const LEFT_OUT = /GOOGLE_OIDC_CLIENT_SECRET|APPLE_PRIVATE_KEY|DISTRIBUTION_GITHUB_API_TOKEN/u;
 
 /** The committed production file before the pins, then with the pins the main session makes. */
@@ -193,7 +193,7 @@ test("the production apply rehearsal (in memory): birth, pass 1, pins and pass 2
     [[MAINTENANCE_TRIGGER, "PAUSED", INJECTED_SCHEDULER_HEADERS]]);
   assert.deepEqual([executorOn(world, "tibotattle-analytics-refresh"), executorOn(world, "tibotattle-maintenance"),
     executorOn(world, "tibotattle-migrate")], [false, true, false]);
-  // The maintenance job reads the identity-link secret only; the unread GitHub token is left out.
+  // The default maintenance job syncs public GitHub inventory without a token.
   const maintenanceJob = world.jobs.find((job) => job.metadata.name === "tibotattle-maintenance");
   assert.deepEqual(maintenanceJob.spec.template.spec.template.spec.containers[0].env
     .filter((entry) => entry.valueFrom !== undefined).map((entry) => entry.name), ["IDENTITY_LINK_SECRET"]);

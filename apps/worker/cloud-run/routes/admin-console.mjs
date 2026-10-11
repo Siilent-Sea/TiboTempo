@@ -113,7 +113,9 @@ function optionalPool(name, value) {
  *     root injects its source, OWN-17 questions 1 and 2, round 12),
  *   readMetricsHistory?, readReconstructionProgress? (no GCP source: unavailable),
  *   maintenance?: {runMaintenance?, syncDistribution?, telemetryRuntimeActivation?,
- *     transportRollback?, v11EvidenceAdoption?} (unported: 503 POSTGRES_ROUTE_NOT_PORTED).
+ *     transportRollback?, v11EvidenceAdoption?}. Production injects lifecycle
+ *     maintenance and forced public GitHub sync; absent tasks answer 503
+ *     POSTGRES_ROUTE_NOT_PORTED.
  */
 export function createAdminConsoleAdapters(deps) {
   assertAdminFamilyDeps("admin_console", deps);

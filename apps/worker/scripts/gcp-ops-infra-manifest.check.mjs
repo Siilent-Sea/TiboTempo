@@ -775,13 +775,10 @@ test("Secret Manager containers are exactly CR-3's secret names, never an edge-o
   }
   // The fixture's service renders with no sign-in secret and nothing waits for one.
   assert.equal(manifest.serviceRenderBlocker(desired), null);
-  // Production may also leave out the optional GitHub token, which nothing on
-  // the production estate reads: the service renders exactly as with its
-  // version unpinned (the entry omitted), and nothing waits. Staging may not.
-  assert.deepEqual([...manifest.UNREAD_PRODUCTION_SECRET_NAMES], ["DISTRIBUTION_GITHUB_API_TOKEN"]);
-  assert.deepEqual([...manifest.PRODUCTION_OMITTABLE_SECRET_NAMES], [...manifest.UNREAD_PRODUCTION_SECRET_NAMES]);
+  // Public inventory works without a token. The optional production container
+  // may be omitted without deferring maintenance. Staging still names it.
   assert.equal(desired.secrets.DISTRIBUTION_GITHUB_API_TOKEN.version, null);
-  for (const name of manifest.UNREAD_PRODUCTION_SECRET_NAMES) {
+  for (const name of manifest.PRODUCTION_OMITTABLE_SECRET_NAMES) {
     assert.equal(configuration.OPTIONAL_SECRET_NAMES.includes(name), true, `${name} is optional in CR-3`);
     const omitted = manifest.validateDesiredState(fixture((value) => { delete value.secrets[name]; }));
     assert.equal(Object.hasOwn(omitted.secrets, name), false, name);
@@ -995,8 +992,8 @@ test("the IAM-private service renders from EP-7's template with no deletion-ledg
   const withToken = manifest.renderService(manifest.validateDesiredState(fixture((value) => {
     value.secrets.DISTRIBUTION_GITHUB_API_TOKEN.version = "3";
   })), IMAGE);
-  assert.deepEqual(withToken.spec.template.spec.containers[0].env.find((entry) => entry.name
-    === "DISTRIBUTION_GITHUB_API_TOKEN").valueFrom.secretKeyRef, { name: "DISTRIBUTION_GITHUB_API_TOKEN", key: "3" });
+  assert.equal(withToken.spec.template.spec.containers[0].env.some((entry) => entry.name
+    === "DISTRIBUTION_GITHUB_API_TOKEN"), false, "production token never mounts on the origin");
   // A required secret whose version is not pinned cannot render.
   assert.throws(() => manifest.renderService(manifest.validateDesiredState(fixture((value) => {
     value.secrets.ENVELOPE_PRIVATE_JWK.version = null;
@@ -1419,8 +1416,7 @@ test("the committed production desired state: OWN-5 filled by PROD-PREP, and ref
   assert.deepEqual([raw.project, raw.projectNumber, raw.region, raw.bucket.location],
     ["tibotattle-prod", "874229235044", "us-east1", "US-EAST1"]);
   assert.deepEqual(raw.serviceAccounts.verifier.tokenCreators, ["user:adamallcock@gmail.com"]);
-  // Round 12 retired Google and Apple sign-in, and nothing on the production
-  // estate reads the GitHub token: production never names those secrets.
+  // Sign-in secrets are retired; public GitHub inventory needs no credential.
   assert.deepEqual(Object.keys(raw.secrets), ["IDENTITY_LINK_SECRET", "POSTGRES_RATE_LIMIT_SECRET",
     "ENVELOPE_PUBLIC_JWK", "ENVELOPE_PRIVATE_JWK"]);
   for (const name of Object.keys(raw.secrets)) assert.equal(raw.secrets[name].secretName, name, name);
@@ -1620,7 +1616,7 @@ test("committed files close each secret id to its plane's form, so a pasted valu
     assert.equal(secretName.pattern, `^(?:${name}|${manifest.PLANE_SECRET_ID.source.slice(1, -1)})$`, name);
     assert.equal(secretName.maxLength, 255, name);
     const pattern = new RegExp(secretName.pattern, "u");
-    // Production leaves out the secrets round 12 retired and the unread GitHub token.
+    // Production omits retired sign-in secrets and the unnecessary GitHub token.
     if (manifest.PRODUCTION_OMITTABLE_SECRET_NAMES.includes(name)) assert.equal(Object.hasOwn(production.secrets, name), false, name);
     else assert.equal(production.secrets[name].secretName, name, name);
     assert.equal(manifest.STAGING_SECRET_ID.test(staging.secrets[name].secretName), true, name);
@@ -1728,7 +1724,14 @@ test("the service render names each secret by its Secret Manager id and waits fo
   for (const name of manifest.RETIRED_PRODUCTION_SECRET_NAMES) {
     assert.equal(env.some((entry) => entry.name === name), false, name);
   }
-  assert.deepEqual(reference("DISTRIBUTION_GITHUB_API_TOKEN"), { name: "DISTRIBUTION_GITHUB_API_TOKEN", key: "2" });
+  assert.equal(env.some((entry) => entry.name === "DISTRIBUTION_GITHUB_API_TOKEN"), false);
+  for (const name of manifest.JOB_NAMES) {
+    const jobEnv = manifest.renderJob(renamed, name, IMAGE).spec.template.spec.template.spec.containers[0].env;
+    const github = jobEnv.find((entry) => entry.name === "DISTRIBUTION_GITHUB_API_TOKEN");
+    if (name === "maintenance") assert.deepEqual(github.valueFrom.secretKeyRef,
+      { name: "DISTRIBUTION_GITHUB_API_TOKEN", key: "2" });
+    else assert.equal(github, undefined, name);
+  }
   // EP-7's own render (the template's variable names) is unchanged.
   const values = manifest.serviceTemplateValues(renamed, IMAGE);
   assert.equal(manifest.renderServiceTemplateValues(values).spec.template.spec.containers[0].env
