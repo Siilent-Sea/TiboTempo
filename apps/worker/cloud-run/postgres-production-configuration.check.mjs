@@ -649,7 +649,7 @@ test("each job requires only the secrets it consumes and refuses the rest", () =
     assertNoLeak(env, [SECRET_VALUES.POSTGRES_RATE_LIMIT_SECRET, PRIVATE_EXPONENT]);
   }
   // The production maintenance job accepts the optional GitHub token (its
-  // lifecycle pass never reads it); the staging one refuses it.
+  // independent snapshot sync can use it); the staging one refuses it.
   const withoutToken = expectAccepted(without(jobEnv("maintenance-job"), "DISTRIBUTION_GITHUB_API_TOKEN"),
     "maintenance-job");
   assert.deepEqual(Object.keys(withoutToken.secrets), ["IDENTITY_LINK_SECRET"]);

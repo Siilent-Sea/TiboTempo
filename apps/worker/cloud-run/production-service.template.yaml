@@ -159,11 +159,10 @@ spec:
                 secretKeyRef:
                   name: ENVELOPE_PRIVATE_JWK
                   key: '${SECRET_VERSION_ENVELOPE_PRIVATE_JWK}'
-            # Optional. When no GitHub token is configured its version renders
-            # empty and the entry is omitted. Nothing in the service reads it:
-            # the admin distribution view serves the stored GitHub snapshot and
-            # makes no network request, and the committed production desired
-            # state leaves the token out (UNREAD_PRODUCTION_SECRET_NAMES).
+            # CR-3 optional placeholder. OPS-2's production renderer omits
+            # this mount even when pinned: only maintenance may use a token.
+            # The origin's forced sync uses the public API without a token;
+            # overview reads remain snapshot-only.
             - name: DISTRIBUTION_GITHUB_API_TOKEN
               valueFrom:
                 secretKeyRef:

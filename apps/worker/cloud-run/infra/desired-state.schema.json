@@ -294,7 +294,7 @@
     "secrets": {
       "type": "object",
       "additionalProperties": false,
-      "description": "CR-3's secret names. Production may leave out DISTRIBUTION_GITHUB_API_TOKEN (nothing on the production estate reads it; UNREAD_PRODUCTION_SECRET_NAMES), and the committed production file does; staging must name every one (the root allOf). Round 12 retired Google and Apple sign-in, so GOOGLE_OIDC_CLIENT_SECRET and APPLE_PRIVATE_KEY are no CR-3 secret and are refused (SECRET_UNKNOWN).",
+      "description": "CR-3's secret names. Production may omit DISTRIBUTION_GITHUB_API_TOKEN because public GitHub inventory needs no credential (PRODUCTION_OMITTABLE_SECRET_NAMES), as the committed file does. A future pinned token mounts only on maintenance; the production service omits it. Staging names every container (the root allOf). Google and Apple sign-in secrets are retired and refused (SECRET_UNKNOWN).",
       "required": [
         "IDENTITY_LINK_SECRET",
         "POSTGRES_RATE_LIMIT_SECRET",
