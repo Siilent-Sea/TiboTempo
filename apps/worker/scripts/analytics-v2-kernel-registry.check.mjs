@@ -89,6 +89,10 @@ const REGISTRY_PINS = Object.freeze([
   // Kernel 14: activation-only classification proof working sets share the
   // overlay reader's module; overlay reads and pricing identity unchanged.
   "2caee1ed3c56982a8cc6b945ca33ec727cc130ce9e4f7ad230582202d9594967",
+  // Kernel 15: the activation proof leaves the overlay reader's module, so
+  // later proof changes stay outside the closure; overlay reads and pricing
+  // identity unchanged.
+  "c661f21794fd5321f94bfcd5fdaa75a4e2184bd9cd6c0725213d244171773da0",
 ]);
 const ENTRY_KEYS = ["computeClosureSha256", "kernelId", "methodVersion", "priceRegistrySha256", "priceRegistryVersion",
   "productionCommit", "vendorManifestSha256"];
