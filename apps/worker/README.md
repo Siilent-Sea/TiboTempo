@@ -436,6 +436,159 @@ each device id once, and join the device's chunks as a set. The proof raises
 `work_mem` to 64MB transaction-locally and restores it before returning, so
 multi-million-row histories hash in memory within the 60 s statement budget.
 
+Client occurrence ids are positional, so a re-parsed rollout can re-emit an
+event at the same instant under a new id. The effective readers union a
+participant's accepted v1 and v1.1 candidates with every accepted v1.2
+generation of its retained devices per observed day by occurrence id, and the
+proof's other checks compare only same-id records or same-format baselines.
+Before any pair work, the proof therefore refuses an activation that would
+introduce a re-keyed twin of the participant's accepted history: v1 for a v1.1
+activation; v1, v1.1 and other devices' v1.2 for a v1.2 activation. A twin is
+a candidate record that shares stream, observed day and instant with a legacy
+record whose stream and occurrence id the candidate lacks on that day and is
+the same event; matches no legacy record by stream and occurrence id; and is
+not already in accepted history of the activating format that the readers
+read. For a v1.2 activation that history is every accepted v1.2 generation of
+the activating device and of the participant's other devices in the occurrence
+reader's retained authorization scope (`v12RetainedAuthorizationScopeSql` with
+the `reader` variant, from `src/analytics-v2/owners.ts`, evaluated at the
+activation transaction's time). The reader reads each of those generations
+whole, so it includes a re-paired machine's old, revoked device. For a v1.1
+activation it is the participant's accepted v1.1 set, which the legacy reader
+reads for every device. The refusal uses the callers' existing 409 codes
+(`TELEMETRY_MANIFEST_CONFLICT` for v1.2,
+`TELEMETRY_COMPATIBILITY_PROOF_UNAVAILABLE` for v1.1).
+
+Being the same event follows how the clients build ids. A usage id hashes the
+rollout position and instant, so a usage twin keeps the dropped event's
+session (compared null-safe; a usage row always has one). Nothing else of a
+usage record is compared: a re-parse may change its token quantities, and a
+classification correction may change its model, provider and attribution.
+Production's Gate 0 check on 2026-10-11 found 2,154 usage events re-keyed
+between v1.1 (parser v16) and v1.2 (parser v20) in the same session at the
+same instant whose token quantities differ: the same auto-review events
+re-parsed. Re-keys of the same events from v1.1 to v1.1 kept identical
+quantities. Guard v4 compared quantities, so it would have taken each of those
+re-parses for a distinct event and let the union count it twice. Guard v5
+(owner decision 2026-10-11) therefore matches a usage twin by session and
+instant alone. A quota id hashes the source position, limit and slot, so a
+quota twin keeps the dropped observation's limit and slot. The working sets do
+not carry limit and slot, so only the provisional quota pairs are looked up by
+primary key in `typed_telemetry_quota` and `telemetry_v12_typed_quota`, whose
+limit and slot ids come from the shared `typed_telemetry_dictionary`. A quota
+pair is dropped only when both detail rows exist and differ. A session
+record's id is its session (the raw Codex session id or, before the client
+records identity, a stable stand-in), which a rewritten rollout cannot change.
+The client's only session re-key is the stand-in to raw identity switch, which
+keeps every event id. A session twin must therefore be linked by a usage
+occurrence kept under its own id that names the dropped session in legacy and
+the twin in the candidate. Sessions that only share a first-event instant are
+distinct.
+
+Usage and session legacy covers every device of the participant. A machine
+re-paired under a new device id keeps its device salt, so its event and session
+ids persist. Event ids are salted and a session id is the machine's own (a
+random Codex session id or a salted stand-in), so a twin across device ids is
+the same machine's. For a v1.2 activation that legacy also holds the usage and
+session records of the participant's current v1.2 head generation (the head is
+per participant) when that generation belongs to another device in the reader's
+retained scope. A re-paired machine therefore cannot re-key its old device's
+v1.2 history while that history is the head. Those records are the proof's
+existing `source_12` working set, so this reads no further history. Older
+generations are not legacy; the exemption reads them, so taking the head alone
+only loses recall and never refuses what the readers would not double count.
+Quota legacy stays the activating device's v1.1 history. A quota record names
+no session, and two machines on one account observe the same snapshot, so
+another device's observation at the same instant, limit and slot is no evidence
+of the same observation.
+
+These pass: a legacy record absent with no same-instant candidate record (the
+union keeps its legacy copy); a same-instant sibling kept under its own id (as
+does a re-keyed copy kept beside its original id, which has the same shape); a
+different event at a dropped record's instant (another session, another limit
+or slot, or an unlinked session); and a twin already in accepted history the
+readers read, which adds no new occurrence. Neither a device that production's
+earlier proof let through nor its machine re-paired under a new device id is
+wedged. The guard prevents a new double count; it does not reconcile an
+existing one.
+
+One known false positive is accepted (ADV3-5). Two distinct events of one
+session at one instant (a tie group) cannot be told from a re-key. A candidate
+that drops one of them and newly holds the other therefore refuses, whatever
+their token quantities, although the union would count each event once, and
+that day then stays refused (below). The owner accepted this on 2026-10-11.
+Production showed no instance, and the quantity rule that told such events
+apart let the Gate 0 re-parses double count.
+
+These re-keys pass undetected. A rollout rewrite in the same upload as the
+identity switch also renames the re-keyed events' session, so neither the usage
+nor the session rule links it. A re-paired machine's quota re-key passes,
+because quota legacy is device-scoped. A re-paired machine's re-key of its old
+device's v1.2 history passes once that history is no longer the head, for
+example after the new device's first activation. A v1.1 activation reads only
+v1 legacy, so a v1.1 re-key across device ids passes. v1 quota is excluded: the
+clients' v1.1 and v1.2 records keep the v1 usage `eventId` and session
+`sessionUuid` but replace the v1 quota id `q:<ms>:<limit>:<slot>` with a
+`quota-occurrence:v1:` id by design, which admission maps only through
+`typed_v11_record_admissions.legacy_occurrence_id`. The analytics-v2 candidate
+selection does not apply that map, so a day holding accepted v1 and v1.1 copies
+of one quota observation selects two quota candidates, as does a device moving
+from v1 straight to v1.2 for its v1 days. That reader property predates this
+guard. Refusing it here would refuse every such day for good, because the client
+always emits the successor id, so the fix belongs in the reader's selection.
+Pinned predecessor days are each day's earliest READY manifest, accepted or
+not, so they are no accepted baseline: a refused re-key stays pinned, and
+because the same-day closure keeps its occurrences in every successor, that day
+stays refused. Twins are exact so that this permanence applies only to real
+double counts, except for the accepted tie-group false positive above.
+
+The working sets have no indexes, so the statements over them run with
+`enable_nestloop` off transaction-locally and restored before returning, as
+`work_mem` is. These are the provisional twin statement (the kept anti-join,
+the same-instant-and-session join and the legacy-id anti-join, materializing
+pairs in a temporary table), the session link join and the v1.1 history probe.
+With nested loops allowed, the earlier single-statement v1-only form planned a
+nested-loop semi-join that rescans the candidate per unmatched legacy row and
+exceeded the 60 s statement budget with synthetic 2.75M candidate and 1M v1
+rows. The quota detail lookup and the v1.2 history probe run only for pairs
+that remain, under the planner default. The lookup joins the quota pairs to the
+detail tables' primary keys. v1.1 anti-joins the accepted v1.1 set. v1.2
+first keys the accepted manifests of the twins' days (of this device and the
+other retained devices) in a temporary table, then runs anti-joins whose
+correlation sits only in their `WHERE` clauses. PostgreSQL therefore plans them
+as anti-joins, never as a subplan that rescans the accepted set per twin. Usage
+and quota twins are found through the
+`(observed_day, stream, observed_at_ms, occurrence_id)` index, because their
+ids encode the instant. Session twins, whose first-event instant can move, are
+found through the `(manifest_id, stream, occurrence_id)` unique key of each
+accepted manifest of their day.
+
+Guard v4 was measured locally on 2026-10-11 with synthetic sets of 2.75M
+candidate, 2.33M v1.1 and 1M v1 rows, plus 5M other owners' rows in each detail
+table. Its twin statement took about 2.4 s for v1.2 (3.2 s with 270,000
+re-keyed records, 5.8 s with 1.08M) and 0.8 s for v1.1. With a further 2.75M
+head records of another retained device, it took 3.3 s when that device was the
+same machine (its ids kept) and 5.8 s when it was another machine at the same
+instants (2M dropped rows). Guard v5's twin statement is v4's without the
+per-record usage legacy id and format columns, and v5 has no usage lookup (v4's
+took at most 0.31 s at up to 1.45M pairs). The two twin statements were timed
+on identical temporary working sets of 2.75M candidate, 2.33M v1.1 and 1M v1
+rows (local, 2026-10-11, two runs each, while another checkout's tests ran).
+v5's took 1.5 to 2.0 s without twins (v4: 1.9 s), 3.0 to 3.7 s with 270,000
+(v4: 3.1 s, and one 8.8 s outlier) and 4.2 s with 1.08M (v4: 4.2 to 4.3 s).
+With 2.75M head records of another retained device it took 2.2 to 2.3 s for the
+same machine (v4: 2.3 to 2.4 s) and 5.8 to 6.6 s for another machine at the
+same instants (v4: 6.1 s). The exactness filters and the probe together took
+10 to 25 ms for about 2,400 twins, 1.6 s for 270,000 twins with accepted
+history and 2.9 s for 1.08M (measured with v4, whose usage lookup ran first).
+At those sizes the probe makes one hashed pass over the records table. The probe statement is
+unchanged from guard v3, which measured it in a shape of 363,000 twins over 300
+days, with 30 accepted manifests per day across 600 generations, at 0.3 to
+0.5 s; the correlated-subplan form took 26 s to more than 60 s there. A set
+join with the accepted manifests in a CTE hit the 60 s budget at 270,000
+twins: it rescanned the twins once per accepted manifest. The retained-device
+query reads only the authorization tables and was not measured at scale.
+
 The proof lives in `src/postgres-classification-activation.ts`, outside the
 analytics kernel's compute closure; the overlay readers and link predicate stay
 in `src/postgres-classification-links.ts`, which is inside it. A proof-only
@@ -448,7 +601,25 @@ postgres-test/classification-correction.spec.mjs` with an owned local
 whole-session provider closure, replay and the populated migration75-to76
 receipt fence. It also compares the bounded proof and the v1.1 closures with the
 frozen edca848 oracles in `postgres-test/fixtures/classification/` and bounds
-their plans. `scripts/classification-activation-scale-bench.mjs` reports
+their plans. The re-key cases show the frozen proof accepting each re-key that
+the live proof refuses, with nothing written: usage in its session (including
+a re-parse with other token quantities, the Gate 0 shape, and a re-paired
+machine's re-key of its old device's v1.1 history and of its old device's v1.2
+head), a tie-group event re-keyed beside a distinct one, a distinct tie-group
+event replacing a dropped one (the accepted false positive), quota with its
+limit and slot, a session identity switch, and a new twin beside an accepted
+one with its retry with the refused day pinned. The two agree when ids are
+preserved (also across device ids), a record is absent without a twin, a
+different event shares a dropped record's instant (another session on this or
+another device, another limit or slot, an unlinked session), a
+v1 quota observation takes its v1.1 id, a same-instant sibling keeps its id, or
+the twin is already in accepted v1.2 or v1.1 history the readers read. That
+history is the activating device's or, for a re-paired machine, its old
+device's, including a revoked device's v1.2 generation that is no longer the
+head; it is reproduced through domains running the frozen proof. Every history
+probe is planned without a correlated subplan and without the twin set on the
+inner side of a nested loop.
+`scripts/classification-activation-scale-bench.mjs` reports
 local, aggregate-only statement timings at synthetic scale; it is evidence, not
 a gate. Migration, image rollout and installed-client acceptance remain separate
 operational gates. GCP performance admission stays retired.
