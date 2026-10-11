@@ -2056,8 +2056,7 @@ test("a re-paired machine is not wedged by a twin its old device's retained v1.2
       "a twin another retained device's accepted generation holds");
     assert.equal(historyProbes(proof.live.statements).length, 1, "the twin was checked against accepted history");
     assert.deepEqual(perRowRescans(historyPlan(proof.live)), [], "the history probe rescans no set per row");
-    assert.deepEqual(proof.live.exactness, [{ stream: 1, nestloop: proof.live.nestloopBefore }],
-      "the usage quantities lookup kept the twin");
+    assert.deepEqual(proof.live.exactness, [], "a usage twin has no detail lookup");
     assert.equal((await context.domain.activate(repaired, next.manifest)).replay, false);
     assert.deepEqual(await counts(), { [yesterday]: 4, [today]: 4 }, "no occurrence is added");
   });
@@ -2111,7 +2110,7 @@ test("a re-paired machine is not wedged by a twin its old device's accepted v1.1
       "a v1.1 twin another device's accepted v1.1 history holds");
     assert.equal(historyProbes(proof.live.statements).length, 1, "the twin was checked against accepted v1.1 history");
     assert.deepEqual(proof.live.guardNestloop, ["off", "off"]);
-    assert.deepEqual(proof.live.exactness, [{ stream: 1, nestloop: proof.live.nestloopBefore }]);
+    assert.deepEqual(proof.live.exactness, [], "a usage twin has no detail lookup");
     assert.equal((await v11Domain.activate(repaired, manifest)).replay, false);
     assert.deepEqual(await counts(), { [yesterday]: 1, [today]: 5 }, "no occurrence is added today");
   });
@@ -2158,13 +2157,19 @@ test("a re-paired machine cannot re-key its old device's v1.2 history while that
       events[today][1], { ...events[today][2], eventId: rekeyedId("repaired-v12") }])]);
     const { live } = await rekeyRefusal(context, 12, repaired, rekeyed.manifest, rekeyed.predecessor.token,
       "re-paired machine v1.2 re-key");
-    assert.deepEqual(live.exactness, [{ stream: 1, nestloop: live.nestloopBefore }]);
+    assert.deepEqual(live.exactness, [], "a usage twin has no detail lookup");
     await refused(context, repaired, rekeyed.manifest);
     assert.deepEqual(await counts(), { [yesterday]: 2, [today]: 3 });
   });
 });
 
-test("a usage twin keeps the dropped event's token quantities; a distinct event of its tie group is none", {
+// ADV3-5, an accepted known false positive. Guard v5 (owner decision
+// 2026-10-11, "v4 without token rule") matches a usage twin by session and
+// instant alone, so a distinct event of the dropped event's tie group refuses
+// like a re-key, and in production the refused day stays pinned. The owner
+// accepted this: production showed no instance, while guard v4's quantity rule
+// let the Gate 0 re-parses (next test) double count.
+test("a distinct event of a dropped usage event's tie group refuses like a re-key (accepted false positive)", {
   skip: !PG_TEST_SOCKET, timeout: 180_000,
 }, async () => {
   await withSchema(async context => {
@@ -2189,24 +2194,67 @@ test("a usage twin keeps the dropped event's token quantities; a distinct event 
     const fresh = async days => { const predecessor = await context.domain.createPredecessor(principal);
       return { predecessor, manifest: domainManifest(predecessor, days) }; };
 
-    // v1.2 keeps E3 and not E1: E3 pairs with E1 provisionally (same session
-    // and instant) and the quantities lookup drops the pair under the planner
-    // default (guard v3 refused it, and the refused day stayed pinned).
+    // v1.2 keeps E3 and not E1: E3 shares E1's session and instant, so it is
+    // E1's twin whatever its quantities, and refuses although the union would
+    // count each event once (guard v4 accepted it by its quantities).
     const tie = await fresh([await stage(context, principal, today, "usage", [asV12(e3, KNOWN)])]);
-    const proof = await proofParity(context, 12, principal, tie.manifest, tie.predecessor.token, ACCEPTED,
+    const tieRefusal = await rekeyRefusal(context, 12, principal, tie.manifest, tie.predecessor.token,
       "a distinct event of the dropped event's tie group");
-    assert.deepEqual(proof.live.exactness, [{ stream: 1, nestloop: proof.live.nestloopBefore }]);
-    assert.deepEqual(historyProbes(proof.live.statements), [], "different quantities are no twin");
-    assert.equal((await context.domain.activate(principal, tie.manifest)).replay, false);
-    assert.deepEqual(await counts(), { [today]: 2 }, "E1 keeps its legacy copy beside E3");
+    assert.deepEqual(tieRefusal.live.exactness, [], "token quantities are not looked up");
+    await refused(context, principal, tie.manifest);
+    assert.deepEqual(await counts(), { [today]: 1 });
 
     // E1 itself under a new id with its quantities, beside E3: a twin.
     const twin = await fresh([await stage(context, principal, today, "usage",
       [asV12(e3, KNOWN), asV12({ ...e1, eventId: rekeyedId("tie-group") }, KNOWN)])]);
     const { live } = await rekeyRefusal(context, 12, principal, twin.manifest, twin.predecessor.token, "tie-group re-key");
-    assert.deepEqual(live.exactness, [{ stream: 1, nestloop: live.nestloopBefore }]);
+    assert.deepEqual(live.exactness, [], "token quantities are not looked up");
     await refused(context, principal, twin.manifest);
-    assert.deepEqual(await counts(), { [today]: 2 });
+    assert.deepEqual(await counts(), { [today]: 1 });
+  });
+});
+
+// Production Gate 0 (2026-10-11) held 2,154 usage events re-keyed between
+// v1.1 (parser v16) and v1.2 (parser v20) in the same session at the same
+// instant whose token quantities differ: the same auto-review events
+// re-parsed. Re-keys of those events from v1.1 to v1.1 kept identical
+// quantities. Guard v4's quantity rule took each for a distinct event and let
+// the union count it twice; guard v5 compares no quantities.
+test("a usage re-key whose token quantities differ refuses (the production Gate 0 shape)", {
+  skip: !PG_TEST_SOCKET, timeout: 180_000,
+}, async () => {
+  await withSchema(async context => {
+    const today = new Date().toISOString().slice(0, 10);
+    const participant = await seedParticipant(context, "rekey-requantified");
+    const principal = await seedDevice(context, participant, "rekey-requantified", { v12: false });
+    const options = { ...context.options, sourceNamespace: SOURCE_NAMESPACE };
+    await initializeScaleV11(modules, pool, context.schema, options);
+    await grantScaleV11(modules, pool, participant, principal, options);
+    const v11Domain = modules.live.createPostgresTelemetryV11Domain(pool, options);
+    const legacy = [0, 1, 2].map(index => v11At(today, index));
+    const v11Day = await stageScaleV11Day(modules, pool, context.schema, options, principal, today, legacy);
+    assert.equal((await v11Domain.activate(principal, scaleV11DomainManifest(await v11Domain.createPredecessor(principal),
+      [v11Day]))).replay, false);
+    await enableV12(context, principal);
+    const counts = () => usageCounts(context, participant, today, today);
+    assert.deepEqual(await counts(), { [today]: 3 });
+
+    // The third event re-parsed under a new id, in its session at its instant,
+    // with every token quantity changed.
+    const reparsed = { ...legacy[2], eventId: rekeyedId("requantified"), totalInputContextTokens: 1400,
+      components: { ...legacy[2].components, inputUncachedTokens: 300, inputCacheReadTokens: 1100,
+        outputTextTokens: 70, outputReasoningTokens: 35 } };
+    assert.notEqual(reparsed.totalInputContextTokens, legacy[2].totalInputContextTokens);
+    for (const name of ["inputUncachedTokens", "inputCacheReadTokens", "outputTextTokens", "outputReasoningTokens"]) {
+      assert.notEqual(reparsed.components[name], legacy[2].components[name], `${name} differs`);
+    }
+    const predecessor = await context.domain.createPredecessor(principal);
+    const manifest = domainManifest(predecessor, [await stage(context, principal, today, "usage",
+      [asV12(legacy[0], KNOWN), asV12(legacy[1], KNOWN), asV12(reparsed, KNOWN)])]);
+    const { live } = await rekeyRefusal(context, 12, principal, manifest, predecessor.token, "re-parse with other quantities");
+    assert.deepEqual(live.exactness, [], "token quantities are not looked up");
+    await refused(context, principal, manifest);
+    assert.deepEqual(await counts(), { [today]: 3 }, "nothing is counted twice");
   });
 });
 

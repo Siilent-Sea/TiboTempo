@@ -134,14 +134,6 @@ const WORK_SETS: readonly WorkSet[] = ["candidate", "rekey_twins", "rekey_accept
 // design with a 'quota-occurrence:v1:' id that admission maps only through
 // typed_v11_record_admissions.legacy_occurrence_id (assertTypedV1Transition).
 const V1_STABLE_STREAMS = "1,3";
-// The token quantities a usage twin keeps (null-safe). Cache write is compared
-// only when both formats carry it (v1 and v1.1 may leave it null). Model,
-// provider and attribution are not compared: a classification correction may
-// change them.
-const USAGE_QUANTITIES = ["total_input_context_tokens", "input_uncached_tokens", "input_cache_read_tokens",
-  "output_text_tokens", "output_reasoning_tokens"] as const;
-const USAGE_QUANTITIES_DIFFER = [...USAGE_QUANTITIES.map(name => `legacy_usage.${name} IS DISTINCT FROM twin_usage.${name}`),
-  "legacy_usage.input_cache_write_tokens<>twin_usage.input_cache_write_tokens"].join(" OR ");
 // Every set statement binds the same three values; the unused scope CTE only
 // types them, so oldSql(10|11) may leave $3 unreferenced.
 function workPrelude(): string {
@@ -182,14 +174,17 @@ class ClassificationWork {
    * candidate record that
    *  - shares (stream, day, instant) with a legacy record whose (stream,
    *    occurrence) the candidate lacks on that day, and is the same event:
-   *    usage in the same session (null-safe) with the same token quantities
-   *    (USAGE_QUANTITIES), so a distinct event of a same-instant tie group is
-   *    none; quota with the same limit and slot (an observation id hashes
-   *    source position, limit and slot); a session record, whose id is its
-   *    session, linked by a usage occurrence kept under its own id that names
-   *    the dropped session in legacy and the twin in the candidate (the
-   *    client's only session re-key is its stand-in to raw identity switch,
-   *    which keeps every event id),
+   *    usage in the same session (null-safe), whatever its token quantities:
+   *    a re-parse may change them (owner decision 2026-10-11, guard v5:
+   *    production held 2,154 same-session, same-instant v1.1-to-v1.2 re-keys
+   *    whose quantities differ), so a distinct event of a same-instant tie
+   *    group replacing a dropped one is an accepted false positive; quota with
+   *    the same limit and slot (an observation id hashes source position,
+   *    limit and slot); a session record, whose id is its session, linked by a
+   *    usage occurrence kept under its own id that names the dropped session
+   *    in legacy and the twin in the candidate (the client's only session
+   *    re-key is its stand-in to raw identity switch, which keeps every event
+   *    id),
    *  - matches no legacy record by (stream, occurrence): a same-instant
    *    sibling kept under its own id is not a twin (nor is a re-keyed copy
    *    kept beside its original id, which has the same shape),
@@ -223,10 +218,10 @@ class ClassificationWork {
    * loops disabled transaction-locally, restored before returning: the
    * earlier single-statement v1-only form planned a nested-loop semi-join
    * that rescans the candidate per unmatched legacy row and exceeded the
-   * 60 s budget (synthetic 2.75M candidate, 1M v1 rows). The usage and quota
-   * detail lookups and the v1.2 history probe look rows up by key in indexed
-   * tables (the probe's accepted manifests in a keyed temporary table) and
-   * keep the planner default. */
+   * 60 s budget (synthetic 2.75M candidate, 1M v1 rows). The quota detail
+   * lookup and the v1.2 history probe look rows up by key in indexed tables
+   * (the probe's accepted manifests in a keyed temporary table) and keep the
+   * planner default. */
   async rekeyed(): Promise<boolean> {
     // Built here under the planner defaults: each is the v1.1 baseline or
     // legacy history the pair work reads next for either activation format
@@ -238,13 +233,11 @@ class ClassificationWork {
         FROM (${v12RetainedAuthorizationScopeSql(this.s, "now()", "reader")}) retained
        WHERE retained.participant_id=$1 AND retained.device_id<>$2 ORDER BY retained.device_id`,
       [this.input.participantId, this.input.deviceId])).rows.map(row => String(row.device_id)) : [];
-    // legacy_format names the detail tables a legacy id keys: 10 and 11 the
-    // typed legacy tables, 12 the v1.2 tables.
-    const legacy = [`SELECT ${columns},10 AS legacy_format FROM ${v1} WHERE stream IN (${V1_STABLE_STREAMS})`];
+    const legacy = [`SELECT ${columns} FROM ${v1} WHERE stream IN (${V1_STABLE_STREAMS})`];
     if (v12) {
       const v12Source = await this.source(12);
-      legacy.push(`SELECT ${columns},11 FROM ${v11} WHERE stream IN (${V1_STABLE_STREAMS}) OR source_device_id=$1`,
-        `SELECT ${columns},12 FROM ${v12Source} WHERE stream IN (1,3) AND source_device_id=ANY($2::text[])`);
+      legacy.push(`SELECT ${columns} FROM ${v11} WHERE stream IN (${V1_STABLE_STREAMS}) OR source_device_id=$1`,
+        `SELECT ${columns} FROM ${v12Source} WHERE stream IN (1,3) AND source_device_id=ANY($2::text[])`);
     }
     const candidate = work("candidate"), pairs = work("rekey_twins");
     const nestloop = await this.setting("enable_nestloop");
@@ -253,19 +246,16 @@ class ClassificationWork {
     // Provisional twin pairs: same stream, day, instant and (for usage) session.
     // A usage row always has a session; a missing one compares as the empty
     // id, which no session id is (2 to 257 bytes), so the key stays hashable.
-    // Usage and quota pairs carry the dropped legacy record, session pairs its
-    // session.
+    // Quota pairs carry the dropped legacy record, session pairs its session.
+    // A usage pair is final here: its token quantities are not compared.
     let remaining = number((await this.client.query(`CREATE TEMP TABLE ${pairs} ON COMMIT DROP AS
       WITH rekeyed_legacy AS NOT MATERIALIZED (${legacy.join(" UNION ALL ")}),
       dropped AS MATERIALIZED (SELECT DISTINCT legacy.stream,legacy.observed_day,legacy.observed_at_ms,
-          COALESCE(legacy.session_id,''::bytea) AS session_key,
-          CASE WHEN legacy.stream<>3 THEN legacy.legacy_format END AS legacy_format,
-          CASE WHEN legacy.stream<>3 THEN legacy.id END AS legacy_id,
+          COALESCE(legacy.session_id,''::bytea) AS session_key,CASE legacy.stream WHEN 2 THEN legacy.id END AS legacy_id,
           CASE legacy.stream WHEN 3 THEN legacy.occurrence_id END AS legacy_session
         FROM rekeyed_legacy legacy WHERE NOT EXISTS (SELECT 1 FROM ${candidate} kept WHERE kept.stream=legacy.stream
           AND kept.observed_day=legacy.observed_day AND kept.occurrence_id=legacy.occurrence_id))
-      SELECT twin.id,twin.stream,twin.observed_day,twin.observed_at_ms,twin.occurrence_id,
-          dropped.legacy_format,dropped.legacy_id,dropped.legacy_session
+      SELECT twin.id,twin.stream,twin.observed_day,twin.observed_at_ms,twin.occurrence_id,dropped.legacy_id,dropped.legacy_session
         FROM ${candidate} twin JOIN dropped ON dropped.stream=twin.stream AND dropped.observed_day=twin.observed_day
          AND dropped.observed_at_ms=twin.observed_at_ms AND dropped.session_key=COALESCE(twin.session_id,''::bytea)
        WHERE NOT EXISTS (SELECT 1 FROM rekeyed_legacy matched WHERE matched.stream=twin.stream
@@ -274,10 +264,9 @@ class ClassificationWork {
     let introduced = 0;
     if (remaining > 0) {
       await this.client.query(`ANALYZE ${pairs}`);
-      const kinds = (await this.client.query<{stream:number;legacy_format:number|null}>(
-        `SELECT DISTINCT stream,legacy_format FROM ${pairs}`)).rows
-        .map(row => ({ stream: Number(row.stream), legacy: row.legacy_format === null ? null : Number(row.legacy_format) }));
-      if (kinds.some(kind => kind.stream === 3)) {
+      const streams = new Set((await this.client.query<{stream:number}>(`SELECT DISTINCT stream FROM ${pairs}`))
+        .rows.map(row => Number(row.stream)));
+      if (streams.has(3)) {
         // Only usage rows of the provisional sessions join, by occurrence id.
         const usage = [`SELECT occurrence_id,session_id FROM ${v1} WHERE stream=1`];
         if (v12) {
@@ -294,21 +283,10 @@ class ClassificationWork {
             WHERE linked.legacy_session=pair.legacy_session AND linked.twin_session=pair.occurrence_id)`,
         v12 ? [others] : [])).rowCount);
       }
-      // The detail lookups probe primary keys: the planner default from here.
-      await planner(nestloop);
-      // Only the provisional usage pairs are looked up, each in its own
-      // format's detail table, and a pair is dropped only when both detail
-      // rows exist and a quantity both carry differs; one missing a detail
-      // row stays a twin.
-      const twinUsage = t(this.s, v12 ? "telemetry_v12_typed_usage" : "typed_telemetry_usage");
-      for (const [legacyUsage, legacyFormat] of [["typed_telemetry_usage", "<12"], ["telemetry_v12_typed_usage", "=12"]] as const) {
-        if (!kinds.some(kind => kind.stream === 1 && (legacyFormat === "=12") === (kind.legacy === 12))) continue;
-        remaining -= number((await this.client.query(`DELETE FROM ${pairs} pair
-          USING ${t(this.s, legacyUsage)} legacy_usage,${twinUsage} twin_usage
-          WHERE pair.stream=1 AND pair.legacy_format${legacyFormat} AND legacy_usage.record_id=pair.legacy_id
-            AND twin_usage.record_id=pair.id AND (${USAGE_QUANTITIES_DIFFER})`)).rowCount);
-      }
-      if (kinds.some(kind => kind.stream === 2)) {
+      // The quota lookup and the v1.2 history probe probe primary keys: the
+      // planner default from here. The v1.1 probe keeps nested loops off.
+      if (v12) await planner(nestloop);
+      if (streams.has(2)) {
         // Quota legacy is v1.1 only, so only a v1.2 activation has quota
         // pairs. Both share the v1.2 dictionary, so limit and slot ids
         // compare. A pair is dropped only when both detail rows exist and
@@ -322,7 +300,6 @@ class ClassificationWork {
     if (remaining > 0) {
       if (!v12) {
         // A hash anti-join over the participant's accepted v1.1 set.
-        await planner("off");
         introduced = number((await this.client.query<{introduced:string}>(`SELECT count(*)::text AS introduced
           FROM ${pairs} twin WHERE NOT EXISTS (SELECT 1 FROM ${v11} accepted
             WHERE accepted.stream=twin.stream AND accepted.observed_day=twin.observed_day
