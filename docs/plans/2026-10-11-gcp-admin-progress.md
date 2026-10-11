@@ -2,14 +2,15 @@
 title: GCP admin processing and reconstruction progress
 date: 2026-10-11
 type: plan
-status: candidate
+status: release-preparation
 ---
 
 Local candidate on `codex/gcp-admin-reconstruction-progress-20261011`, retained
 for the owner's release handoff. Base: `2fd6d050d29e15db69de91effeb7355592136294`.
 Feature commit: `2f8c48c83`. Merged origin integration:
 `67281641501800cde114f4a425761fbcc53267d2` (merge `4c1f2f0e0`).
-No production reads, pushes, remote migrations or deployment were performed.
+During implementation, no production reads, pushes, remote migrations or
+deployment were performed.
 Source implementation and local synthetic checks do not qualify production.
 
 ## Implementation and contract decision
@@ -120,3 +121,48 @@ before treating the combined candidate as fully validated.
    separate snapshots. Unknown/bounded counts must stay explicitly unavailable.
 4. Confirm incremental/current execution counters remain unavailable and the
    nominal slot is not rendered as a running job or completion estimate.
+
+## Authorized combined release follow-up
+
+On 2026-10-11 the owner assigned this chat the GitHub sync release through the
+coordinated handoff. The direct owner instruction was verified in the sending
+chat. This chat owns the combined rollout; the sync chat will not run a competing
+release. The exact sync candidate `0a76521031ae9791d00554910efc79912ab44f23`
+was merged at `a2f7f09e7c4891e81828348414e49c9d180e90be`. Both admin adapters and
+PostgreSQL suite registrations are retained. No new token is needed.
+
+Combined source qualification: 41 PostgreSQL tests passed with no skips;
+104 admin tests passed; rebuilt Cloud Run checks passed 569 cases with four
+existing PostgreSQL-dependent skips. The required production-tooling gate
+passed 638 cases without skips. Its old production-migration spec still pinned
+0077; only its exact count/name assertions and descriptive comments were
+advanced to the canonical, already-merged additive 0078. Grant, replay,
+ahead-history and divergence assertions remain intact. The baseline broad
+UI/Worker failures above remain explicit.
+
+Live read-only preflight observed origin commit `2fd6d050` on revision
+`tibotattle-origin-00012-h4f`, edge commit
+`ed3aee03f0c3046c376a214425867c490e8a04b3` in GCP mode, and an OK fresh backup
+audit. Both triggers were ENABLED: maintenance every minute and analytics at
+03:00 UTC. Their exact private captures must govern pause/resume; committed
+bootstrap states must not replace those observations. No production write had
+occurred when this preparation record was saved.
+
+Release sequence: freeze a clean combined commit; preserve and prove the
+exact live public release tree; build the GCP image with the existing rollout
+CLI; stage the compatible edge client using the guarded typed deploy; capture
+fresh edge/backup inputs; pause and drain previously enabled triggers; obtain a
+fresh migration receipt bound to this commit/digest; roll the origin and Jobs
+together; qualify both panels and GitHub snapshot/audit; resume only previously
+enabled triggers, maintenance first. Keep owner-private receipts outside Git.
+No whole-estate desired-state apply, secret creation or desktop publication is
+part of this release.
+
+The live edge is not an ancestor of the origin branch. Its contract blob matches
+the origin, but its public tree includes `feature-value.png`, which the origin
+branch's older asset allowlist refuses. The edge client therefore has its own
+owned branch/worktree based on exact live edge `ed3aee03`; only this feature's
+client/projection/rendering tests and generated embedded assets are ported.
+The typed edge deploy must preserve the live manifest
+`cedad565d9d5ac420a28b6445b5d66ecaecd3327227f04f63faee813d3df7e81`.
+Never deploy the origin branch's older public layout over the live edge.
