@@ -431,7 +431,16 @@ it never rebuilds them per page. The origin's runtime role therefore needs the
 database `TEMPORARY` privilege, which PostgreSQL grants by default. The v1.1
 closure probes (typed v1 transition, legacy gap, previous-generation gap) are
 hash anti-joins over the candidate's decoded admissions, not per-row manifest
-rescans.
+rescans. Set builds decide v1.1 acceptance once per manifest and device, decode
+each device id once, and join the device's chunks as a set. The proof raises
+`work_mem` to 64MB transaction-locally and restores it before returning, so
+multi-million-row histories hash in memory within the 60 s statement budget.
+
+The proof lives in `src/postgres-classification-activation.ts`, outside the
+analytics kernel's compute closure; the overlay readers and link predicate stay
+in `src/postgres-classification-links.ts`, which is inside it. A proof-only
+change therefore needs no new kernel entry, while any edit to the links module
+does.
 
 The PostgreSQL synthetic gate is `node --test
 postgres-test/classification-correction.spec.mjs` with an owned local

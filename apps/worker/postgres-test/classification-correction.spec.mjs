@@ -109,7 +109,6 @@ async function setup() {
     codec: await vite.ssrLoadModule("/src/typed-telemetry-codec.ts"),
     compatibility: await vite.ssrLoadModule("/src/telemetry-v11-compatibility.ts"),
     reconciliation: await vite.ssrLoadModule("/src/telemetry-usage-reconciliation.ts"),
-    links: await vite.ssrLoadModule("/src/postgres-classification-links.ts"),
     activation: await vite.ssrLoadModule("/src/postgres-classification-activation.ts"),
     oracle: await vite.ssrLoadModule("/postgres-test/fixtures/classification/activation-oracle.ts"),
     closureOracle: await vite.ssrLoadModule("/postgres-test/fixtures/classification/closure-oracle.ts"),
@@ -1016,9 +1015,12 @@ async function proofInput(context, format, principal, manifest, token) {
 /** One proof implementation inside a transaction that is always rolled back. */
 async function runProof(prepare, context, input, { explain = false } = {}) {
   const client = await pool.connect();
-  const statements = [], plans = [];
+  const statements = [], plans = [], setWorkMem = [];
   const proofClient = { async query(text, values) {
     const pairs = /^CREATE TEMP TABLE pg_temp\."classification_((?:exact|foreign)_\d+)"/u.exec(text);
+    if (/^CREATE TEMP TABLE pg_temp\."classification_/u.test(text)) {
+      setWorkMem.push((await client.query("SELECT current_setting('work_mem') AS v")).rows[0].v);
+    }
     if (explain && pairs) plans.push({ set: pairs[1], plan: (await client.query(`EXPLAIN (FORMAT JSON) ${text}`, values)).rows[0]["QUERY PLAN"][0].Plan });
     statements.push(text);
     return client.query(text, values);
@@ -1027,13 +1029,16 @@ async function runProof(prepare, context, input, { explain = false } = {}) {
     await client.query("BEGIN");
     await client.query("SET LOCAL statement_timeout='60000ms'");
     let outcome = ACCEPTED;
+    const workMem = async () => (await client.query("SELECT current_setting('work_mem') AS v")).rows[0].v;
+    const workMemBefore = await workMem();
     try { await prepare(proofClient, `"${context.schema}"`, input); }
     catch (error) { if (error?.code !== "POSTGRES_CLASSIFICATION_CORRECTION_INVALID") throw error; outcome = REFUSED; }
+    const workMemAfter = outcome === ACCEPTED ? await workMem() : null;
     const links = (await client.query(`SELECT * FROM ${context.table("telemetry_classification_correction_links")}
       WHERE generation_id=$1 ORDER BY id`, [input.generationId])).rows.map(({ id, created_at, ...row }) => row);
     const leftovers = (await client.query(`SELECT count(*)::integer AS n FROM pg_class
       WHERE relpersistence='t' AND relname LIKE 'classification\\_%' AND pg_table_is_visible(oid)`)).rows[0].n;
-    return { outcome, links, statements, plans, leftovers };
+    return { outcome, links, statements, plans, leftovers, workMemBefore, workMemAfter, setWorkMem };
   } finally {
     await client.query("ROLLBACK");
     client.release();
@@ -1047,7 +1052,11 @@ async function proofParity(context, format, principal, manifest, token, expected
   assert.equal(frozen.outcome, expected, `${label}: frozen outcome`);
   assert.equal(live.outcome, frozen.outcome, `${label}: outcome`);
   assert.deepEqual(live.links, frozen.links, `${label}: identical link rows in identical order`);
-  if (live.outcome === ACCEPTED) assert.equal(live.leftovers, 0, `${label}: working sets dropped`);
+  if (live.outcome === ACCEPTED) {
+    assert.equal(live.leftovers, 0, `${label}: working sets dropped`);
+    assert.equal(live.workMemAfter, live.workMemBefore, `${label}: work_mem restored after the proof`);
+  }
+  assert.ok(live.setWorkMem.every(value => value === "64MB"), `${label}: every working set builds under 64MB work_mem`);
   return { input, live, frozen };
 }
 
