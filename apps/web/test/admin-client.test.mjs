@@ -1,9 +1,12 @@
-import { createAdminAllowancePreviewPayload, createAdminPro10AllowancePreviewPayload, createAdminPro20PromaxAllowancePreviewPayload, withSeptember29AdminHistory } from "./fixtures/admin-allowance.js";
+import { createAdminAllowancePreviewPayload, createAdminPro10AllowancePreviewPayload, createAdminPro20PromaxAllowancePreviewPayload, withSeptember29AdminHistory, SERVER_V05_ADMIN_ALLOWANCE_PREVIEW, serverV05AdminAllowancePreview } from "./fixtures/admin-allowance.js";
+import { SERVER_V15_COMMUNITY_DAILY, serverV15CommunityDailyBody } from "./fixtures/public-allowance.js";
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import {
   ADMIN_MODEL_CONFIG, LEGACY_ADMIN_MODEL_HISTORY_CATALOG_VERSION,
+  SEPTEMBER29_ADMIN_MODEL_CONFIG, SEPTEMBER29_ADMIN_MODEL_HISTORY_CATALOG_VERSION,
 } from "../public/telemetry-shared.generated.js";
 import {
   AdminResponseError,
@@ -1698,5 +1701,56 @@ test("admin preview v0.5 (Pro 20x, Pro Max x0.8) dispatches exactly and refuses 
       const invalid = build(); mutate(invalid);
       assert.throws(() => projectAdminAllowancePreview(invalid), { code: "ADMIN_ALLOWANCE_PREVIEW_INVALID" }, mutate.toString());
     }
+  }
+});
+
+test("the R1 server's v0.5 admin preview projects under its exact contract with every value unchanged", () => {
+  const input = serverV05AdminAllowancePreview();
+  const text = JSON.stringify(input);
+  assert.equal(Buffer.byteLength(text), SERVER_V05_ADMIN_ALLOWANCE_PREVIEW.bytes);
+  assert.equal(createHash("sha256").update(text).digest("hex"), SERVER_V05_ADMIN_ALLOWANCE_PREVIEW.sha256,
+    "the fixture is the server's read, unedited");
+  // The premise of the empty Pro Max assertions: the server published no Pro Max fit.
+  assert.ok(input.days.every(day => day.byPlanType.promax.centralUsd === null && day.byPlanType.promax.fitCount === 0));
+  const projected = projectAdminAllowancePreview(serverV05AdminAllowancePreview());
+  assert.equal(projected.schemaVersion, "admin-community-allowance-preview-v0.5");
+  assert.equal(projected.generatedAt, input.generatedAt);
+  assert.equal(projected.basis, "seven_day_codex_pro20x_equivalent_personal_plans_trailing_30d_promax25_preview");
+  assert.equal(projected.models.basis, "seven_day_codex_pro20x_equivalent_per_model_composition_promax25");
+  assert.equal(projected.models.gate, input.models.gate);
+  assert.equal(projected.spanFloorPp, 25);
+  assert.deepEqual(projected.plans.map(plan => [plan.planType, plan.label, plan.multiplier]),
+    [["pro", "Pro 20x", 1], ["prolite", "Pro 5x", 4], ["promax", "Pro Max 25x", 0.8], ["plus", "Plus", 20]]);
+  assert.deepEqual([projected.from, projected.to], [input.from, input.to]);
+  assert.deepEqual(projected.days, input.days, "every served reference value is kept, never rescaled");
+  assert.ok(projected.days.every(day => day.byPlanType.promax.centralUsd === null && day.byPlanType.promax.band80Usd === null),
+    "Pro Max stays an explicit no-estimate, never zero");
+  assert.deepEqual(projected.coverage, input.coverage);
+  assert.deepEqual(projected.models.modelConfig, SEPTEMBER29_ADMIN_MODEL_CONFIG);
+  assert.equal(projected.models.days.length, input.models.days.length);
+  for (const [index, day] of input.models.days.entries()) {
+    const read = projected.models.days[index];
+    assert.equal(read.catalogVersion, SEPTEMBER29_ADMIN_MODEL_HISTORY_CATALOG_VERSION);
+    for (const key of ["day", "values", "fittedParticipantCount", "unstableParticipantCount", "staleParticipantCount",
+      "refusedParticipantCount", "v1ParticipantCount", "unsupportedSourceParticipantCount"]) {
+      assert.deepEqual(read[key], day[key], `${day.day} ${key}`);
+    }
+    for (const [modelId, capacityUsd, participantCount] of day.values) {
+      assert.deepEqual(read.byModel[modelId], { capacityUsd, participantCount }, `${day.day} ${modelId}`);
+    }
+  }
+  // The public v1.5 fixture body was served from this stored preview: the
+  // origin's public projection kept every plan summary and model tuple.
+  assert.equal(SERVER_V05_ADMIN_ALLOWANCE_PREVIEW.publicBodySha256, SERVER_V15_COMMUNITY_DAILY.bodySha256);
+  const served = serverV15CommunityDailyBody().allowanceBreakdowns;
+  assert.equal(served.generatedAt, projected.generatedAt);
+  assert.ok(served.days.length > 0);
+  for (const day of served.days) {
+    const preview = projected.days.find(entry => entry.day === day.day);
+    assert.deepEqual(preview.combined, day.combined, `${day.day} combined`);
+    for (const plan of ["pro", "prolite", "promax", "plus"]) {
+      assert.deepEqual(preview.byPlanType[plan], day.byPlanType[plan], `${day.day} ${plan}`);
+    }
+    assert.deepEqual(projected.models.days.find(entry => entry.day === day.day).values, day.models, `${day.day} models`);
   }
 });
