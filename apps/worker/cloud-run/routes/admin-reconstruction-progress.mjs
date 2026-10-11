@@ -8,13 +8,13 @@
  * the analytics database's incremental graph pipeline (refresh lanes, model
  * publications, graph results, selection and checkpoints).
  *
- * The GCP fast path has no such pipeline: one analytics-refresh job
- * recomputes everything in a single run, so there is no data source with the
- * Worker's lanes, checkpoints or per-owner work states. Without an injected
- * reader the route answers 503 BACKEND_STORAGE_UNAVAILABLE, the Worker's own
- * status when the typed analytics storage cannot serve the read, after
- * authorization and query validation and without touching storage. It never
- * reports an idle or empty pipeline it cannot observe.
+ * The admin composition binds postgres-admin-reconstruction-progress.ts:
+ * v4 describes the journal, cursor, queued days, publication heads and last
+ * recorded full refresh in one bounded read-only snapshot. GCP has no
+ * incremental lanes/checkpoints or observable active execution; these remain
+ * explicitly unavailable. Query-free and detail=preparation reads have the
+ * same v4 shape. An absent custom reader or a failed snapshot answers 503
+ * BACKEND_STORAGE_UNAVAILABLE after authorization and query validation.
  */
 
 import { ApiError } from "../../src/errors.ts";

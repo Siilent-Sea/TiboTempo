@@ -25,8 +25,9 @@
  * pool and schema. Admin reads with no GCP source stay unavailable unless the
  * root injects one: the overview's three sourceless blocks answer the closed
  * { status: "unavailable" } ('admin-overview-v0.6'), and the metrics history
- * and reconstruction progress routes answer the Worker's own unavailable
- * statuses (see the route modules and src/postgres-admin-overview.ts).
+ * route answers the Worker's own unavailable status. Reconstruction progress
+ * defaults to the aggregate-only PostgreSQL full-refresh reader (v4), with
+ * unavailable incremental graph counters and current execution state.
  * The database-health analytics role defaults to the primary pool, because
  * primary migration 0059 places the analytics_v2 tables in that database.
  */
@@ -37,6 +38,7 @@ import { readPostgresAdminAllowancePreview } from "../../src/postgres-admin-allo
 import { setPostgresCollectionControls } from "../../src/postgres-admin-collection-controls.ts";
 import { readPostgresAdminDatabaseHealth } from "../../src/postgres-admin-database-health.ts";
 import { readPostgresAdminOverview } from "../../src/postgres-admin-overview.ts";
+import { readPostgresAdminReconstructionProgress } from "../../src/postgres-admin-reconstruction-progress.ts";
 import { assertFrozenPathnames } from "../postgres-family-contract.mjs";
 import { ADMIN_ACTION_PATHNAMES, createAdminActionDispatch } from "./admin-action.mjs";
 import {
@@ -111,7 +113,8 @@ function optionalPool(name, value) {
  *   overviewSources?: {syntheticContributions?, historicalPublication?, deletionLedger?}
  *     (none has a default: each block is { status: "unavailable" } until the
  *     root injects its source, OWN-17 questions 1 and 2, round 12),
- *   readMetricsHistory?, readReconstructionProgress? (no GCP source: unavailable),
+ *   readMetricsHistory? (no GCP source: unavailable),
+ *   readReconstructionProgress? (overrides the PostgreSQL full-refresh reader),
  *   maintenance?: {runMaintenance?, syncDistribution?, telemetryRuntimeActivation?,
  *     transportRollback?, v11EvidenceAdoption?} (unported: 503 POSTGRES_ROUTE_NOT_PORTED).
  */
@@ -149,8 +152,11 @@ export function createAdminConsoleAdapters(deps) {
       env, clock, pools: { primary: pools.primary, analytics: analyticsPool },
     }),
     ...(deps.readMetricsHistory === undefined ? {} : { readMetricsHistory: deps.readMetricsHistory }),
-    ...(deps.readReconstructionProgress === undefined ? {}
-      : { readReconstructionProgress: deps.readReconstructionProgress }),
+    readReconstructionProgress: deps.readReconstructionProgress === undefined
+      ? ({ nowEpoch, includePreparation }) => readPostgresAdminReconstructionProgress({
+        pool: pools.primary, schema, nowEpoch, includePreparation,
+      })
+      : deps.readReconstructionProgress,
     setCollectionControls: (input) => setPostgresCollectionControls(pools.primary, schema, input),
     beginAudit: (input) => beginPostgresAdminOperation(pools.primary, schema, input),
     finishAudit: (input) => finishPostgresAdminOperation(pools.primary, schema, input),

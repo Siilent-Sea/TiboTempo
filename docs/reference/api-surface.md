@@ -262,6 +262,34 @@ non-overlapping reads with a 15-second timeout; automatic polling respects the
 existing user-selected cadence and pauses while hidden/offline. A slow graph
 read cannot conceal progress. Access loss clears private state.
 
+Typed Cloudflare storage returns version 3 with the incremental graph census
+and an optional `pipeline` block (null when that block's read failed). The GCP
+origin returns the closed full-refresh version 4: journal head, bounded v1.2
+source counts and unconsumed activation authorizations; refresh cursor and
+pending journal changes; distinct queued days; daily publication heads and
+preview availability; and the last recorded run's start, finish, kernel and
+aggregate owner/owner-day counts. Both allowed query shapes return v4 on GCP.
+The PostgreSQL reader uses one REPEATABLE READ READ ONLY snapshot, 2-second
+statement and 500-millisecond lock timeouts, at most 100,001 pending journal
+events and 10,001 queued days. Counts exceeding their limits are unavailable,
+never truncated totals; an absent, unsafe or ahead-of-journal cursor leaves
+delivery and queue counts unknown. Queued days follow the overview's journal
+semantics, including replaced source days and terminal events adding no day.
+
+GCP has no incremental lanes, checkpoints or per-owner progress source, so v4
+marks graph/history counters and incremental delivery position unavailable.
+`analytics_v2_runs` becomes visible with the full refresh commit; active runs
+and failures that leave no row remain unobservable. A complete last recorded
+run is never rendered as idle, caught up or currently running. The next nominal
+03:00 UTC slot follows the owner-declared cadence; scheduler enablement remains
+unavailable and the slot is not an ETA. Responses contain no owner, event or
+run identifiers and remain `no-store` behind the existing owner chokepoint.
+
+The admin UI is served by the edge Worker's `admin-ui.ts` from generated,
+embedded assets even in GCP mode. Version 4 therefore needs a separate edge
+client deploy before the origin rollout. Regenerating the assets or rebuilding
+the Cloud Run bundle does not publish either surface.
+
 The owner explicitly approved dollar estimates and sample counts even when
 based on one account. This can reveal that contributor's estimated capacity;
 omitting identifiers is not an anonymity guarantee. The visible small-sample

@@ -315,7 +315,7 @@ test("database health refuses any query string", async () => {
     { schemaVersion: "admin-database-health-v0.2" });
 });
 
-test("reconstruction progress validates its query, then has no GCP source", async () => {
+test("reconstruction progress validates its query, then refuses an absent custom reader", async () => {
   const { admin, calls } = adapters();
   const { map, store } = handlers(admin);
   for (const query of ["?detail=other", "?detail", "?detail=preparation&detail=preparation",
@@ -333,6 +333,24 @@ test("reconstruction progress validates its query, then has no GCP source", asyn
   await expectOk(await call(second.map, second.store, "admin_reconstruction_progress",
     adminRequest("/api/v1/admin/reconstruction-progress?detail=preparation")),
   { nowEpoch: NOW_MS, includePreparation: true });
+});
+
+test("the default reconstruction reader is bound to primary and sanitizes a failed snapshot", async () => {
+  const store = contextStore();
+  let connects = 0;
+  const map = console_.createAdminConsoleHandlers({
+    requestContext: store.accessor, clock: () => NOW_MS, env: Object.freeze({}),
+    pools: { primary: { async connect() { connects += 1; throw new Error("private database detail"); } } },
+    schemaOptions: { primarySchema: "synthetic" },
+  });
+  await expectError(await call(map, store, "admin_reconstruction_progress",
+    adminRequest("/api/v1/admin/reconstruction-progress?unknown=1")), 400, "BODY_INVALID");
+  assert.equal(connects, 0);
+  for (const query of ["", "?detail=preparation"]) {
+    await expectError(await call(map, store, "admin_reconstruction_progress",
+      adminRequest(`/api/v1/admin/reconstruction-progress${query}`)), 503, "BACKEND_STORAGE_UNAVAILABLE");
+  }
+  assert.equal(connects, 2);
 });
 
 // ---------------------------------------------------------------------------

@@ -102,6 +102,7 @@ async function loadModules() {
   const load = (path) => vite.ssrLoadModule(path);
   return {
     overview: await load("/src/postgres-admin-overview.ts"),
+    progress: await load("/src/postgres-admin-reconstruction-progress.ts"),
     preview: await load("/src/postgres-admin-allowance-preview.ts"),
     health: await load("/src/postgres-admin-database-health.ts"),
     distribution: await load("/src/postgres-admin-distribution.ts"),
@@ -1118,10 +1119,13 @@ test("the composed console serves the routes over PostgreSQL with the root's ide
   assert.equal(`${history.status} ${(await history.json()).error.code}`, workerHistory);
   assert.equal(workerHistory, "503 ADMIN_METRICS_HISTORY_CACHE_UNAVAILABLE");
 
-  // Reconstruction progress has no GCP source: the Worker's typed-storage
-  // unavailable status, after the Worker's own query validation.
+  // Reconstruction progress defaults to the aggregate-only full-refresh
+  // reader; sourceless incremental counters remain explicitly unavailable.
   const progress = await dispatch("admin_reconstruction_progress",
     new Request(`${ORIGIN}/api/v1/admin/reconstruction-progress?detail=preparation`));
-  assert.equal(progress.status, 503);
-  assert.equal((await progress.json()).error.code, "BACKEND_STORAGE_UNAVAILABLE");
+  assert.equal(progress.status, 200);
+  assert.equal(progress.headers.get("cache-control"), "no-store");
+  const body = await progress.json();
+  assert.equal(body.schemaVersion, 4);
+  assert.deepEqual(body, await m.progress.readPostgresAdminReconstructionProgress({ pool, schema, nowEpoch: NOW_MS }));
 });

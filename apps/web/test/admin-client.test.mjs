@@ -27,6 +27,60 @@ const fixture = async (name) => JSON.parse(await readFile(
 
 const DAY_MILLISECONDS = 24 * 60 * 60 * 1_000;
 
+test("full-refresh progress preserves recorded evidence and unavailable counters", async () => {
+  const body = await fixture("admin-reconstruction-full-refresh-valid.json");
+  assert.deepEqual(projectAdminReconstructionProgress(body), body);
+  body.work.lastRun.state = "failed";
+  body.work.lastRun.kernelId = null;
+  assert.deepEqual(projectAdminReconstructionProgress(body), body);
+  body.pipeline.delivery.appliedSequence = null;
+  body.pipeline.delivery.pendingChanges = null;
+  body.pipeline.delivery.pendingOwnerActivations = null;
+  body.pipeline.daily.queuedDays = null;
+  body.pipeline.daily.oldestQueuedDay = null;
+  body.pipeline.daily.newestQueuedDay = null;
+  assert.deepEqual(projectAdminReconstructionProgress(body), body);
+  body.work.lastRun = null;
+  body.pipeline.ingestion.journalHead = null;
+  body.pipeline.ingestion.latestRecordedAt = null;
+  body.publication.preview = { state: "not_recorded", computedAt: null };
+  assert.deepEqual(projectAdminReconstructionProgress(body), body);
+});
+
+test("full-refresh projection rejects extra keys, guessed execution and contradictory evidence", async () => {
+  const original = await fixture("admin-reconstruction-full-refresh-valid.json");
+  const edits = [
+    body => { body.ownerId = "synthetic"; },
+    body => { body.graph.owners = 0; },
+    body => { body.history.status = "idle"; },
+    body => { body.work.currentState = "running"; },
+    body => { body.work.scheduleState = "enabled"; },
+    body => { body.work.lastRun.state = "running"; },
+    body => { body.work.lastRun.startedAt = null; },
+    body => { body.work.lastRun.finishedAt = "2026-10-10T00:00:00.000Z"; },
+    body => { body.work.lastRun.kernelId = 0; },
+    body => { body.work.lastRun.runId = "synthetic"; },
+    body => { body.work.nextScheduledAt = body.generatedAt; },
+    body => { body.generatedAt = null; },
+    body => { body.pipeline.ingestion.journalHead = null; },
+    body => { body.pipeline.delivery.appliedSequence = 13; },
+    body => { body.pipeline.delivery.appliedSequence = null; },
+    body => { body.pipeline.delivery.pendingChanges = null; },
+    body => { body.pipeline.delivery.pendingOwnerActivations = 3; },
+    body => { body.pipeline.delivery.current = null; },
+    body => { body.pipeline.daily.queuedDays = 0; },
+    body => { body.pipeline.daily.queuedDays = null; },
+    body => { body.pipeline.daily.oldestQueuedDay = "2026-10-11"; },
+    body => { body.publication.publishedDays = 0; },
+    body => { body.publication.preview.state = "not_recorded"; },
+  ];
+  for (const edit of edits) {
+    const body = structuredClone(original);
+    edit(body);
+    assert.throws(() => projectAdminReconstructionProgress(body), { code: "ADMIN_RECONSTRUCTION_PROGRESS_INVALID" });
+  }
+});
+
 test("admin read lanes are independent, single-flight, and reuse a pending request", async () => {
   let completeSlow;
   let slowReads = 0;
