@@ -50,7 +50,7 @@ async function seed(client, schema) {
       (id, namespace_id, owner_id, account_basis, account_track, plan_basis, plan_type_id, plan_era)
     VALUES ($1, 1, 1, 0, ''::bytea, 0, $2, ''::bytea)`, [legacyAttribution, await dictionary("pro")]);
   await client.query(`INSERT INTO ${s}.typed_telemetry_quota_dimensions (id, namespace_id, owner_id, plan_type_id, plan_variant_id)
-    VALUES (1, 1, 1, $1, $2)`, [await dictionary("promax"), await dictionary("unknown")]);
+    VALUES (1, 1, 1, $1, $2)`, [await dictionary("synthetic-unseen-plan"), await dictionary("unknown")]);
   const legacyRecord = async (id, stream, observedAt) => client.query(`INSERT INTO ${s}.typed_telemetry_records
       (id, namespace_id, format, source_row_id, owner_id, device_id, chunk_id, manifest_id, stream, occurrence_id,
        observed_at_ms, observed_day, provider_id, canonical_digest)
@@ -66,7 +66,7 @@ async function seed(client, schema) {
       legacyAttribution]);
   };
   await legacyUsage(1, "gpt-5.5", "standard", "standard");
-  await legacyUsage(2, "gpt-6.1-sol", "other", "priority");
+  await legacyUsage(2, "synthetic-unseen-model", "other", "priority");
   // Another day's unseen model never counts.
   await legacyUsage(3, "synthetic-other-day-model", "fast", "flex", at + 86_400_000);
   await legacyRecord(4, 2, at);
@@ -87,7 +87,7 @@ async function seed(client, schema) {
   await client.query(`INSERT INTO ${s}.telemetry_v12_typed_usage (record_id, session_id, model_id, speed_mode_id,
       api_service_tier_id, surface_id, billing_surface_id, reasoning_effort_id, agent_scope_id, outcome_id, attribution_id)
     VALUES ($1, $2, $3, $4, $5, $6, $6, $6, $6, $6, $7)`,
-  [usageId, Buffer.from("synthetic-session"), await dictionary("gpt-6.1-sol"), await dictionary("ultrafast"),
+  [usageId, Buffer.from("synthetic-session"), await dictionary("synthetic-unseen-model"), await dictionary("synthetic-unseen-speed"),
     await dictionary("standard"), await dictionary("unknown"), v12Attribution.id]);
   const quotaId = await v12Record(1, "quota");
   await client.query(`INSERT INTO ${s}.telemetry_v12_typed_quota (record_id, plan_type_id, plan_variant_id, limit_id, slot_id,
@@ -119,16 +119,16 @@ test("the probe's one read counts both typed families' tokens for exactly that d
     assert.deepEqual([report.dimensions.speed.unseenDistinct, report.dimensions.speed.sentinels.other], [1, 1]);
     assert.equal(report.dimensions.tier.unseenDistinct, 0);
     // Plans: the two legacy usage records' attribution (pro), the legacy
-    // quota's promax, and the v1.2 usage attribution and quota (plus).
+    // quota's unseen plan, and the v1.2 usage attribution and quota (plus).
     assert.deepEqual([report.dimensions.plan.records, report.dimensions.plan.unseenDistinct], [5, 1]);
-    assert.doesNotMatch(JSON.stringify(report), /gpt-6\.1-sol|ultrafast|promax|synthetic/u);
+    assert.doesNotMatch(JSON.stringify(report), /synthetic/u);
     // The default (owner, round 11) lists exactly that day's in-grammar unseen tokens.
     const listed = await runUnseenTokenProbe(client, { schema, day: DAY });
     assert.equal(listed.listing, "plain");
-    assert.deepEqual(listed.dimensions.model.unseen, [{ token: "gpt-6.1-sol", records: 2 }]);
-    assert.deepEqual(listed.dimensions.speed.unseen, [{ token: "ultrafast", records: 1 }]);
+    assert.deepEqual(listed.dimensions.model.unseen, [{ token: "synthetic-unseen-model", records: 2 }]);
+    assert.deepEqual(listed.dimensions.speed.unseen, [{ token: "synthetic-unseen-speed", records: 1 }]);
     assert.deepEqual(listed.dimensions.tier.unseen, []);
-    assert.deepEqual(listed.dimensions.plan.unseen, [{ token: "promax", records: 1 }]);
+    assert.deepEqual(listed.dimensions.plan.unseen, [{ token: "synthetic-unseen-plan", records: 1 }]);
     assert.doesNotMatch(JSON.stringify(listed), /synthetic-other-day-model|synthetic-session|synthetic-occurrence/u);
     const empty = await runUnseenTokenProbe(client, { schema, day: "2026-09-01" });
     assert.deepEqual([empty.verdict, empty.dimensions.model.records], ["clear", 0]);
