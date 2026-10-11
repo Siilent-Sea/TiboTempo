@@ -110,6 +110,7 @@ async function setup() {
     compatibility: await vite.ssrLoadModule("/src/telemetry-v11-compatibility.ts"),
     reconciliation: await vite.ssrLoadModule("/src/telemetry-usage-reconciliation.ts"),
     links: await vite.ssrLoadModule("/src/postgres-classification-links.ts"),
+    activation: await vite.ssrLoadModule("/src/postgres-classification-activation.ts"),
     oracle: await vite.ssrLoadModule("/postgres-test/fixtures/classification/activation-oracle.ts"),
     closureOracle: await vite.ssrLoadModule("/postgres-test/fixtures/classification/closure-oracle.ts"),
   };
@@ -1041,7 +1042,7 @@ async function runProof(prepare, context, input, { explain = false } = {}) {
 
 async function proofParity(context, format, principal, manifest, token, expected, label) {
   const input = await proofInput(context, format, principal, manifest, token);
-  const live = await runProof(modules.links.preparePostgresClassificationActivation, context, input, { explain: true });
+  const live = await runProof(modules.activation.preparePostgresClassificationActivation, context, input, { explain: true });
   const frozen = await runProof(modules.oracle.preparePostgresClassificationActivation, context, input);
   assert.equal(frozen.outcome, expected, `${label}: frozen outcome`);
   assert.equal(live.outcome, frozen.outcome, `${label}: outcome`);
@@ -1341,7 +1342,7 @@ test("session closure reads every usage row of a large session in numeric order"
     const input = await proofInput(context, 12, principal, manifest, predecessor.token);
     assert.equal((await runProof(modules.oracle.preparePostgresClassificationActivation, context, input)).outcome, ACCEPTED,
       "edca848 accepted: its text-ordered session pages never read the unknown tail");
-    assert.equal((await runProof(modules.links.preparePostgresClassificationActivation, context, input)).outcome, REFUSED);
+    assert.equal((await runProof(modules.activation.preparePostgresClassificationActivation, context, input)).outcome, REFUSED);
     await refused(context, principal, manifest);
   });
 });

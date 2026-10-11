@@ -1,4 +1,5 @@
-import { preparePostgresClassificationActivation, postgresClassificationLinkPredicate } from "./postgres-classification-links";
+import { preparePostgresClassificationActivation } from "./postgres-classification-activation";
+import { postgresClassificationLinkPredicate } from "./postgres-classification-links";
 import { PostgresClassificationCorrectionError } from "./postgres-classification-correction";
 /**
  * Live v1.1 telemetry admission on PostgreSQL (GCP fast path, IN-2).
