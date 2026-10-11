@@ -197,6 +197,7 @@ function fakeDocument() {
     "controls-form",
     "run-maintenance",
     "maintenance-result",
+    "pipeline-description",
   ].map((id) => [id, new FakeNode("div")]));
   byId.get("diagnostic-reference").value = "";
   byId.get("last-refresh").textContent = "Not loaded";
@@ -2122,6 +2123,7 @@ test("full-refresh panels render real recorded evidence without incremental grap
     const stages = documentRef.byId.get("pipeline-stages");
     await waitFor(() => stages.children.length === 3);
     assert.equal(documentRef.byId.get("pipeline-badge").textContent, "Snapshot available");
+    assert.match(documentRef.byId.get("pipeline-description").textContent, /One full analytics refresh consumes the journal cursor/u);
     assert.match(allText(stages.children[0]), /Ingestion journal .*12 Latest recorded change sequence/u);
     assert.match(allText(stages.children[1]), /Delivery into analytics .*2 journal changes after the refresh cursor/u);
     assert.match(allText(stages.children[2]), /2 publication rebuilds queued/u);

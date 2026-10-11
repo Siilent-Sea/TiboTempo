@@ -267,7 +267,7 @@ and an optional `pipeline` block (null when that block's read failed). The GCP
 origin returns the closed full-refresh version 4: journal head, bounded v1.2
 source counts and unconsumed activation authorizations; refresh cursor and
 pending journal changes; distinct queued days; daily publication heads and
-preview availability; and the last recorded run's start, finish, kernel and
+preview presence; and the last recorded run's start, finish, kernel and
 aggregate owner/owner-day counts. Both allowed query shapes return v4 on GCP.
 The PostgreSQL reader uses one REPEATABLE READ READ ONLY snapshot, 2-second
 statement and 500-millisecond lock timeouts, at most 100,001 pending journal

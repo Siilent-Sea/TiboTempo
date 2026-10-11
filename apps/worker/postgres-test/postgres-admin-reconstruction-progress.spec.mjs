@@ -193,7 +193,7 @@ test("queued v1/v1.1/v1.2 days, replacements, terminals and source scoping match
     await insert(client, "storage_v11_event_sources", { event_digest: "3".padStart(64, "0"), owner_digest: OWNER,
       participant_id: PARTICIPANT, device_id: DEVICE, generation_id: current, manifest_digest: "f".repeat(64),
       from_day: "2026-10-07", through_day: "2026-10-07", head_revision: 2, input_revision: 1, recorded_ms: NOW - 600_000 });
-    for (const [generation_id, observed_day, digest] of [["v12-old", "2026-10-07", "a"], ["v12-new", "2026-10-07", "a"],
+    for (const [generation_id, observed_day, digest] of [["v12-old", "2026-10-05", "a"], ["v12-new", "2026-10-05", "a"],
       ["v12-old", "2026-10-08", "b"], ["v12-new", "2026-10-10", "c"]]) {
       await insert(client, "telemetry_v12_domain_days", { generation_id, observed_day,
         manifest_id: `synthetic-${generation_id}-${observed_day}`, manifest_digest: digest.repeat(64) });

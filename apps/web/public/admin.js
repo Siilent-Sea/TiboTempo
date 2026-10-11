@@ -3668,12 +3668,12 @@ function pipelineAge(instant, nowMs) {
   return hours < 48 ? `${formatNumber(hours)} h ago` : `${formatNumber(Math.round(hours / 24))} days ago`;
 }
 
-function pipelineCard(label, value, lines, tone) {
+function pipelineCard(label, value, lines, tone, explanation = INFO_HINTS[label]) {
   const card = document.createElement("div");
   card.className = `admin-card admin-metric admin-pipeline-stage admin-pipeline-${tone}`;
   const number = document.createElement("strong");
   number.textContent = value;
-  card.append(labelWithInfo(label), number, ...lines.filter(Boolean).map((line) => {
+  card.append(labelWithInfo(label, explanation), number, ...lines.filter(Boolean).map((line) => {
     const caption = document.createElement("small");
     caption.textContent = line;
     return caption;
@@ -3688,6 +3688,13 @@ function renderPipeline(progress, { stale = false } = {}) {
   const stages = $("#pipeline-stages");
   const badge = $("#pipeline-badge");
   if (!stages || !badge) return;
+  const description = $("#pipeline-description");
+  if (description) {
+    description.dataset.incrementalCopy ??= description.textContent;
+    description.textContent = progress?.schemaVersion === 4
+      ? "Accepted changes are recorded in the ingestion journal. One full analytics refresh consumes the journal cursor and rebuilds daily publication and the graph. The cards show recorded source counts and journaled rebuilds. Current execution and incremental progress are unavailable."
+      : description.dataset.incrementalCopy;
+  }
   if (progress?.schemaVersion === 4) {
     renderFullRefreshPipeline(progress, stages, badge, stale);
     return;
@@ -3770,22 +3777,26 @@ function renderFullRefreshPipeline(progress, stages, badge, stale) {
       "Latest recorded change sequence",
       ingestion.latestRecordedAt === null ? "No journal head recorded" : `Latest ${formatReportingTime(ingestion.latestRecordedAt)}`,
       `${number(ingestion.v12Heads)} v1.2 heads · ${number(ingestion.v12Days)} stored source days`,
-      `${number(ingestion.pendingActivations)} unconsumed activation authorizations`,
+      ingestion.pendingActivations === null ? "Activation authorization count unavailable"
+        : countWith(ingestion.pendingActivations, "unconsumed activation authorization"),
     ], "clear"),
     pipelineCard("Delivery into analytics", number(delivery.pendingChanges), [
       "journal changes after the refresh cursor",
       delivery.appliedSequence === null ? "Delivery cursor unavailable" : `Applied through change ${formatNumber(delivery.appliedSequence)}`,
-      `${number(delivery.pendingOwnerActivations)} journaled owner activations pending`,
+      delivery.pendingOwnerActivations === null ? "Journaled owner activation count unavailable"
+        : `${countWith(delivery.pendingOwnerActivations, "journaled owner activation")} pending`,
       "Incremental delivery position unavailable on this service.",
-    ], delivery.pendingChanges === null ? "waiting" : delivery.pendingChanges === 0 ? "clear" : "busy"),
+    ], delivery.pendingChanges === null ? "waiting" : delivery.pendingChanges === 0 ? "clear" : "busy",
+    "Journal changes after the last full refresh's recorded cursor. The full refresh consumes this backlog; incremental delivery and active execution are unavailable."),
     pipelineCard("Daily publication", number(daily.queuedDays), [
       daily.queuedDays === null ? "Queued days unavailable: cursor unknown or read bound reached"
         : `${countWith(daily.queuedDays, "publication rebuild")} queued`,
       daily.oldestQueuedDay === null ? null : `${pipelineDay(daily.oldestQueuedDay)} – ${pipelineDay(daily.newestQueuedDay)}`,
       daily.lastReleasedAt === null ? "No publication recorded" : `Last published ${formatReportingTime(daily.lastReleasedAt)}`,
-      `${formatNumber(daily.releasedLastHour)} published heads released in the last hour`,
+      `${countWith(daily.releasedLastHour, "published head")} released in the last hour`,
       "Journaled days are rebuilt by the full analytics refresh.",
-    ], daily.queuedDays === null ? "waiting" : daily.queuedDays === 0 ? "clear" : "busy"),
+    ], daily.queuedDays === null ? "waiting" : daily.queuedDays === 0 ? "clear" : "busy",
+    "Distinct days named by journal changes after the refresh cursor, including replaced source days. They are rebuilt by a full refresh. An unknown cursor or exceeded read bound leaves the count unavailable."),
   );
   badge.textContent = stale ? "Stale · the latest read failed"
     : delivery.appliedSequence === null ? "Snapshot available · cursor unavailable" : "Snapshot available";
