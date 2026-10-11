@@ -15,6 +15,7 @@ const PAGE = 200;
 const HEX = /^[0-9a-f]{64}$/u;
 const MAX_LINK_PAGE_BYTES = 1_250_000;
 const MAX_VARIANT_LINKS = 40_000;
+const CLASSIFICATION_WORK_MEM = "64MB";
 function fail(): never { throw new PostgresClassificationCorrectionError(); }
 function t(s: string, name: string): string { return `${s}.${quotePostgresIdentifier(name)}`; }
 function hex(value: unknown): string {
@@ -223,27 +224,39 @@ function candidateSql(s: string, format: 11 | 12): string {
     LEFT JOIN ${t(s,"typed_telemetry_identifiers")} session ON session.id=usage.session_id
     WHERE record.format=11 AND manifest.participant_id=$2 AND manifest.device_id=$3 AND manifest.state='ready'
       AND manifest.chunk_day=day.day`;
-  return `SELECT record.id,CASE record.stream WHEN 'usage' THEN 1 WHEN 'session' THEN 3 ELSE 2 END AS stream,
+  // The device's chunks are a small keyed set; joining a materialized copy
+  // hashes them once instead of probing the chunk key per record (2026-10-11
+  // production: 2.75M probes, 22 s of a 36 s statement).
+  return `WITH candidate_chunks AS MATERIALIZED (SELECT id,device_id FROM ${t(s,"telemetry_v12_chunks")}
+      WHERE participant_id=$2 AND device_id=$3)
+    SELECT record.id,CASE record.stream WHEN 'usage' THEN 1 WHEN 'session' THEN 3 ELSE 2 END AS stream,
       record.occurrence_id,record.observed_at_ms,record.observed_day,record.canonical_digest,
       record.provider_id,usage.model_id,usage.session_id,chunk.device_id AS source_device_id
     FROM ${t(s,"telemetry_v12_typed_records")} record
-    JOIN ${t(s,"telemetry_v12_chunks")} chunk ON chunk.id=record.chunk_id
+    JOIN candidate_chunks chunk ON chunk.id=record.chunk_id
     JOIN candidate_days day ON day.manifest_id=record.manifest_id
     JOIN ${t(s,"telemetry_v12_day_manifests")} manifest ON manifest.id=record.manifest_id
     LEFT JOIN ${t(s,"telemetry_v12_typed_usage")} usage ON usage.record_id=record.id
-    WHERE chunk.participant_id=$2 AND chunk.device_id=$3 AND manifest.state='ready' AND manifest.chunk_day=day.day`;
+    WHERE manifest.state='ready' AND manifest.chunk_day=day.day`;
 }
 
 /** Every device's retained history of one format; a caller restricts it by source_device_id. */
 function oldSql(s: string, format: PostgresClassificationFormat): string {
-  if(format===12) return `SELECT record.id,CASE record.stream WHEN 'usage' THEN 1 WHEN 'session' THEN 3 ELSE 2 END AS stream,
+  // Both disjuncts below bind record.manifest_id to a head-day or predecessor
+  // manifest, so this implied prefilter only lets the scan start from those
+  // manifests instead of every retained v1.2 record; the predicate is unchanged.
+  if(format===12) return `WITH retained_v12_manifests AS MATERIALIZED (
+      SELECT day.manifest_id FROM ${t(s,"telemetry_v12_domain_heads")} head
+        JOIN ${t(s,"telemetry_v12_domain_days")} day ON day.generation_id=head.generation_id WHERE head.participant_id=$2
+      UNION SELECT bound.manifest_id FROM predecessor_days bound)
+    SELECT record.id,CASE record.stream WHEN 'usage' THEN 1 WHEN 'session' THEN 3 ELSE 2 END AS stream,
       record.occurrence_id,record.observed_at_ms,record.observed_day,record.canonical_digest,record.provider_id,usage.model_id,usage.session_id,
       chunk.device_id AS source_device_id
     FROM ${t(s,"telemetry_v12_typed_records")} record
     JOIN ${t(s,"telemetry_v12_chunks")} chunk ON chunk.id=record.chunk_id
     JOIN ${t(s,"telemetry_v12_day_manifests")} retained_manifest ON retained_manifest.id=record.manifest_id
     LEFT JOIN ${t(s,"telemetry_v12_typed_usage")} usage ON usage.record_id=record.id
-    WHERE chunk.participant_id=$2 AND (
+    WHERE record.manifest_id IN (SELECT manifest_id FROM retained_v12_manifests) AND chunk.participant_id=$2 AND (
       EXISTS (SELECT 1 FROM ${t(s,"telemetry_v12_domain_heads")} head
         JOIN ${t(s,"telemetry_v12_domain_days")} day ON day.generation_id=head.generation_id
         WHERE head.participant_id=$2 AND day.manifest_id=record.manifest_id)
@@ -258,16 +271,23 @@ function oldSql(s: string, format: PostgresClassificationFormat): string {
     : `JOIN ${t(s,"typed_v1_record_admissions")} admission ON admission.typed_record_id=record.id
        JOIN ${t(s,"telemetry_v1_chunks")} retained_chunk ON retained_chunk.id=admission.chunk_id AND retained_chunk.participant_id=$2
        AND retained_chunk.superseded_at IS NULL AND retained_chunk.accepted_record_count=retained_chunk.record_count`;
-  const accepted=format===11?`AND EXISTS (SELECT 1 FROM ${t(s,"telemetry_v11_domain_days")} retained_day
-       JOIN ${t(s,"storage_v11_event_sources")} receipt ON receipt.generation_id=retained_day.generation_id
-        AND receipt.participant_id=$2 AND receipt.device_id=${t(s,"typed_legacy_admission_decode_id")}(device.original_id)
-       WHERE retained_day.manifest_id=admission.manifest_id)`:"";
-  return `SELECT record.id,record.stream,record.occurrence_id,record.observed_at_ms,record.observed_day,
-      record.canonical_digest,record.provider_id,usage.model_id,session.value AS session_id,${t(s,"typed_legacy_admission_decode_id")}(device.original_id) AS source_device_id
+  // Acceptance depends only on (manifest, device), so it is decided once per
+  // accepted pair rather than per record, and each device id is decoded once
+  // (2026-10-11 production: 2.1M per-record probes, 64 s of a 163 s statement).
+  const accepted=format===11?`AND EXISTS (SELECT 1 FROM accepted_v11_sources accepted
+       WHERE accepted.manifest_id=admission.manifest_id AND accepted.device_id=device.source_device_id)`:"";
+  const acceptedCte=format===11?`,accepted_v11_sources AS MATERIALIZED (SELECT DISTINCT retained_day.manifest_id,receipt.device_id
+      FROM ${t(s,"telemetry_v11_domain_days")} retained_day
+      JOIN ${t(s,"storage_v11_event_sources")} receipt ON receipt.generation_id=retained_day.generation_id
+       AND receipt.participant_id=$2)`:"";
+  return `WITH decoded_devices AS MATERIALIZED (SELECT id,${t(s,"typed_legacy_admission_decode_id")}(original_id) AS source_device_id
+      FROM ${t(s,"typed_telemetry_devices")})${acceptedCte}
+    SELECT record.id,record.stream,record.occurrence_id,record.observed_at_ms,record.observed_day,
+      record.canonical_digest,record.provider_id,usage.model_id,session.value AS session_id,device.source_device_id
     FROM ${t(s,"typed_telemetry_records")} record
     JOIN ${t(s,"typed_telemetry_owner_memberships")} membership ON membership.namespace_id=record.namespace_id
       AND membership.owner_id=record.owner_id AND membership.source_format=record.format AND membership.participant_id=$2
-    JOIN ${t(s,"typed_telemetry_devices")} device ON device.id=record.device_id
+    JOIN decoded_devices device ON device.id=record.device_id
     LEFT JOIN ${t(s,"typed_telemetry_usage")} usage ON usage.record_id=record.id
     LEFT JOIN ${t(s,"typed_telemetry_identifiers")} session ON session.id=usage.session_id ${parent}
     WHERE record.format=${format} ${accepted}`;
@@ -413,12 +433,19 @@ export async function preparePostgresClassificationActivation(client: PostgresCl
   // A differing classification can never invent an owner link.
   const owner=ownership.length===1?ownership[0]!:null;
   if(ownership.length>1) fail();
+  // Multi-million-row sets otherwise hash in 4 MB batches (2026-10-11
+  // production: 63 s of spill in one statement). Transaction-local, restored
+  // once the proof passes; any refusal rolls the whole transaction back.
+  const workMem=(await client.query<{setting:string}>("SELECT current_setting('work_mem') AS setting")).rows[0]?.setting;
+  if(!workMem) fail();
+  await client.query("SELECT set_config('work_mem',$1,true)",[CLASSIFICATION_WORK_MEM]);
   const sets=new ClassificationWork(client,s,input);
   // Every pair joins a candidate row, so an empty candidate proves both pair
   // sets empty without reading history, as the per-page joins did.
   if(await sets.candidate()>0) await prepareClassificationPairs(client,s,input,owner,sets);
   await assertSessionClassificationClosure(client,s,input,sets);
   await sets.drop();
+  await client.query("SELECT set_config('work_mem',$1,true)",[workMem]);
 }
 
 async function prepareClassificationPairs(client: PostgresClient, s: string, input: PostgresClassificationActivation,
