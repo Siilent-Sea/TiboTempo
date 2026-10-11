@@ -181,3 +181,36 @@ Existing failed execution history is preserved. The two recorded
 ENABLED schedules were restored, maintenance first, during local qualification
 and preparation of a new commit-bound image. No origin migration or roll had
 occurred at this stopping point.
+
+## Initial live release and follow-up qualification
+
+The combined origin and managed Jobs rolled to
+`c5148225edcd9773e11b7ad2d83bce4f89521b90`, image
+`sha256:26e120b8ee7b888e1ba4dc15829aa0adaa73c6e96479695dbf4269500f7024de`.
+Public health and the guarded roll receipt verify that source/image binding.
+The edge remains `d06a2374cd6202895b0dabb5ec23b44d35dfdb47`; its retained public
+manifest hash is unchanged. Both previously enabled schedules were restored
+with their observed cadences, maintenance first. A fresh backup and migration
+receipt were bound to this candidate; no canonical migration changed.
+
+Authenticated live rendering shows the last recorded complete refresh at
+kernel 15, 54 owners and 2,620 owner-days. GitHub evidence includes v0.1.28 and
+the stale-snapshot attention item cleared. Queue parity did not qualify: the
+new pipeline reader returned journal head 9,999 and correctly withheld a cursor
+that appeared ahead, while overview reported 180 queued publication days.
+A synthetic PostgreSQL digit-boundary regression reproduced the reader's
+incorrect head (9,999 instead of 10,001). The head subquery's unqualified
+`ORDER BY sequence` resolves the text output expression. Qualifying
+`change.sequence` preserves numeric ordering; the cursor safety guard remains.
+The timestamp subquery is qualified as well. A follow-up origin release must
+prove live cursor, backlog and queue parity before those panels are qualified.
+
+The owner also assigned this chat integration and deployment of telemetry
+recovery commit `6aa004282deb4118ddd1a43c3f4e81970a113375`. The direct human
+instruction was verified in its source chat. Integrate into this owned release
+line and qualify a new candidate and compatible admin edge assets. Keep the
+task nested inside owner maintenance, preserve both existing admin readers,
+regenerate embedded assets, and retain the exact public release tree. This
+authorization does not include running telemetry preview, adoption, a backfill
+or a diagnostic job. Those recovery gates remain separately owner-approved.
+Do not reuse the initial release's commit/image/backup/migration bindings.

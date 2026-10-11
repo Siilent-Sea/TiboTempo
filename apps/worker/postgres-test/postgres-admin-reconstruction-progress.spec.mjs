@@ -140,6 +140,33 @@ test("normal refresh returns only recorded counts, timestamps and kernel attribu
   assert.doesNotMatch(JSON.stringify(body), /synthetic-admin-progress|participant:|device:|run_id|owner_digest|publication.*synthetic/u);
 });
 
+test("journal head uses numeric sequence ordering across digit boundaries and preserves queue parity", { skip }, async () => {
+  await fixture(async client => {
+    for (const sequence of [9, 10, 99, 100, 9_999, 10_000, 10_001]) await event(client, sequence);
+    await cursor(client, 10_000);
+    await client.query(`UPDATE ${q("storage_ingestion_changes")} SET recorded_ms=$1 WHERE sequence=10001`, [NOW - 60_000]);
+    const id = "chunk:00000000-0000-4000-8000-000000010001";
+    await insert(client, "telemetry_v1_chunks", { id, participant_id: PARTICIPANT, device_id: DEVICE,
+      stream: "usage", chunk_day: "2026-10-10", chunk_seq: 1, revision: 1,
+      chunk_digest: "a".repeat(64), envelope_digest: "c".repeat(64), parser_version: "synthetic",
+      record_count: 1, accepted_record_count: 1, r2_key: "synthetic/digit-boundary",
+      device_upload_authorization_id: "synthetic-digit-boundary", created_at: "2026-10-11T07:00:00.000Z" });
+    await insert(client, "typed_v1_event_sources", { event_digest: (10_001).toString(16).padStart(64, "0"),
+      owner_digest: OWNER, participant_id: PARTICIPANT, chunk_id: id, source_namespace: NAMESPACE });
+  });
+  const body = await read();
+  assert.deepEqual(projectAdminReconstructionProgress(body), body);
+  assert.equal(body.pipeline.ingestion.journalHead, 10_001);
+  assert.equal(body.pipeline.ingestion.latestRecordedAt, new Date(NOW - 60_000).toISOString());
+  assert.equal(body.pipeline.delivery.appliedSequence, 10_000);
+  assert.equal(body.pipeline.delivery.pendingChanges, 1);
+  assert.equal(body.pipeline.daily.queuedDays, 1);
+  assert.equal(body.pipeline.daily.oldestQueuedDay, "2026-10-10");
+  assert.equal(body.pipeline.daily.newestQueuedDay, "2026-10-10");
+  const summary = await overview({ pool, schema, env: ENV, nowEpoch: NOW });
+  assert.equal(body.pipeline.daily.queuedDays, summary.dailyPublication.pendingRebuilds);
+});
+
 test("an in-progress uncommitted refresh cannot become a guessed running or idle state", { skip }, async () => {
   await fixture(async client => { await run(client); await event(client, 1); await cursor(client, 1); });
   const writer = await pool.connect();

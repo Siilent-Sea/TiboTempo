@@ -125,12 +125,12 @@ export async function readPostgresAdminReconstructionProgress(input: {
       const metadata = await row(`WITH predecessors AS MATERIALIZED (
         SELECT consumed_at, expires_at FROM ${s}.telemetry_v12_domain_predecessors LIMIT $1
       ) SELECT
-        (SELECT sequence::text FROM ${s}.storage_ingestion_changes change
+        (SELECT change.sequence::text FROM ${s}.storage_ingestion_changes change
           JOIN ${s}.storage_source_state source ON source.singleton=1 AND source.source_id=change.source_id
-          ORDER BY sequence DESC LIMIT 1) AS head,
-        (SELECT recorded_ms::text FROM ${s}.storage_ingestion_changes change
+          ORDER BY change.sequence DESC LIMIT 1) AS head,
+        (SELECT change.recorded_ms::text FROM ${s}.storage_ingestion_changes change
           JOIN ${s}.storage_source_state source ON source.singleton=1 AND source.source_id=change.source_id
-          ORDER BY sequence DESC LIMIT 1) AS recorded_ms,
+          ORDER BY change.sequence DESC LIMIT 1) AS recorded_ms,
         (SELECT last_sequence::text FROM ${s}.analytics_v2_journal_cursor WHERE id=1) AS cursor,
         (SELECT count(*)::text FROM (SELECT 1 FROM ${s}.telemetry_v12_domain_heads LIMIT $1) heads) AS v12_heads,
         (SELECT count(*)::text FROM (SELECT 1 FROM ${s}.telemetry_v12_domain_days LIMIT $1) days) AS v12_days,
