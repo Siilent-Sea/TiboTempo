@@ -229,4 +229,24 @@ test("the injected admin action forces a fresh snapshot and keeps its audit and 
   assert.equal(audits[0].action, "sync_distribution");
   assert.equal(audits[0].outcome, "success");
   assert.equal(JSON.parse(audits[0].details_json).code, "GITHUB_SYNCED");
+
+  const failedAt = at + 60_000;
+  const failingHandlers = consoleRoutes.createAdminConsoleHandlers({
+    requestContext: store.accessor, clock: () => failedAt, env: Object.freeze({ ENVIRONMENT: "production" }),
+    pools: { primary: pool }, schemaOptions: { primarySchema: schema },
+    maintenance: host.createLifecyclePassMaintenance({ pool, primarySchema: schema, objectStore: {},
+      distributionEnabled: true, clock: () => failedAt,
+      fetcher: async () => { throw new Error("synthetic private upstream detail"); } }),
+  });
+  const failed = await failingHandlers.get("admin_action")(register(request({ origin: "https://admin.example.invalid",
+    "sec-fetch-site": "same-origin", "x-usage-monitor-admin": "1" })));
+  assert.equal(failed.status, 503);
+  const failedBody = await failed.json();
+  assert.equal(failedBody.error.code, "DISTRIBUTION_SYNC_UNAVAILABLE");
+  assert.equal(JSON.stringify(failedBody).includes("synthetic private upstream detail"), false);
+  assert.deepEqual(await counts(), { manifests: 2, releases: 4, assets: 4 });
+  const failures = (await pool.query(`SELECT outcome, details_json FROM ${q}.admin_action_audit WHERE outcome = 'failure'`)).rows;
+  assert.equal(failures.length, 1);
+  assert.equal(JSON.parse(failures[0].details_json).code, "GITHUB_UNAVAILABLE");
+  assert.equal((await state()).last_attempted_at.toISOString(), new Date(failedAt).toISOString());
 });

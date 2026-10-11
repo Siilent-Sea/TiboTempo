@@ -74,7 +74,7 @@ trigger:
 | Job | Trigger |
 |---|---|
 | `production-migrate` (OPS-10, manual) | none |
-| `analytics-refresh` | `scheduler.analytics-refresh`: the owner's cadence (decision D3), `null` until decided |
+| `analytics-refresh` | `scheduler.analytics-refresh`: **03:00 UTC, `0 3 * * *`**, committed |
 | `maintenance` | `scheduler.maintenance`: **every minute, `* * * * *`**, pinned |
 
 The maintenance job runs C-MAINT's MP-2-lite lifecycle pass

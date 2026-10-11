@@ -127,6 +127,31 @@ test("skipped, refused and failed passes never call GitHub", async () => {
   }
 });
 
+test("a complete staging pass performs no GitHub work and refuses a job token", async () => {
+  const events = [];
+  const stagingEnv = { ...env(), CLOUD_RUN_JOB: "tibotattle-staging-maintenance",
+    TELEMETRY_STORAGE_NAMESPACE: "synthetic-staging-namespace",
+    PRIMARY_INSTANCE_CONNECTION_NAME: "synthetic:us-east1:staging-primary",
+    GCS_BUCKET_NAME: "synthetic-staging-quarantine",
+    GCS_QUARANTINE_BUCKET_HISTORY_PROOF: JSON.stringify({ bucket: "synthetic-staging-quarantine",
+      bucketGeneration: "1700000000000001", bucketMetageneration: "1", softDeleteRetentionDurationSeconds: "0" }),
+    PUBLIC_ORIGIN: "https://staging.example.invalid", ADMIN_HOST_ORIGIN: "https://admin.staging.example.invalid",
+    ACCESS_TEAM_DOMAIN: "synthetic.cloudflareaccess.com", ACCESS_AUD: "a".repeat(64),
+    ACCESS_ADMIN_EMAIL: "owner@example.invalid", IDENTITY_LINK_SECRET_VERSION: "staging-v1",
+    GOOGLE_OIDC_CLIENT_ID: "123456789012-syntheticstaging.apps.googleusercontent.com",
+    DISTRIBUTION_GITHUB_API_TOKEN: "synthetic-staging-github-credential" };
+  await assert.rejects(job.runPostgresMaintenanceJob({ argv: ["--profile=staging-maintenance-job"], env: stagingEnv,
+    dependencies: dependencies(events, "complete", async () => { throw new Error("must not sync staging"); }) }),
+  { code: "DISTRIBUTION_GITHUB_API_TOKEN_PROFILE_FORBIDDEN" });
+  assert.deepEqual(events, []);
+  delete stagingEnv.DISTRIBUTION_GITHUB_API_TOKEN;
+  const result = await job.runPostgresMaintenanceJob({ argv: ["--profile=staging-maintenance-job"], env: stagingEnv,
+    dependencies: dependencies(events, "complete", async () => { throw new Error("must not sync staging"); }) });
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.receipt.githubDistributionSync, null);
+  assert.deepEqual(events, ["lifecycle", "pool.end", "connector.close"]);
+});
+
 test("maintenance reveals an optional opaque token only to the sync adapter", async () => {
   const events = [];
   const secret = "synthetic-github-credential";

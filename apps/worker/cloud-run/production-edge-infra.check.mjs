@@ -44,8 +44,8 @@ const PRE_INTEGRATION = process.env.PRODUCTION_EDGE_INFRA_PRE_INTEGRATION === "1
 
 // Mirrors CR-3's REQUIRED_SECRET_NAMES and OPTIONAL_SECRET_NAMES; a test
 // below compares them with CR-3's exports. The template carries every name:
-// an optional secret is omitted only at render time, when its version
-// renders empty.
+// production omits the optional GitHub token at render time even when pinned,
+// because only the maintenance job consumes it.
 const REQUIRED_SECRET_NAMES = Object.freeze([
   "IDENTITY_LINK_SECRET",
   "POSTGRES_RATE_LIMIT_SECRET",
@@ -787,8 +787,7 @@ function renderServiceTemplate(text, values, grammars = SERVICE_VALUE_GRAMMARS) 
   if (!Array.isArray(audiences) || audiences.length !== 1 || audiences[0] !== audience) {
     renderError("RENDER_CUSTOM_AUDIENCE_MISMATCH");
   }
-  container.env = container.env.filter((entry) => !OPTIONAL_SECRET_NAMES.includes(entry.name)
-    || entry.valueFrom.secretKeyRef.key !== "");
+  container.env = container.env.filter((entry) => !OPTIONAL_SECRET_NAMES.includes(entry.name));
   return service;
 }
 
@@ -1516,10 +1515,7 @@ test("rendering fills every placeholder into a digest-pinned, audience-bound spe
   assert.equal(env.get("GCS_BUCKET_NAME").value, SYNTHETIC_SERVICE_VALUES.GCS_BUCKET_NAME);
   assert.deepEqual(env.get("IDENTITY_LINK_SECRET").valueFrom.secretKeyRef,
     { name: "IDENTITY_LINK_SECRET", key: "1" });
-  assert.deepEqual(env.get("DISTRIBUTION_GITHUB_API_TOKEN").valueFrom.secretKeyRef, {
-    name: "DISTRIBUTION_GITHUB_API_TOKEN",
-    key: SYNTHETIC_SERVICE_VALUES.SECRET_VERSION_DISTRIBUTION_GITHUB_API_TOKEN,
-  });
+  assert.equal(env.has("DISTRIBUTION_GITHUB_API_TOKEN"), false);
   for (const entry of container.env.filter((item) => item.valueFrom !== undefined)) {
     assert.match(entry.valueFrom.secretKeyRef.key, /^[1-9][0-9]*$/u, entry.name);
   }
@@ -1531,13 +1527,15 @@ test("rendering fills every placeholder into a digest-pinned, audience-bound spe
     .find((entry) => entry.name === "EDGE_ORIGIN_VERIFIER_SERVICE_ACCOUNTS").value, "");
 });
 
-test("an optional secret is omitted only when its version renders empty", () => {
+test("production omits the maintenance-only token with a pinned or empty version", () => {
   const name = "DISTRIBUTION_GITHUB_API_TOKEN";
-  const service = renderServiceTemplate(SERVICE_TEXT,
-    { ...SYNTHETIC_SERVICE_VALUES, [`SECRET_VERSION_${name}`]: "" });
-  const names = service.spec.template.spec.containers[0].env.map((entry) => entry.name);
-  assert.equal(names.includes(name), false);
-  for (const required of REQUIRED_SECRET_NAMES) assert.equal(names.includes(required), true, required);
+  for (const version of [SYNTHETIC_SERVICE_VALUES[`SECRET_VERSION_${name}`], ""]) {
+    const service = renderServiceTemplate(SERVICE_TEXT,
+      { ...SYNTHETIC_SERVICE_VALUES, [`SECRET_VERSION_${name}`]: version });
+    const names = service.spec.template.spec.containers[0].env.map((entry) => entry.name);
+    assert.equal(names.includes(name), false);
+    for (const required of REQUIRED_SECRET_NAMES) assert.equal(names.includes(required), true, required);
+  }
   // A required secret never renders empty, so it can never be omitted.
   assert.throws(() => renderServiceTemplate(SERVICE_TEXT,
     { ...SYNTHETIC_SERVICE_VALUES, SECRET_VERSION_IDENTITY_LINK_SECRET: "" }),

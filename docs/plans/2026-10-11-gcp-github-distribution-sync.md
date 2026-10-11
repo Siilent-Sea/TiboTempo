@@ -9,8 +9,11 @@ Port the snapshot writer from D1 to the PostgreSQL production line based on
 `2fd6d050d29e15db69de91effeb7355592136294`. Work only in this isolated
 branch. Merge the captured integration tip
 `67281641501800cde114f4a425761fbcc53267d2` locally before the final gates.
-No push, deployment, production read, Secret Manager write or migration is
-authorized.
+No push, deployment, production read, Secret Manager write or remote migration
+is authorized. The port commit is `e961113e3`; the captured integration tip was
+merged at `3659bc8a87d391cde96bebcc06d78b81146fccac`. Subsequent changes qualify
+the integrated candidate and update this handoff. The final branch is
+`codex/gcp-github-distribution-20261011`.
 
 Acceptance:
 
@@ -47,18 +50,50 @@ maintenance. There is no new migration, retention change or analytics registry
 entry. The maintenance receipt advances to `postgres-maintenance-job-v2` with
 the closed `githubDistributionSync` result, independent of lifecycle status.
 
-Local evidence before integration:
+Local evidence on 2026-10-11 (Node.js 26.2.0, PostgreSQL 17.10):
 
 | Check | Result |
 |---|---|
-| Local PostgreSQL 17.10 spec | 8 passed, no skipped cases; synthetic inventory and mocked fetch |
-| Focused Cloud Run/admin checks | 65 passed |
-| Infra/configuration checks | 70 passed, including maintenance-only optional mount |
+| Local PostgreSQL distribution/visibility/production-host specs | 18 passed, no skipped cases after integration; updated distribution spec rerun: 8 passed, including forced-sync success and failure audits |
+| Full Cloud Run `npm --prefix cloud-run run check` | Passed after rebuilding dist: 568 passed, 4 existing PostgreSQL-dependent cases skipped; all 8 new distribution checks ran |
+| Full `npm run gcp:ops:infra:check` | 377 passed, no skipped cases; maintenance-only optional mount and reference-renderer parity |
 | D1 distribution regressions | 40 passed |
 | Worker type check | Passed |
 | Root preflight and architecture | Passed |
 | Cloud Run build | Passed, unchanged kernel 16, compute closure `d2e867213fe9656f6edf91d0ac991cb293a323f3b2cd84af7d79c0ac431f39f4` |
-| Full Cloud Run gate on original base | Refused by pre-existing test-migration pins (expected 77; current primary manifest 79). Captured integration tip fixes these pins; rerun after merge |
+| Root `pnpm test` | 6,084 passed, 48 skipped, 13 failed; 12 failures reproduced on an untouched archive of integration tip `6728164`. The remaining idle-collector timing case passed separately on both candidate and baseline |
+
+The original base's full Cloud Run gate refused stale test-migration pins
+(expected 77, primary manifest 79). The captured integration tip fixes those
+pins. Infra qualification also aligned the independent reference renderer with
+maintenance-only credentials and repaired an old monitoring assertion for the
+now-committed 03:00 UTC cadence; the synthetic unset-cadence case remains.
+
+Root baseline failures are three accounting/plan-display cases, one speed-mode
+case, four telemetry retry cases, two protected R7 receipt-provenance cases,
+and two import scanners that cannot parse the unchanged
+`analytics-v2-test/allowance-projection.spec.ts`. No R7 artifacts were regenerated
+and no unrelated source or tests were relaxed. Root preflight and architecture
+checks pass separately; the broad root suite is not green.
+
+Reproduce the scoped gates from `apps/worker`:
+
+```bash
+node cloud-run/build.mjs
+npm --prefix cloud-run run check
+npm run gcp:ops:infra:check
+npm run typecheck
+npm exec -- vitest run test/github-distribution-history.spec.ts \
+  test/distribution-analytics.spec.ts test/distribution-analytics-split.spec.ts
+PG_TEST_SOCKET=<private-local-PG17-socket> PG_TEST_PORT=<port> node --test --test-concurrency=1 \
+  postgres-test/postgres-github-distribution-sync.spec.mjs \
+  postgres-test/github-distribution-manifest-visibility.spec.mjs \
+  postgres-test/postgres-production-host.spec.mjs
+```
+
+All inventory tests use synthetic fixtures and injected fetch; no real release
+responses or counters are fixtures. Production desired-state JSON, migration
+bytes and analytics registry are unchanged from the integration tip.
 
 These prove source and local synthetic behavior. Production state, rendering
 and rollout remain owner-only checks. The disposable cluster contains only
@@ -82,10 +117,26 @@ Owner steps, after reviewing and integrating this candidate:
      --commit="$rollout_commit" --authorize="build:production:$rollout_commit" --execute
    ```
 
-4. Follow [GCP rollout](../runbooks/gcp-rollout.md) to capture a fresh backup
+4. Use the current source flags in `scripts/gcp-production-rollout.mjs` and the
+   [GCP rollout procedure](../runbooks/gcp-rollout.md) to capture a fresh backup
    audit, pause and drain the plane's triggers, and capture the live edge. Record
    both triggers' actual pre-pause states; the committed bootstrap `PAUSED`
-   values are not evidence of their live state. The existing rollout CLI requires
+   values are not evidence of their live state. These are the committed trigger
+   names; read them before pausing and save the owner-only results:
+
+   ```bash
+   gcloud scheduler jobs describe tibotattle-maintenance-trigger --location=us-east1 --project=tibotattle-prod
+   gcloud scheduler jobs describe tibotattle-analytics-refresh-trigger --location=us-east1 --project=tibotattle-prod
+   ```
+
+   Pause each trigger recorded ENABLED before this roll, and wait for both Jobs
+   to drain:
+
+   ```bash
+   gcloud scheduler jobs pause <previously-enabled-trigger-name> --location=us-east1 --project=tibotattle-prod
+   ```
+
+   The existing rollout CLI requires
    a **fresh migrate receipt matching this exact commit and digest**, even with
    an unchanged migration manifest. Its owner-run `migrate` verb should apply no
    new DDL for this port; do not relabel or reuse a receipt for another image.
@@ -105,9 +156,17 @@ Owner steps, after reviewing and integrating this candidate:
 
    Replace angle-bracket placeholders before running. The roll moves the origin
    and maintenance job together and executes a maintenance pass before its
-   serving-commit check. Resume only the previously enabled plane triggers using
-   the current owner scheduler procedure; keep maintenance every minute and
-   analytics refresh at 03:00 UTC. Never resume an intentionally paused trigger.
+   serving-commit check. Resume only the previously enabled plane triggers,
+   maintenance first. For each trigger recorded ENABLED before this roll, use:
+
+   ```bash
+   gcloud scheduler jobs resume <previously-enabled-trigger-name> --location=us-east1 --project=tibotattle-prod
+   ```
+
+   Keep maintenance every minute and analytics refresh at 03:00 UTC. Never
+   resume an intentionally paused trigger. `gcp-infra.mjs resume-all` requires
+   committed ENABLED state; this candidate retains the bootstrap PAUSED values,
+   so it is not a substitute for that recorded owner decision.
 5. **Post-roll acceptance:** verify the served commit and maintenance's v2
    receipt; `githubDistributionSync.code` should be `GITHUB_SYNCED` (or fresh
    with a matching completed snapshot), while lifecycle stays complete/partial
