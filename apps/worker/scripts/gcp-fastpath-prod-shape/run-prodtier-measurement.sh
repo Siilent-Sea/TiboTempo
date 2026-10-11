@@ -1,7 +1,7 @@
 #!/bin/zsh
 # MEAS-SYNTH production-tier cloud measurement: the full-recompute analytics
 # refresh over the PRODUCTION-SHAPED synthetic corpus on a DISPOSABLE Cloud
-# SQL instance of production's shape (db-custom-4-16384, PostgreSQL 17,
+# SQL instance of production's shape (db-custom-2-12288, PostgreSQL 17,
 # dedicated cores), in the TEST project `tibotattle` only. Never production
 # or staging. This script issues no gcloud command itself: every remote call
 # goes through scripts/gcp-fastpath-test-deploy.mjs (D), whose builders pin

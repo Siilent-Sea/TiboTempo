@@ -47,7 +47,7 @@ export function createTelemetryV11DayManifestRouteModules(dependencies) {
       if (request.method === "POST") {
         await deps.assertCollectionControl(deps.primaryPool, deps.schema.primarySchema, "processing");
         const body = await readBoundedJson(request, deps.readBoundedRequestBody, deps.maxRequestBytes);
-        const candidate = await deps.registerDayManifest(deps.primaryPool, principal, body.value, Date.now(), options);
+        const candidate = await deps.registerDayManifest(deps.primaryPool, principal, body.value, deps.clock(), options);
         const stagedChunks = await deps.readDayChunkVector(deps.primaryPool, principal, candidate.manifestId, options);
         return jsonResponse(201, { ...candidate, stagedChunks });
       }

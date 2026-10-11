@@ -1393,7 +1393,16 @@ function builderImageOf(text) {
 const BUILD_REFUSED_FIELDS = Object.freeze([
   "buildTriggerId", "secrets", "availableSecrets", "approval", "gitConfig", "dependencies",
 ]);
-const BUILD_OPTION_KEYS = new Set(["logging", "sourceProvenanceHash", "requestedVerifyOption", "pool"]);
+const BUILD_OPTION_KEYS = new Set([
+  "logging", "sourceProvenanceHash", "requestedVerifyOption", "pool", "workerRelease",
+]);
+/**
+ * Worker host releases a build may report in options.workerRelease. Cloud Build
+ * now reads back `legacy` (Docker Engine 20.10, Debian 11), its default until
+ * 2027-03-28, when the default becomes the `regular` channel. Any other channel
+ * or version is a different build host and stays unqualified until reviewed.
+ */
+const BUILD_WORKER_RELEASES = new Set(["legacy"]);
 
 function stepImageDigest(value) {
   const match = typeof value === "string" ? /(?:@)?(sha256:[0-9a-f]{64})$/u.exec(value) : null;
@@ -1412,8 +1421,9 @@ function archiveHashValues(archiveSha256) {
  * as the test build's assessCloudBuildProvenance checks its own (that one is
  * bound to the test target): the build's identity (UUID id, projectId and
  * regional name), no trigger, secret, approval or dependency fields, status
- * SUCCESS under the builder service account, the reviewed options
- * (CLOUD_LOGGING_ONLY, sourceProvenanceHash [SHA256], VERIFIED), the single
+ * SUCCESS under the builder service account, only the reviewed options
+ * (CLOUD_LOGGING_ONLY, sourceProvenanceHash [SHA256], VERIFIED, an empty pool
+ * and the legacy workerRelease, the last two when read back), the single
  * pinned docker step with its exact arguments and the step image's resolved
  * digest, a storage source in the project's default Cloud Build bucket under
  * its source/ prefix (BUILD-SOURCE) whose resolved generation equals it, and
@@ -1439,7 +1449,8 @@ export function assessProductionBuild(build, { target, commit, builderImage, arc
       || options.logging !== "CLOUD_LOGGING_ONLY"
       || canonicalJson(options.sourceProvenanceHash) !== canonicalJson(["SHA256"])
       || options.requestedVerifyOption !== "VERIFIED"
-      || (options.pool !== undefined && !hasExactKeys(options.pool, []))) {
+      || (options.pool !== undefined && !hasExactKeys(options.pool, []))
+      || (options.workerRelease !== undefined && !BUILD_WORKER_RELEASES.has(options.workerRelease))) {
     unqualified();
   }
   const steps = build.steps;

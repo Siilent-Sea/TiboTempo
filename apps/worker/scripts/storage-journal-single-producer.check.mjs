@@ -94,6 +94,14 @@ const IDENTIFIER_RELATION = /^\$\{(?:[^`{}]*[(,]\s*)?([A-Za-z_$][\w$]*)\s*\)?\s*
  *   new journal-only SQLite file in the owner directory, in
  *   buildJournalSqlite's layout, written 0400. JOURNAL_TRANSFER reads that
  *   file; this module never opens PostgreSQL.
+ *   scripts/gcp-fastpath-prod-shape/seal-sqlite.mjs (MEAS-SYNTH):
+ *   sealSqliteFromSqlite's one prepared node:sqlite INSERT copies every
+ *   populated table of a seeded USAGE_MONITOR_DB SQLite (attached read-only),
+ *   storage_ingestion_changes included, into a new sealed source file that it
+ *   writes 0444 for the importer chain. writeJournalDump only reads the
+ *   journal. The module never opens PostgreSQL; a production-shape import's
+ *   PostgreSQL journal rows come only from JOURNAL_TRANSFER, through the
+ *   rehearsal importer chain's journal stage.
  *   scripts/postgres-production-telemetry-modes.mjs (D-PT5A): its one computed
  *   write is the chunk-registration hook's INSERT into pending_objects. It
  *   names the journal only in the 'ingestion-journal' table spec and in
@@ -105,6 +113,7 @@ const IDENTIFIER_RELATION = /^\$\{(?:[^`{}]*[(,]\s*)?([A-Za-z_$][\w$]*)\s*\)?\s*
 const REVIEWED_DYNAMIC_WRITERS = new Map([
   ["scripts/gcp-fastpath-rehearsal.mjs", 1],
   ["scripts/cutover-source-projections.mjs", 1],
+  ["scripts/gcp-fastpath-prod-shape/seal-sqlite.mjs", 1],
   ["scripts/postgres-production-telemetry-modes.mjs", 1],
 ]);
 

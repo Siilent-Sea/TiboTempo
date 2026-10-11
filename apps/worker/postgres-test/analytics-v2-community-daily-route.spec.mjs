@@ -94,7 +94,6 @@ async function loadModules() {
     v13: await vite.ssrLoadModule("/src/analytics-v2/public-allowance-breakdowns-v13.ts"),
     v14: await vite.ssrLoadModule("/src/analytics-v2/public-allowance-breakdowns-v14.ts"),
     v15: await vite.ssrLoadModule("/src/analytics-v2/public-allowance-breakdowns-v15.ts"),
-    currentMetadata: await vite.ssrLoadModule("/src/analytics-v2/public-model-metadata-current.ts"),
     projection: await vite.ssrLoadModule("/src/analytics-v2/allowance-projection.ts"),
     kernel: await vite.ssrLoadModule("/src/analytics-v2/kernel.ts"),
     repriceRead: await vite.ssrLoadModule("/src/analytics-v2/reprice-read.ts"),
@@ -556,10 +555,21 @@ function expectedAllowanceBreakdowns() {
   };
 }
 
-/** The current presentation block v1.4 and v1.5 responses carry (b89f5fc5). */
-function expectedCurrentModelConfig() {
-  return modules.currentMetadata.buildCurrentPublicModelMetadata();
-}
+/**
+ * The current public model metadata v1.4 and v1.5 responses carry (b89f5fc56):
+ * the reviewed current catalog (reviewed-model-catalog-2026-09-29.1), written
+ * out so the route is held to an expectation rather than to its own builder.
+ * v1.3 keeps manifest-0001's.
+ */
+const CURRENT_MODEL_CONFIG = Object.freeze([
+  { id: "gpt-6-astra", label: "GPT-6 Astra", family: "astra", order: 0 },
+  { id: "gpt-6.1-sol", label: "GPT-6.1 Sol", family: "sol", order: 1 },
+  { id: "gpt-6-sol", label: "GPT-6 Sol", family: "sol", order: 2 },
+  { id: "gpt-6-luna", label: "GPT-6 Luna", family: "luna", order: 3 },
+  { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", family: "terra", order: 4 },
+  { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", family: "sol", order: 5 },
+  { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", family: "luna", order: 6 },
+]);
 
 /** Hand-derived retained Pro 10x contract; the legacy expected HTTP bytes stay frozen. */
 function expectedRetainedPro10AllowanceBreakdowns() {
@@ -580,7 +590,7 @@ function expectedRetainedPro10AllowanceBreakdowns() {
         plus: index === 0 ? EMPTY_SUMMARY : { ...day.byPlanType.plus, centralUsd: 600 },
       },
     })),
-    modelConfig: expectedCurrentModelConfig(),
+    modelConfig: CURRENT_MODEL_CONFIG,
   };
 }
 
@@ -598,7 +608,7 @@ function expectedCurrentAllowanceBreakdowns() {
       byPlanType: { pro: day.byPlanType.pro, prolite: day.byPlanType.prolite, promax: EMPTY_SUMMARY,
         plus: day.byPlanType.plus },
     })),
-    modelConfig: expectedCurrentModelConfig(),
+    modelConfig: CURRENT_MODEL_CONFIG,
   };
 }
 
@@ -759,7 +769,7 @@ test("breakdowns v1.4: a retained Pro 10x preview keeps its plan amounts and eve
   const expected = { ...expectedResponse(), allowanceBreakdowns: expectedRetainedPro10AllowanceBreakdowns() };
   assert.equal(text, JSON.stringify(expected));
   const { base, metadata } = modules.v14.reducePublicAllowanceBreakdownsV14(JSON.parse(text).allowanceBreakdowns);
-  assert.deepEqual(metadata, expectedCurrentModelConfig());
+  assert.deepEqual(metadata, CURRENT_MODEL_CONFIG);
   assert.equal(base.schemaVersion, "community-allowance-breakdowns-v1.2");
   assert.deepEqual(base.days[2].byPlanType.promax, EMPTY_SUMMARY);
   for (const secret of [OWNER_A, OWNER_B, "synthetic-participant", "capacityByPlanType"]) {
@@ -778,7 +788,7 @@ test("breakdowns v1.5: the current B' preview serves the Pro 20x amounts with Pr
   assert.equal(text, JSON.stringify(expected));
   const served = JSON.parse(text).allowanceBreakdowns;
   const { base, metadata } = modules.v15.reducePublicAllowanceBreakdownsV15(served);
-  assert.deepEqual(metadata, expectedCurrentModelConfig());
+  assert.deepEqual(metadata, CURRENT_MODEL_CONFIG);
   // Only the block is declared: the base keeps the v1.5 label, never v1.2 or v1.3.
   assert.equal(base.schemaVersion, "community-allowance-breakdowns-v1.5");
   for (const day of served.days) {

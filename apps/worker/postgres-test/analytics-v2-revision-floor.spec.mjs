@@ -141,10 +141,12 @@ test("the migration is additive and pins every trigger function's search_path", 
   assert.deepEqual(functions.map((row) => row.proname), ["analytics_v2_published_daily_above_floor",
     "analytics_v2_revision_floor_immutable", "analytics_v2_revision_floor_insert_guard"]);
   for (const row of functions) assert.ok(row.proconfig?.some((entry) => entry.startsWith("search_path=")), row.proname);
-  // The floor trigger on the published heads is its own trigger, apart from 0059's forward-only one.
+  // The floor trigger on the published heads is its own trigger, apart from 0059's forward-only one
+  // and 0077's publication log.
   const triggers = (await pool.query(`SELECT tgname FROM pg_trigger WHERE tgrelid = $1::regclass AND NOT tgisinternal
       ORDER BY tgname`, [q(schema, "analytics_v2_published_daily")])).rows.map((row) => row.tgname);
-  assert.deepEqual(triggers, ["analytics_v2_published_daily_above_floor", "analytics_v2_published_daily_forward_only"]);
+  assert.deepEqual(triggers, ["analytics_v2_log_publication", "analytics_v2_published_daily_above_floor",
+    "analytics_v2_published_daily_forward_only"]);
 });
 
 test("the floor is immutable, ordered (days, then the singleton that summarizes them) and refused after a publication", { skip }, async () => {

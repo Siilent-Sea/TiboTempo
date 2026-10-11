@@ -236,16 +236,19 @@ function validateCreatedOperation(operation, config) {
   ]);
   const source = build.source?.storageSource;
   const step = Array.isArray(build.steps) && build.steps.length === 1 ? build.steps[0] : null;
+  // Cloud Build fills in an empty pool and its default worker host release,
+  // `legacy` until 2027-03-28; any other release is a different build host.
   const allowedOptions = isRecord(build.options)
     && hasOnlyKeys(build.options, new Set([
-      "logging", "sourceProvenanceHash", "requestedVerifyOption", "pool",
+      "logging", "sourceProvenanceHash", "requestedVerifyOption", "pool", "workerRelease",
     ]))
     && build.options.logging === "CLOUD_LOGGING_ONLY"
     && Array.isArray(build.options.sourceProvenanceHash)
     && build.options.sourceProvenanceHash.length === 1
     && build.options.sourceProvenanceHash[0] === "SHA256"
     && build.options.requestedVerifyOption === "VERIFIED"
-    && (build.options.pool === undefined || exactRecord(build.options.pool, {}));
+    && (build.options.pool === undefined || exactRecord(build.options.pool, {}))
+    && (build.options.workerRelease === undefined || build.options.workerRelease === "legacy");
   const stepArgs = [
     "build",
     "--file=apps/worker/cloud-run/Dockerfile",

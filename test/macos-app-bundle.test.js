@@ -8918,7 +8918,7 @@ macOSArtifactTest("reproducible ad-hoc-signed app passes orderly and launcher-SI
     );
     assert.equal(
       accountingProbe.stdout,
-      "provider-neutral-api-price-equivalent-v0.2",
+      "provider-neutral-api-price-equivalent-v0.3",
     );
     const identityCoreProbe = spawnSync(node, [
       "--input-type=module",

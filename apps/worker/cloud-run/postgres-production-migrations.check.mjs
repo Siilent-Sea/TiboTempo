@@ -461,7 +461,11 @@ test("the promoted primary tail 0001-0078 is classified once and pinned in CONTR
   // (0069) drop the manifest_version defaults they add: reviewed, one entry.
   // KM-CORE's catalog store (0070), REV-SEED's revision floor (0071),
   // K-PERCARD's price cards (0072) and E-OWNERSET's owner sets (0073) are
-  // additive: no entry.
+  // additive: no entry. The reprice tables (0077) are additive too: their one
+  // trigger on an existing table, analytics_v2_published_daily, logs the
+  // replaced head AFTER UPDATE, and every publication advances the revision,
+  // so a previous revision's writes cannot collide in the log. The
+  // classification link lookup indexes (0078) are additive: no entry.
   const RUN_STAMPS = "0069_analytics_v2_run_stamps.sql";
   const DISTRIBUTION_VISIBILITY = "0075_github_distribution_manifest_visibility.sql";
   assert.deepEqual(primary.filter(({ version }) => version > residue.version).map(({ name }) => name), [
@@ -623,7 +627,7 @@ test("a non-scratch target needs the SIMP residue in the image manifest; refused
     isCode("PRODUCTION_SIMP_RESIDUE_MISSING"));
   assert.deepEqual(refused.counts, { identity: 1, manifest: 1, pools: 0, apply: 0, closes: 0 });
   assert.deepEqual(refused.events, []);
-  // The real 76-migration manifest is accepted for a non-scratch target.
+  // The real 78-migration manifest is accepted for a non-scratch target.
   const accepted = harness();
   const receipt = await runProductionMigrations({ env, dependencies: accepted.dependencies });
   assert.equal(receipt.target.kind, "environment");
