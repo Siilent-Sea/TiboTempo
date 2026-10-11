@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { copyFile, lstat, mkdir, mkdtemp, realpath, rm, stat } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
@@ -16,9 +16,9 @@ import {
 } from "@app-usagemonitor/telemetry-contract";
 import { applyPostgresMigrations, readPostgresMigrations } from "../scripts/postgres-migrations.mjs";
 import analyticsV2Config from "../vitest.analytics-v2.config.mjs";
+import { postgresTestEndpoint } from "./staged-migrations-harness.mjs";
 
 const PG_TEST_SOCKET = process.env.PG_TEST_SOCKET;
-const PG_TEST_PORT = Number(process.env.PG_TEST_PORT ?? "55567");
 const WORKER_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SOURCE_ID = "synthetic-classification-source";
 const DAY_ONE = "2026-10-01";
@@ -48,18 +48,13 @@ const sha256Hex = value => createHash("sha256").update(value).digest("hex");
 
 async function setup() {
   if (pool) return;
-  assert.match(PG_TEST_SOCKET ?? "", /^\/private\/tmp\/tibotattle-pg-[^/]+\/socket$/u);
-  assert.equal(PG_TEST_PORT, 55567, "this bounded gate uses only the coordinator-reserved port");
-  const link = await lstat(PG_TEST_SOCKET);
-  const host = await realpath(PG_TEST_SOCKET);
-  const metadata = await stat(host);
-  assert.equal(link.isSymbolicLink(), false);
-  assert.equal(metadata.isDirectory(), true);
-  assert.ok(host.startsWith("/private/tmp/tibotattle-pg-"));
-  assert.equal(metadata.mode & 0o077, 0);
-  assert.equal(metadata.uid, process.getuid());
-  pool = new pg.Pool({ host, port: PG_TEST_PORT, user: process.env.PG_TEST_USER || "postgres",
-    password: process.env.PG_TEST_PASSWORD || "synthetic-local-only", database: process.env.PG_TEST_DATABASE || "postgres",
+  // The shared harness requires a private /private/tmp/tibotattle-pg-* socket
+  // directory owned by this user (no link, mode 0700) and a valid port.
+  const endpoint = await postgresTestEndpoint({ PG_TEST_SOCKET, PG_TEST_PORT: process.env.PG_TEST_PORT,
+    PG_TEST_USER: process.env.PG_TEST_USER, PG_TEST_DATABASE: process.env.PG_TEST_DATABASE,
+    PG_TEST_PASSWORD: process.env.PG_TEST_PASSWORD });
+  assert.ok(endpoint?.host?.startsWith("/private/tmp/tibotattle-pg-"), "a private local PostgreSQL socket");
+  pool = new pg.Pool({ ...endpoint,
     application_name: "pg-classification-correction-bounded", ssl: false, max: 2, connectionTimeoutMillis: 5_000 });
   pool.on("connect", client => {
     const query = client.query.bind(client);
@@ -961,7 +956,7 @@ test("migration76 is a forward-only addition to the current75 ledger and fences 
     assert.ok((await pool.query("SELECT to_regclass($1)::text AS name", [`${schema}.telemetry_classification_correction_links`])).rows[0].name);
     await applyPostgresMigrations({role:"primary",schema,pool});
     const history=(await pool.query(`SELECT * FROM "${schema}"."_tibotattle_migration_history" ORDER BY version`)).rows;
-    assert.equal(history.length,76);
+    assert.equal(history.length,migrations.length);
     assert.deepEqual(history.slice(0,75),oldHistory);
   } finally {
     await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
