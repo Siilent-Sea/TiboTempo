@@ -93,6 +93,10 @@ const REGISTRY_PINS = Object.freeze([
   // later proof changes stay outside the closure; overlay reads and pricing
   // identity unchanged.
   "c661f21794fd5321f94bfcd5fdaa75a4e2184bd9cd6c0725213d244171773da0",
+  // Kernel 16: Pro 20x-equivalent B' allowance projection (preview v0.5,
+  // breakdowns v1.5) beside the retained Pro 10x v0.4 contract; pricing
+  // identity unchanged.
+  "871135e33844da3f2142da76da1429d0cd02a1b0544c1eba264680ce47a8447f",
 ]);
 const ENTRY_KEYS = ["computeClosureSha256", "kernelId", "methodVersion", "priceRegistrySha256", "priceRegistryVersion",
   "productionCommit", "vendorManifestSha256"];
@@ -230,6 +234,29 @@ test("saved-cohort repricing decisions change the compute class without changing
     assert.equal(mutated.pricingMethodVersion, identity.pricingMethodVersion);
     await assert.rejects(entryFor(mutated), { code: "CLOUD_RUN_BUILD_KERNEL_UNREGISTERED" });
   }
+});
+
+test("the allowance projection decides the stored preview: compute class changes, pricing class does not", async () => {
+  const identity = await identityWith();
+  // B' (preview v0.5, breakdowns v1.5) and the retained v0.4/v1.4 contract
+  // live in these modules; each is a compute-closure input of the refresh Job.
+  for (const module of ["src/admin-community-allowance.ts", "src/community-allowance.ts",
+    "src/public-allowance-breakdowns.ts", "src/analytics-v2/allowance-projection.ts",
+    "src/analytics-v2/public-allowance-breakdowns-v15.ts"]) {
+    const target = join(WORKER_ROOT, ...module.split("/"));
+    assert.ok(identity.names.includes(`apps/worker/${module}`), `${module} decides the stored preview`);
+    const mutated = await identityWith(async (path, ...rest) => {
+      const bytes = await readFile(path, ...rest);
+      return path === target ? Buffer.concat([Buffer.from(bytes), Buffer.from("\n// allowance projection mutation\n")]) : bytes;
+    });
+    assert.notEqual(mutated.computeClosureSha256, identity.computeClosureSha256, module);
+    assert.notEqual(mutated.computeSha256, identity.computeSha256, module);
+    assert.equal(mutated.pricerSha256, identity.pricerSha256, `${module} is outside the pure pricing class`);
+    assert.equal(mutated.pricingMethodVersion, identity.pricingMethodVersion);
+    await assert.rejects(entryFor(mutated), { code: "CLOUD_RUN_BUILD_KERNEL_UNREGISTERED" });
+  }
+  // The route's current-presentation metadata is origin-only, never a closure input.
+  assert.equal(identity.names.includes("apps/worker/src/analytics-v2/public-model-metadata-current.ts"), false);
 });
 
 test("a change to the community fold, the occurrence reader or the owner-set reader is a closure no entry names, and the build refuses it", async () => {

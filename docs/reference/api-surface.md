@@ -173,7 +173,7 @@ validators are mutually exclusive by schema version. Neither schema
 relabelling nor dividing an old combined median converts a stored preview to
 another meaning. Raw `pro` fits and history remain continuous; normalization
 joins the derived projection identity, while the raw fit identity is
-unchanged. Analytics kernel 15 and a completed preview recomputation are
+unchanged. Analytics kernel 16 and a completed preview recomputation are
 required before v1.5 values can be served; the public reader and admin client
 must accept v1.5 and v0.5 first, then the origin, then the Jobs. This source
 contract does not claim a production rollout.
