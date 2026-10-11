@@ -59,6 +59,7 @@ const INSTALL_COMMANDS = Object.freeze(["npm --prefix apps/worker ci", "npm --pr
 const SPLIT_PRODUCTION_TOOLING = "postgres:production-migrations:check";
 const OFFLINE_PRODUCTION_TOOLING = Object.freeze([
   "gcp:production-rollout:check",
+  "gcp:barrier-capture:check",
   "gcp:ops:infra:check",
   "postgres:cutover-seal:check",
 ]);
@@ -600,8 +601,8 @@ function productionToolingFailures(workflow, { localCheck, migrationsCheck, clou
     }
   }
   const pgFiles = rest.flatMap(nodeTestFiles);
-  if (!(pgFiles.length === 1 && pgFiles[0].startsWith("./postgres-test/"))) {
-    failures.push(`${SPLIT_PRODUCTION_TOOLING} no longer ends with one PostgreSQL-backed spec`);
+  if (!(pgFiles.length > 0 && pgFiles.every((file) => file.startsWith("./postgres-test/")))) {
+    failures.push(`${SPLIT_PRODUCTION_TOOLING} no longer ends with PostgreSQL-backed specs only`);
   }
   if (!/EXTRA_REGISTRATION_SCRIPTS = Object\.freeze\(\[[^\]]*"postgres:production-migrations:check"/u.test(suite)) {
     failures.push(`the PostgreSQL 17 suite does not register ${SPLIT_PRODUCTION_TOOLING}'s spec`);
@@ -843,6 +844,8 @@ test("hosted CI contract: a missing, extra or unclassified production-tooling ch
   assert.match(productionToolingFailures(workflow, unregistered).join("\n"), /does not register/u);
   const reshaped = { ...inputs, migrationsCheck: "node --test ./postgres-test/postgres-production-migrations.spec.mjs" };
   assert.match(productionToolingFailures(workflow, reshaped).join("\n"), /no longer starts with an offline/u);
+  const offlineTail = { ...inputs, migrationsCheck: `${inputs.migrationsCheck} ./scripts/other.check.mjs` };
+  assert.match(productionToolingFailures(workflow, offlineTail).join("\n"), /no longer ends with PostgreSQL-backed specs only/u);
 
   // An offline check that starts reading the PostgreSQL profile is not offline.
   const [firstFile] = [...inputs.offlineSources.keys()];
