@@ -198,6 +198,7 @@ function fakeDocument() {
     "controls-form",
     "run-maintenance",
     "maintenance-result",
+    "pipeline-description",
   ].map((id) => [id, new FakeNode("div")]));
   byId.get("diagnostic-reference").value = "";
   byId.get("last-refresh").textContent = "Not loaded";
@@ -2112,6 +2113,66 @@ test("unavailable overview prevents actions and transient history failures are v
     await documentRef.byId.get("run-maintenance").listeners.get("click")();
     assert.deepEqual(writes, []);
     assert.equal(documentRef.byId.get("operator-attention-badge").textContent, "Stale · refresh unavailable");
+  });
+});
+
+test("full-refresh panels render real recorded evidence without incremental graph claims", async () => {
+  const overview = await fixture("admin-overview-valid.json");
+  const progress = await fixture("admin-reconstruction-full-refresh-valid.json");
+  overview.dailyPublication.pendingRebuilds = 2;
+  await withAdminPage(async path => path === ADMIN_READ_PATHS[3] ? response(progress) : healthyAdminRead(path, overview), async documentRef => {
+    const stages = documentRef.byId.get("pipeline-stages");
+    await waitFor(() => stages.children.length === 3);
+    assert.equal(documentRef.byId.get("pipeline-badge").textContent, "Snapshot available");
+    assert.match(documentRef.byId.get("pipeline-description").textContent, /One full analytics refresh consumes the journal cursor/u);
+    assert.match(allText(stages.children[0]), /Ingestion journal .*12 Latest recorded change sequence/u);
+    assert.match(allText(stages.children[1]), /Delivery into analytics .*2 journal changes after the refresh cursor/u);
+    assert.match(allText(stages.children[2]), /2 publication rebuilds queued/u);
+    assert.equal(documentRef.byId.get("admin-reconstruction-status").textContent, "Last recorded refresh complete");
+    const text = reconstructionText(documentRef);
+    assert.match(text, /Refresh kernel 16/u);
+    assert.match(text, /Recorded owners \/ owner-days 2 \/ 4/u);
+    assert.match(text, /Published daily heads 3/u);
+    assert.match(text, /Current execution Unavailable/u);
+    assert.match(text, /scheduler state unavailable/u);
+    assert.match(text, /Incremental graph \/ history counters Unavailable/u);
+    assert.doesNotMatch(text, /Up to date|0 of 0|results remaining|Updating/u);
+    assert.doesNotMatch(allText(documentRef.byId.get("operator-attention")), /Graph reconstruction progress: unavailable/u);
+  });
+});
+
+test("full-refresh unknown cursor, missing runs and failed reads never become zeros or idle", async () => {
+  const overview = await fixture("admin-overview-valid.json");
+  const progress = await fixture("admin-reconstruction-full-refresh-valid.json");
+  Object.assign(progress.pipeline.delivery, { appliedSequence: null, pendingChanges: null, pendingOwnerActivations: null });
+  Object.assign(progress.pipeline.daily, { queuedDays: null, oldestQueuedDay: null, newestQueuedDay: null });
+  progress.work.lastRun = null;
+  let fail = false;
+  await withAdminPage(async path => path === ADMIN_READ_PATHS[3]
+    ? fail ? unavailableResponse() : response(progress) : healthyAdminRead(path, overview), async documentRef => {
+    const stages = documentRef.byId.get("pipeline-stages");
+    await waitFor(() => stages.children.length === 3);
+    assert.match(allText(stages.children[1]), /Delivery into analytics .*Unavailable/u);
+    assert.match(allText(stages.children[2]), /Daily publication .*Unavailable/u);
+    assert.equal(documentRef.byId.get("admin-reconstruction-status").textContent, "No refresh recorded");
+    assert.doesNotMatch(reconstructionText(documentRef), /Up to date|0 \/ 0|Updating/u);
+    const before = allText(stages);
+    fail = true;
+    documentRef.byId.get("refresh").listeners.get("click")();
+    await waitFor(() => documentRef.byId.get("pipeline-badge").textContent === "Stale · the latest read failed");
+    assert.equal(allText(stages), before);
+    assert.match(reconstructionText(documentRef), /Progress read unavailable/u);
+  });
+});
+
+test("a failed recorded full refresh is visible in its panel and operator attention", async () => {
+  const overview = await fixture("admin-overview-valid.json");
+  const progress = await fixture("admin-reconstruction-full-refresh-valid.json");
+  progress.work.lastRun.state = "failed";
+  await withAdminPage(async path => path === ADMIN_READ_PATHS[3] ? response(progress) : healthyAdminRead(path, overview), async documentRef => {
+    await waitFor(() => documentRef.byId.get("admin-reconstruction-status").textContent === "Last recorded refresh failed");
+    assert.match(allText(documentRef.byId.get("operator-attention")), /Last recorded analytics refresh failed/u);
+    assert.match(reconstructionText(documentRef), /Graph preview Recorded/u);
   });
 });
 

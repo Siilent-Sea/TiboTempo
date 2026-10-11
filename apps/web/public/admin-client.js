@@ -307,6 +307,7 @@ export function projectAdminReconstructionProgress(value) {
   const nullableCount = value => value === null ? null : count(value, code);
   const nullableEnum = (value, values) => value === null ? null : enumValue(value, new Set(values), code);
   const candidate = record(value, code);
+  if (candidate.schemaVersion === 4) return projectFullRefreshProgress(candidate, code, closed, nullableTime);
   if (![1, 2, 3].includes(candidate.schemaVersion)) invalid(code);
   // v3 keeps every v2 key and adds `graph`; `preparation` becomes optional
   // there, so a v2 payload relabelled as v3 still fails the closed-key check.
@@ -386,6 +387,68 @@ export function projectAdminReconstructionProgress(value) {
       : {}),
     ...(hasPipeline ? { pipeline: projectPipeline(progress.pipeline, code, closed, nullableTime) } : {}),
   });
+}
+
+/** Full-refresh origin evidence. Unobserved execution and incremental counters
+ * have closed unavailable states; missing cursors and bounded totals are null. */
+function projectFullRefreshProgress(candidate, code, closed, nullableTime) {
+  const nullableCount = value => value === null ? null : count(value, code);
+  const nullableDay = value => value === null ? null : calendarDay(value, code);
+  const unavailable = value => {
+    if (closed(value, ["status"]).status !== "unavailable") invalid(code);
+    return Object.freeze({ status: "unavailable" });
+  };
+  const progress = closed(candidate, ["schemaVersion", "generatedAt", "pipeline", "publication", "work", "history", "graph"]);
+  const pipeline = closed(progress.pipeline, ["ingestion", "delivery", "daily"]);
+  const ingestion = closed(pipeline.ingestion, ["journalHead", "latestRecordedAt", "v12Heads", "v12Days", "pendingActivations"]);
+  const delivery = closed(pipeline.delivery, ["appliedSequence", "pendingChanges", "pendingOwnerActivations", "current"]);
+  const daily = closed(pipeline.daily, ["queuedDays", "oldestQueuedDay", "newestQueuedDay", "lastReleasedAt", "releasedLastHour"]);
+  const publication = closed(progress.publication, ["publishedDays", "latestEvidenceDay", "preview"]);
+  const preview = closed(publication.preview, ["state", "computedAt"]);
+  const work = closed(progress.work, ["currentState", "lastRun", "nextScheduledAt", "scheduleState"]);
+  if (work.currentState !== "unavailable" || work.scheduleState !== "unavailable") invalid(code);
+  let lastRun = null;
+  if (work.lastRun !== null) {
+    const run = closed(work.lastRun, ["state", "startedAt", "finishedAt", "kernelId", "owners", "ownerDays"]);
+    lastRun = Object.freeze({
+      state: enumValue(run.state, new Set(["complete", "failed"]), code),
+      startedAt: nullableTime(run.startedAt), finishedAt: nullableTime(run.finishedAt),
+      kernelId: run.kernelId === null ? null : positiveInteger(run.kernelId, code),
+      owners: count(run.owners, code), ownerDays: count(run.ownerDays, code),
+    });
+    if (lastRun.startedAt === null || lastRun.finishedAt === null || lastRun.finishedAt < lastRun.startedAt) invalid(code);
+  }
+  const projected = Object.freeze({
+    schemaVersion: 4, generatedAt: nullableTime(progress.generatedAt),
+    pipeline: Object.freeze({
+      ingestion: Object.freeze({ journalHead: nullableCount(ingestion.journalHead), latestRecordedAt: nullableTime(ingestion.latestRecordedAt),
+        v12Heads: nullableCount(ingestion.v12Heads), v12Days: nullableCount(ingestion.v12Days), pendingActivations: nullableCount(ingestion.pendingActivations) }),
+      delivery: Object.freeze({ appliedSequence: nullableCount(delivery.appliedSequence), pendingChanges: nullableCount(delivery.pendingChanges),
+        pendingOwnerActivations: nullableCount(delivery.pendingOwnerActivations), current: unavailable(delivery.current) }),
+      daily: Object.freeze({ queuedDays: nullableCount(daily.queuedDays), oldestQueuedDay: nullableDay(daily.oldestQueuedDay),
+        newestQueuedDay: nullableDay(daily.newestQueuedDay), lastReleasedAt: nullableTime(daily.lastReleasedAt), releasedLastHour: count(daily.releasedLastHour, code) }),
+    }),
+    publication: Object.freeze({ publishedDays: count(publication.publishedDays, code), latestEvidenceDay: nullableDay(publication.latestEvidenceDay),
+      preview: Object.freeze({ state: enumValue(preview.state, new Set(["recorded", "unavailable", "not_recorded"]), code), computedAt: nullableTime(preview.computedAt) }) }),
+    work: Object.freeze({ currentState: "unavailable", lastRun, nextScheduledAt: nullableTime(work.nextScheduledAt), scheduleState: "unavailable" }),
+    history: unavailable(progress.history), graph: unavailable(progress.graph),
+  });
+  const { ingestion: head, delivery: sent, daily: queue } = projected.pipeline;
+  const previewRead = projected.publication.preview;
+  if (projected.generatedAt === null || projected.work.nextScheduledAt === null
+      || projected.work.nextScheduledAt <= projected.generatedAt
+      || (head.journalHead === null) !== (head.latestRecordedAt === null)
+      || (sent.appliedSequence !== null && sent.appliedSequence > (head.journalHead ?? 0))
+      || (sent.appliedSequence === null && (sent.pendingChanges !== null || queue.queuedDays !== null))
+      || (sent.pendingChanges === null) !== (sent.pendingOwnerActivations === null)
+      || (sent.pendingChanges === null && queue.queuedDays !== null)
+      || (sent.pendingChanges !== null && sent.pendingOwnerActivations > sent.pendingChanges)
+      || ((queue.queuedDays === null || queue.queuedDays === 0) !== (queue.oldestQueuedDay === null))
+      || (queue.oldestQueuedDay === null) !== (queue.newestQueuedDay === null)
+      || (queue.oldestQueuedDay !== null && queue.oldestQueuedDay > queue.newestQueuedDay)
+      || (projected.publication.publishedDays === 0) !== (projected.publication.latestEvidenceDay === null)
+      || (previewRead.state === "not_recorded") !== (previewRead.computedAt === null)) invalid(code);
+  return projected;
 }
 
 /** Where analytics processing stands, as counts, UTC days and instants only.
