@@ -21,6 +21,7 @@ import {
   classifyFailureDetail,
   deriveFileProfile,
   EDGE_E2E_GOLDEN_VARIABLE,
+  EDGE_E2E_NODE_FLAGS,
   EDGE_E2E_NODE_VARIABLE,
   EDGE_E2E_NODE_VERSION,
   evaluatePostgresSuite,
@@ -788,7 +789,7 @@ function fakeSuiteRunner({ plan, skipFile = null, prerequisiteExit = 0 }) {
     calls.push({ command, args, cwd, env: { ...env }, captureStdout });
     if (command === EDGE_NODE) {
       if (args[0] === "./cloud-run/build.mjs") return { exitCode: prerequisiteExit, stdout: "" };
-      assert.equal(args[0], "--test");
+      assert.deepEqual(args.slice(0, EDGE_E2E_NODE_FLAGS.length + 1), [...EDGE_E2E_NODE_FLAGS, "--test"]);
     } else {
       assert.equal(command, process.execPath);
     }
@@ -880,8 +881,8 @@ test("the runner sends each file to its routed profile and never sets PG_TEST_PA
   const edgeCalls = calls.filter(({ command }) => command === EDGE_NODE);
   assert.deepEqual(edgeCalls.map(({ args }) => args), [
     ["./cloud-run/build.mjs"],
-    ["--test", "--test-concurrency=1", "--test-reporter=tap", `./${EDGE_SPEC}`],
-  ], "EDGE_E2E runs last, through edge:e2e's own steps, under the image runtime");
+    ["--experimental-strip-types", "--test", "--test-concurrency=1", "--test-reporter=tap", `./${EDGE_SPEC}`],
+  ], "EDGE_E2E runs last, through edge:e2e's own steps, under the image runtime with type stripping");
   assert.ok(calls.indexOf(edgeCalls[0]) > calls.findLastIndex(({ env }) => env.PG_TEST_HOST !== undefined));
   for (const call of edgeCalls) {
     assert.equal(call.env.PG_TEST_SOCKET, SOCKET);

@@ -25,7 +25,8 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { access, copyFile, mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
+import { IMAGE_NODE } from "./image-node.mjs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -1910,7 +1911,7 @@ test("(f) --now is refused without the test-clock flag, before any database work
   }
 });
 
-const NODE_22 = join(homedir(), ".nvm/versions/node/v22.16.0/bin/node");
+const NODE_22 = IMAGE_NODE;
 
 test("the source entry runs --help and refuses --now under Node v22.16.0", async () => {
   const binary = NODE_22;
@@ -4734,7 +4735,7 @@ test("PG17: the time guard refuses with a receipt before the deadline and writes
 test("the source entry prints a deadline refusal's figures and exits 1, before any connection", { timeout: 120_000 }, async () => {
   // A one-minute task leaves no time after the exit margin and the write: it
   // is refused at the start, before modules, pools or the lock.
-  const node22 = join(homedir(), ".nvm/versions/node/v22.16.0/bin/node");
+  const node22 = IMAGE_NODE;
   const available = await access(node22).then(() => true, () => false);
   assert.ok(available, "Node v22.16.0 is required for the image runtime check");
   const result = await execFileAsync(node22,

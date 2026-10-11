@@ -1171,7 +1171,7 @@ describe.skipIf(!PG_TEST_SOCKET)("D-PT5A stages on a database created with the e
     seal = await readCutoverSeal({ manifestPath, expectedSealId: result.sealId });
     try {
       cluster = await createW2SealCluster({ socket: PG_TEST_SOCKET, port: PG_TEST_PORT, user: PG_TEST_USER,
-        password: PG_TEST_PASSWORD, database: PG_TEST_DATABASE, count: 2, label: "ptfivenc", collations: [null, "en_US.UTF-8"] });
+        password: PG_TEST_PASSWORD, database: PG_TEST_DATABASE, count: 2, label: "ptfivenc", collations: ["C", "en_US.UTF-8"] });
       usable = true;
     } catch (error) {
       if (!/locale/iu.test(String(error?.message))) throw error;

@@ -47,11 +47,13 @@ const NODE_PLAN = Object.freeze({
   "cloud-run-check": Object.freeze([TOOLCHAIN_NODE]),
   "postgres-17-suite": Object.freeze([IMAGE_NODE, TOOLCHAIN_NODE]),
 });
-// Every job checks out depth 1 except the Cloud Run check, which runs the
-// cutover seal check. That check reads pinned commits (the restore-base
-// generator commit and the Cloudflare production line) as git objects and
-// fails as an environment gap without them, so this job needs full history.
-const FETCH_DEPTH = Object.freeze({ "worker-gate": 1, "cloud-run-check": 0, "postgres-17-suite": 1 });
+// The Worker gate checks out depth 1. The Cloud Run check runs the cutover
+// seal check, which reads pinned commits (the restore-base generator commit
+// and the Cloudflare production line) as git objects and fails as an
+// environment gap without them. The PostgreSQL 17 suite runs the
+// READ-EXPANSION specs, which `git archive` their pinned base commit
+// (scripts/gcp-read-expansion-ab.mjs DEFAULT_BASE). Both need full history.
+const FETCH_DEPTH = Object.freeze({ "worker-gate": 1, "cloud-run-check": 0, "postgres-17-suite": 0 });
 const INSTALL_COMMANDS = Object.freeze(["npm --prefix apps/worker ci", "npm --prefix apps/worker/cloud-run ci"]);
 // The components of gcp:production-tooling:local-check. The first is split: its
 // offline half runs inside the Cloud Run check and its PostgreSQL-backed spec in
