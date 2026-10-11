@@ -83,12 +83,12 @@ const V11_ADOPTION_MAX_PAGES = 200;
 const V11_ADOPTION_PREVIEW_TTL_MILLISECONDS = 15 * 60 * 1_000;
 const V11_ADOPTION_ROWS = Object.freeze([
   ["adopted", "Activated"],
-  ["adoptable", "Can be activated"],
+  ["adoptable", "Eligible for activation checks"],
   ["unchanged", "Already current"],
   ["client_syncing", "Syncing now, left to the app"],
   ["successor_active", "On v1.2, left to the app"],
   ["authority_unavailable", "No current sharing authority"],
-  ["unsupported_history", "Older upload history, not supported"],
+  ["unsupported_history", "History outside this recovery scope"],
   ["no_contiguous_days", "No complete consecutive days"],
   ["refused", "Refused by database checks"],
 ]);
@@ -4144,6 +4144,7 @@ async function runV11Adoption(dryRun, onProgress) {
     refusals: {}, daysCovered: 0, newDays: 0, keptAcceptedDays: 0,
   };
   let after = null;
+  const seenCursors = new Set();
   try {
     do {
       const page = projectV11EvidenceAdoption(await request("/api/v1/admin/action", {
@@ -4163,10 +4164,14 @@ async function runV11Adoption(dryRun, onProgress) {
       total.daysCovered += page.daysCovered;
       total.newDays += page.newDays;
       total.keptAcceptedDays += page.keptAcceptedDays;
-      // The service pages by strictly increasing participant. Anything else
-      // would repeat or skip devices, so stop instead of following it.
-      if (page.nextAfterParticipantId !== null && after !== null && page.nextAfterParticipantId <= after) {
-        throw new AdminResponseError("ADMIN_ACTION_INVALID");
+      // PostgreSQL cursors are opaque capabilities, so ciphertext has no
+      // lexical ordering. Retain the D1 ordering guard and reject repetitions
+      // in both modes; the existing page cap also bounds any cursor cycle.
+      if (page.nextAfterParticipantId !== null) {
+        if (seenCursors.has(page.nextAfterParticipantId)
+            || (after !== null && !page.nextAfterParticipantId.startsWith("pg1.")
+              && page.nextAfterParticipantId <= after)) throw new AdminResponseError("ADMIN_ACTION_INVALID");
+        seenCursors.add(page.nextAfterParticipantId);
       }
       after = page.nextAfterParticipantId;
       onProgress(total);
@@ -4390,7 +4395,7 @@ if (isAdminPage) {
       if (adoptable > 0) $("#apply-v11-adoption").textContent = `Activate ${countWith(adoptable, "device")}`;
       $("#v11-adoption-status").textContent = [
         adoptable > 0
-          ? `Preview: ${countWith(adoptable, "device")} can be activated, adding ${countWith(total.newDays, "new day")}.`
+          ? `Preview: ${countWith(adoptable, "device")} eligible for activation checks, with ${countWith(total.newDays, "new day")}.`
           : "Preview: nothing to activate.",
         total.truncated ? `The preview stopped after ${countWith(total.pages, "page")}.` : "",
         "Nothing was changed.",

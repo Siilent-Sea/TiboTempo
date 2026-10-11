@@ -62,6 +62,65 @@ after(async () => {
   await vite?.close();
 });
 
+test("activation observations distinguish success, replay, unchanged and safe refusals without identifiers", async () => {
+  const { createTelemetryActivationObserver } = await vite.ssrLoadModule("/src/telemetry-activation-observation.ts");
+  const events = [];
+  let now = Date.parse("2026-10-11T12:00:00.000Z");
+  const observe = createTelemetryActivationObserver(event => events.push(event), () => now += 5);
+  const secretResult = { generationId: "synthetic-private-generation", participantId: "synthetic-private-owner",
+    token: "synthetic-private-token", replay: false };
+  assert.equal(await observe("v1.1", async () => secretResult), secretResult);
+  await observe("v1.1", async () => ({ ...secretResult, replay: true }));
+  await observe("v1.2", async () => ({ ...secretResult, replay: true, unchanged: true }));
+  const refused = new errors.ApiError(409, "TELEMETRY_COMPATIBILITY_PROOF_UNAVAILABLE");
+  await assert.rejects(observe("v1.2", async () => { throw refused; }), error => error === refused);
+  const unsafe = Object.assign(new Error("synthetic-private-provider-message"), { code: "synthetic-private-code" });
+  await assert.rejects(observe("v1.1", async () => { throw unsafe; }), error => error === unsafe);
+  assert.deepEqual(events.map(event => event.outcome), ["activated", "replayed", "unchanged", "refused", "failed"]);
+  assert.deepEqual(events.map(event => event.status), [201, 201, 201, 409, 500]);
+  assert.deepEqual(events.map(event => event.code), [null, null, null,
+    "TELEMETRY_COMPATIBILITY_PROOF_UNAVAILABLE", "ACTIVATION_UNAVAILABLE"]);
+  for (const event of events) {
+    assert.deepEqual(Object.keys(event).sort(), ["at", "code", "elapsedMs", "event", "outcome", "protocol", "status"]);
+    assert.equal(event.elapsedMs, 5);
+  }
+  assert.equal(JSON.stringify(events).includes("synthetic-private"), false);
+});
+
+test("a broken or stalled observation sink cannot change activation or failure", async () => {
+  const { createTelemetryActivationObserver } = await vite.ssrLoadModule("/src/telemetry-activation-observation.ts");
+  const value = { replay: false };
+  for (const log of [() => { throw new Error("synthetic"); }, () => Promise.reject(new Error("synthetic")),
+    () => new Promise(() => {})]) {
+    const observe = createTelemetryActivationObserver(log);
+    assert.equal(await observe("v1.1", async () => value), value);
+    const error = new errors.ApiError(503, "BACKEND_STORAGE_UNAVAILABLE");
+    await assert.rejects(observe("v1.2", async () => { throw error; }), actual => actual === error);
+  }
+});
+
+test("upload stage observations count success and refusal without reading bodies or logging unknown routes", async () => {
+  const { createTelemetryRequestObserver } = await vite.ssrLoadModule("/src/telemetry-activation-observation.ts");
+  const events = [];
+  let now = Date.parse("2026-10-11T12:00:00.000Z");
+  const observe = createTelemetryRequestObserver(event => events.push(event), () => now += 10);
+  for (const status of [201, 409, 429, 503]) {
+    const response = new Response("synthetic-private-body", { status });
+    assert.equal(await observe("telemetry_v11_day_manifests", async () => response), response);
+    assert.equal(response.bodyUsed, false);
+  }
+  await observe("synthetic-private-unrecognised-route", async () => new Response("synthetic-private-body"));
+  assert.equal(events.length, 4);
+  assert.deepEqual(events.map(event => event.status), [201, 409, 429, 503]);
+  for (const event of events) {
+    assert.deepEqual(Object.keys(event).sort(), ["at", "elapsedMs", "event", "operation", "status"]);
+    assert.equal(event.elapsedMs, 10);
+  }
+  assert.equal(JSON.stringify(events).includes("synthetic-private"), false);
+  const broken = createTelemetryRequestObserver(() => { throw new Error("synthetic"); });
+  assert.equal((await broken("contributions", async () => new Response(null, { status: 201 }))).status, 201);
+});
+
 function proof(bucket) {
   return JSON.stringify({ bucket, bucketGeneration: "1700000000000001", bucketMetageneration: "1",
     softDeleteRetentionDurationSeconds: "0" });
