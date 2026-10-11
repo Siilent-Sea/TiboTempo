@@ -199,7 +199,7 @@ test("the development workflow builds each target on a static native runner with
   assert.match(windowsLifecycleJob, /runs-on: windows-2025/u);
   assert.match(windowsLifecycleJob, /persist-credentials: false/u);
   assert.match(windowsLifecycleJob, /pnpm install --frozen-lockfile --ignore-scripts/u);
-  assert.match(windowsLifecycleJob, /actions\/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093/u);
+  assert.match(windowsLifecycleJob, /actions\/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c/u);
   assert.match(windowsLifecycleJob, /artifact-ids: \$\{\{ needs\.win32-x64\.outputs\.development-artifact-id \}\}/u);
   assert.match(windowsLifecycleJob, /merge-multiple: true/u);
   assert.match(windowsLifecycleJob, /\.release-build\/electron-dev\/win32-x64\/app/u);
