@@ -1933,9 +1933,9 @@ test("stranded upload preview pages every device, keeps the cursor off the page 
     ]);
     assert.deepEqual(bodies.map((body) => body.action), ["run_maintenance", "run_maintenance"]);
     assert.equal(documentRef.byId.get("v11-adoption-status").textContent,
-      "Preview: 3 devices can be activated, adding 7 new days. Nothing was changed.");
+      "Preview: 3 devices eligible for activation checks, with 7 new days. Nothing was changed.");
     assert.deepEqual(tableTexts(documentRef, "v11-adoption-rows"), [
-      ["Devices examined", "5"], ["Can be activated", "3"], ["Syncing now, left to the app", "1"],
+      ["Devices examined", "5"], ["Eligible for activation checks", "3"], ["Syncing now, left to the app", "1"],
       ["On v1.2, left to the app", "1"], ["Days covered", "8"], ["New days", "7"], ["Accepted days kept", "1"],
     ]);
     assert.equal(documentRef.byId.get("v11-adoption-summary").hidden, false);
@@ -1990,6 +1990,28 @@ test("a failed stranded-upload activation reports what completed and needs a new
     assert.deepEqual(tableTexts(documentRef, "v11-adoption-rows"), []);
     assert.equal(documentRef.byId.get("preview-v11-adoption").disabled, true);
   });
+});
+
+test("opaque adoption cursors allow decreasing ciphertext and stop repeated cursors without displaying them", async () => {
+  const overview = await fixture("admin-overview-valid.json");
+  const cursors = ["pg1.zzzzzzzzzzzzzzzz.zzz", "pg1.aaaaaaaaaaaaaaaa.aaa"];
+  for (const repeated of [false, true]) {
+    let pages = 0;
+    await withAdminPage(async (path, init) => {
+      if (init.method !== "POST") return healthyAdminRead(path, overview);
+      pages += 1;
+      return response(adoptionPage(true, { adoptable: 1 },
+        pages === 1 ? cursors[0] : pages === 2 ? cursors[repeated ? 0 : 1] : null,
+        { daysCovered: 2, newDays: 1, keptAcceptedDays: 1 }));
+    }, async documentRef => {
+      await waitFor(() => documentRef.byId.get("preview-v11-adoption").disabled === false);
+      await documentRef.byId.get("preview-v11-adoption").listeners.get("click")();
+      assert.equal(pages, repeated ? 2 : 3);
+      assert.equal(documentRef.byId.get("apply-v11-adoption").disabled, repeated);
+      assert.equal(documentRef.byId.get("v11-adoption-status").textContent.includes("Preview stopped"), repeated);
+      for (const cursor of cursors) assert.equal(pageMentions(documentRef, cursor), false);
+    });
+  }
 });
 
 test("a stranded-upload preview older than fifteen minutes cannot authorize activation", async () => {

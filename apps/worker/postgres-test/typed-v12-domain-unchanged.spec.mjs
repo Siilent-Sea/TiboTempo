@@ -543,9 +543,8 @@ test("two devices of one social participant never cross-match an unchanged recei
 
     // B presents A's exact current vector against A's head. Only the device
     // scope separates this from an unchanged receipt for A's generation.
-    // A's manifests are not B's ready manifests, so activation refuses them
-    // as incomplete (29e8bb029 runs the ready-manifest check before the
-    // same-day successor closure, as D1's activation does).
+    // A's manifest is absent from B's READY set: the ordinary completeness
+    // gate returns the same INCOMPLETE refusal as the D1 activation path.
     const quiet = await snapshot(context);
     const borrowed = await context.domain.createPredecessor(deviceB);
     assert.equal(borrowed.previousGenerationId, a2.generationId);

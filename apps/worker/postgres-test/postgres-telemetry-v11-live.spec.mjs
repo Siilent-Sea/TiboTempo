@@ -960,6 +960,232 @@ async function loadModules() {
   };
 }
 
+/** Synthetic accountless lease graph, identical to the live client's authority. */
+async function seedAdoptionOwner(pool, schema, label) {
+  const participantId = `synthetic-adoption-${label}-${randomUUID()}`;
+  const deviceId = randomUUID();
+  const now = new Date(Date.now() - 5 * DAY_MS).toISOString();
+  const expires = new Date(Date.now() + 30 * DAY_MS).toISOString();
+  const secretHash = bearerSecretHash(deviceId, randomBytes(32).toString("base64url"));
+  await pool.query(`INSERT INTO ${q(schema, "participants")} (id, owner_kind, state, created_at)
+    VALUES ($1, 'accountless', 'active', $2)`, [participantId, now]);
+  await pool.query(`INSERT INTO ${q(schema, "attribution_enrollments")} (participant_id, namespace, created_at)
+    VALUES ($1, $2, $3)`, [participantId, sha256Hex(`synthetic-adoption-${participantId}`), now]);
+  await pool.query(`INSERT INTO ${q(schema, "telemetry_transport_participant_floors")}
+    (participant_id, minimum_rank, revision, changed_at) VALUES ($1, 11, 0, $2)`, [participantId, now]);
+  await pool.query(`INSERT INTO ${q(schema, "accountless_enrollment_ledger")}
+    (device_id, device_secret_hash, installation_principal_id, schema_version, policy_version,
+     authorization_basis, state, issued_at, expires_at)
+    VALUES ($1, $2, $3, 'accountless-enrollment-v0.1', 'accountless-opt-out-v1',
+      'accountless-policy-v1', 'active', $4, $5)`, [deviceId, secretHash, `synthetic-install-${deviceId}`, now, expires]);
+  await pool.query(`INSERT INTO ${q(schema, "device_credentials")}
+    (id, participant_id, authority_kind, accountless_enrollment_device_id, secret_hash, state, issued_at, expires_at, last_used_at)
+    VALUES ($1, $2, 'accountless', $1, $3, 'active', $4, $5, $4)`, [deviceId, participantId, secretHash, now, expires]);
+  await pool.query(`INSERT INTO ${q(schema, "accountless_upload_owners")}
+    (enrollment_device_id, participant_id, device_credential_id, policy_version, authorization_basis, authorized_at, expires_at, state)
+    VALUES ($1, $2, $1, 'accountless-opt-out-v1', 'accountless-policy-v1', $3, $4, 'active')`,
+    [deviceId, participantId, now, expires]);
+  await pool.query(`INSERT INTO ${q(schema, "accountless_v11_device_authorizations")}
+    (enrollment_device_id, participant_id, device_credential_id, telemetry_schema_version,
+     field_dictionary_version, privacy_contract_version, authorized_at, expires_at, state)
+    VALUES ($1, $2, $1, 'telemetry-contribution-v1.1', 'telemetry-v1.1-registry-2026-08-31.1',
+      'ongoing-privacy-safe-telemetry-v1.1', $3, $4, 'active')`, [deviceId, participantId, now, expires]);
+  return { participantId, deviceId, principal: { participantId, deviceId } };
+}
+
+test("owner adoption previews read-only, activates contiguous new days once, preserves records and excludes live or replaced history", {
+  skip: endpoint === null, timeout: 300_000,
+}, async () => {
+  const { primaryPool: pool, schema, close } = await openSchemas("adopt", [STAGED]);
+  try {
+    const modules = await loadModules();
+    const { live } = modules;
+    const { createPostgresV11EvidenceAdoption } = await load("/src/postgres-v11-evidence-adoption.ts");
+    const options = { schema, sourceNamespace: SOURCE_NAMESPACE };
+    await pool.query(`UPDATE ${q(schema.primarySchema, "collection_controls")} SET control_state = 'operational',
+      enrollment_enabled = true, upload_registration_enabled = true, processing_enabled = true,
+      publication_enabled = true, revision = revision + 1, updated_at = clock_timestamp() WHERE singleton = 1`);
+    await pool.query(`UPDATE ${q(schema.primarySchema, "telemetry_transport_formats")} SET lifecycle = 'accepted'
+      WHERE schema_version = 'telemetry-contribution-v1.1'`);
+    await live.initializePostgresTypedV11Admission(pool, options);
+    await pool.query(`INSERT INTO ${q(schema.primarySchema, "storage_source_state")}
+      (singleton, source_id, authority_epoch) VALUES (1, 'synthetic-adoption-source', 0)`);
+    const domain = live.createPostgresTelemetryV11Domain(pool, options);
+    const base = new Date(Date.now() - 3 * DAY_MS).toISOString().slice(0, 10);
+    const dayAt = n => new Date(Date.parse(base) + n * DAY_MS).toISOString().slice(0, 10);
+    const initialTime = Date.parse(`${base}T12:00:00.000Z`);
+    const usageAt = (n, label) => ({ ...fixture.records.usage[0], eventTime: `${dayAt(n)}T00:00:01.000Z`,
+      eventId: `event:v2:${sha256Hex(`synthetic-adoption-${label}-${n}`)}` });
+    const setup = async label => {
+      const owner = await seedAdoptionOwner(pool, schema.primarySchema, label);
+      const first = await stageDay(modules, pool, schema, owner,
+        makeV11Day(base, { usage: [usageAt(0, label)] }, "synthetic-adoption"), options);
+      const pred = await domain.createPredecessor(owner.principal, initialTime);
+      const head = await domain.activate(owner.principal, domainManifest(pred, [first]), initialTime);
+      return { ...owner, first, head };
+    };
+    const owner = await setup("good");
+    await stageDay(modules, pool, schema, owner,
+      makeV11Day(dayAt(1), { usage: [usageAt(1, "good")] }, "synthetic-adoption"), options);
+    await emptyDays(modules, pool, owner, dayAt(2), dayAt(2), "synthetic-adoption", options);
+    await emptyDays(modules, pool, owner, dayAt(4), dayAt(4), "synthetic-adoption", options); // gap at day 3
+    const actor = "synthetic-owner-identity-private";
+    const cursorSecret = "synthetic-adoption-cursor-secret-private-00000001";
+    const body = (dryRun, afterParticipantId = null) => ({ action: "run_maintenance",
+      v11EvidenceAdoption: { dryRun, maxDevices: 1, afterParticipantId } });
+    const task = createPostgresV11EvidenceAdoption({ pool, schema, cursorSecret });
+    const bridgeBefore = await bridgeState(pool, schema.primarySchema, owner.participantId);
+    const writes = [];
+    const readOnlyPool = { async connect() {
+      const client = await pool.connect();
+      return { query: async (text, values) => {
+        writes.push(text.trim());
+        return client.query(text, values);
+      }, release: discard => client.release(discard) };
+    } };
+    const previewTask = createPostgresV11EvidenceAdoption({ pool: readOnlyPool, schema, cursorSecret });
+    const preview = await previewTask({ body: body(true), identityKey: actor });
+    const { createPostgresOwnerMaintenance } = await load("/cloud-run/postgres-production-host.mjs");
+    const { createAdminConsoleHandlers } = await load("/cloud-run/routes/admin-console.mjs");
+    let hasOwner = true;
+    const admin = createAdminConsoleHandlers({ env: Object.freeze({ PUBLIC_ORIGIN: ORIGIN }),
+      pools: { primary: pool }, schemaOptions: schema,
+      requestContext: () => hasOwner ? { adminIdentityKey: actor } : {},
+      maintenance: createPostgresOwnerMaintenance({ pool, primarySchema: schema.primarySchema,
+        objectStore: { async delete() { throw new Error("preview must not touch objects"); } }, cursorSecret }),
+    }).get("admin_action");
+    const adminRequest = (value, csrf = true) => new Request(`${ORIGIN}/api/v1/admin/action`, {
+      method: "POST", headers: { "content-type": "application/json", origin: ORIGIN,
+        "x-usage-monitor-admin": csrf ? "1" : "invalid" }, body: JSON.stringify(value),
+    });
+    const httpPreview = await admin(adminRequest(body(true)));
+    assert.equal(httpPreview.status, 200, "the production maintenance injection reaches the real PostgreSQL task");
+    assert.deepEqual((await httpPreview.json()).result, preview);
+    hasOwner = false;
+    assert.equal((await admin(adminRequest(body(false)))).status, 403);
+    hasOwner = true;
+    assert.equal((await admin(adminRequest(body(false), false))).status, 403);
+    assert.equal(preview.examined, 1);
+    assert.equal(preview.outcomes.adoptable, 1);
+    assert.equal(preview.newDays, 2, "the missing day is never synthesized");
+    assert.equal(preview.keptAcceptedDays, 1);
+    assert.equal(preview.nextAfterParticipantId, null);
+    assert.ok(writes.some(sql => sql.startsWith("BEGIN") && sql.includes("READ ONLY")));
+    assert.ok(writes.every(sql => !/^(INSERT|UPDATE|DELETE|CREATE|ALTER|DROP)\b/u.test(sql)));
+    assert.deepEqual(await bridgeState(pool, schema.primarySchema, owner.participantId), bridgeBefore);
+    assert.equal((await pool.query(`SELECT count(*)::int AS n FROM ${q(schema.primarySchema, "admin_action_audit")}`)).rows[0].n, 0);
+    const httpExecution = await admin(adminRequest(body(false)));
+    assert.equal(httpExecution.status, 200);
+    const result = (await httpExecution.json()).result;
+    assert.equal(result.outcomes.adopted, 1);
+    assert.equal(result.newDays, 2);
+    for (const privateValue of [owner.participantId, owner.deviceId, owner.first.manifestId, actor, cursorSecret]) {
+      assert.equal(JSON.stringify(result).includes(privateValue), false);
+    }
+    const after = await bridgeState(pool, schema.primarySchema, owner.participantId);
+    assert.equal(after.receipts.length, bridgeBefore.receipts.length + 1);
+    assert.equal(after.journal.length, bridgeBefore.journal.length + 1);
+    const accepted = (await pool.query(`SELECT dd.manifest_id FROM ${q(schema.primarySchema, "telemetry_v11_domain_heads")} h
+      JOIN ${q(schema.primarySchema, "telemetry_v11_domain_days")} dd ON dd.generation_id = h.generation_id
+      WHERE h.participant_id = $1 AND dd.observed_day = $2::date`, [owner.participantId, base])).rows[0];
+    assert.equal(accepted.manifest_id, owner.first.manifestId);
+    const repeated = await task({ body: body(false), identityKey: actor });
+    assert.equal(repeated.outcomes.adopted, 0);
+    assert.equal(repeated.outcomes.no_contiguous_days, 1);
+    assert.deepEqual(await bridgeState(pool, schema.primarySchema, owner.participantId), after);
+
+    const replaced = await setup("replaced");
+    await emptyDays(modules, pool, replaced, base, base, "synthetic-replaced-parser", options);
+    await emptyDays(modules, pool, replaced, dayAt(1), dayAt(1), "synthetic-adoption", options);
+    const busy = await setup("busy");
+    await emptyDays(modules, pool, busy, dayAt(1), dayAt(1), "synthetic-adoption", options);
+    await domain.createPredecessor(busy.principal); // current client pass owns the device
+
+    // Page the whole cohort with opaque cursors. No lexical comparison is
+    // possible; cursors are owner- and mode-bound and cannot name a device.
+    const totals = { unsupported_history: 0, client_syncing: 0, no_contiguous_days: 0 };
+    let cursor = null;
+    let firstCursor;
+    do {
+      const page = await task({ body: body(true, cursor), identityKey: actor });
+      for (const key of Object.keys(totals)) totals[key] += page.outcomes[key];
+      cursor = page.nextAfterParticipantId;
+      if (cursor) {
+        firstCursor ??= cursor;
+        assert.match(cursor, /^pg1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u);
+        assert.ok(cursor.length <= 256);
+        assert.equal(cursor.includes(owner.participantId), false);
+      }
+    } while (cursor !== null);
+    assert.deepEqual(totals, { unsupported_history: 1, client_syncing: 1, no_contiguous_days: 1 });
+    const insertV12Attempt = async target => pool.query(`INSERT INTO ${q(schema.primarySchema, "telemetry_v12_day_manifests")}
+      (id, participant_id, device_id, chunk_day, manifest_digest, parser_version, manifest_json,
+       expected_chunk_count, state, created_at)
+      VALUES ($1, $2, $3, $4::date, $5, 'synthetic-v12', $6, 1, 'staged', clock_timestamp())`,
+      [randomUUID(), target.participantId, target.deviceId, dayAt(1), sha256Hex(`synthetic-v12-${target.participantId}`),
+        JSON.stringify({ schemaVersion: "telemetry-day-manifest-v1.2", synthetic: true })]);
+    const successor = await setup("successor");
+    await emptyDays(modules, pool, successor, dayAt(1), dayAt(1), "synthetic-adoption", options);
+    await insertV12Attempt(successor);
+    const broadBody = dryRun => ({ action: "run_maintenance", v11EvidenceAdoption: { dryRun, maxDevices: 25 } });
+    const skippedV12 = await task({ body: broadBody(true), identityKey: actor });
+    assert.equal(skippedV12.outcomes.successor_active, 1, "even incomplete successor activity excludes owner adoption");
+
+    const racing = await setup("racing");
+    await emptyDays(modules, pool, racing, dayAt(1), dayAt(1), "synthetic-adoption", options);
+    const raceBefore = await bridgeState(pool, schema.primarySchema, racing.participantId);
+    let injected = false;
+    const racingTask = createPostgresV11EvidenceAdoption({ pool, schema, cursorSecret,
+      observeActivation: async invoke => {
+        assert.equal(injected, false);
+        injected = true;
+        await insertV12Attempt(racing);
+        return invoke();
+      } });
+    const raceResult = await racingTask({ body: broadBody(false), identityKey: actor });
+    assert.equal(injected, true);
+    assert.equal(raceResult.outcomes.adopted, 0);
+    assert.equal(raceResult.refusals.TELEMETRY_MANIFEST_CONFLICT, 1);
+    assert.deepEqual(await bridgeState(pool, schema.primarySchema, racing.participantId), raceBefore,
+      "v1.2 activity after token mint cannot race into an owner activation");
+    const current = (await pool.query(`SELECT h.generation_id, v.revision::int AS input_revision
+      FROM ${q(schema.primarySchema, "telemetry_v11_domain_heads")} h JOIN ${q(schema.primarySchema, "community_analytical_input_versions")} v
+      ON v.participant_id = h.participant_id WHERE h.participant_id = $1`, [owner.participantId])).rows[0];
+    await assert.rejects(domain.createUploadedEvidencePredecessor(owner.principal, {
+      fromDay: dayAt(1), throughDay: dayAt(2), previousGenerationId: current.generation_id,
+      inputRevision: current.input_revision,
+    }), error => error.status === 409 && error.code === "TELEMETRY_MANIFEST_CONFLICT");
+    const expiredTask = createPostgresV11EvidenceAdoption({ pool, schema, cursorSecret,
+      clock: () => Date.now() + 60 * DAY_MS });
+    const expiredAuthority = await expiredTask({ body: broadBody(true), identityKey: actor });
+    assert.equal(expiredAuthority.outcomes.adoptable, 0);
+    assert.ok(expiredAuthority.outcomes.authority_unavailable > 0);
+    const auditBeforeInvalid = (await pool.query(`SELECT count(*)::int AS n FROM ${q(schema.primarySchema, "admin_action_audit")}`)).rows[0].n;
+    const cursorParts = firstCursor.split(".");
+    const ciphertext = cursorParts[2];
+    cursorParts[2] = (ciphertext[0] === "A" ? "B" : "A") + ciphertext.slice(1);
+    const tamperedCursor = cursorParts.join(".");
+    for (const [invalidBody, identityKey] of [[body(true, firstCursor), "another-synthetic-owner"],
+      [body(false, firstCursor), actor], [body(true, "participant:synthetic"), actor],
+      [body(true, tamperedCursor), actor],
+      [body(true, firstCursor.slice(0, -1) + "."), actor]]) {
+      await assert.rejects(task({ body: invalidBody, identityKey }), error => error.status === 400 && error.code === "BODY_INVALID");
+    }
+    const otherSchemaTask = createPostgresV11EvidenceAdoption({ pool, cursorSecret,
+      schema: { primarySchema: "synthetic_other_schema" } });
+    await assert.rejects(otherSchemaTask({ body: body(true, firstCursor), identityKey: actor }),
+      error => error.status === 400 && error.code === "BODY_INVALID");
+    assert.equal((await pool.query(`SELECT count(*)::int AS n FROM ${q(schema.primarySchema, "admin_action_audit")}`)).rows[0].n, auditBeforeInvalid);
+    const expiredCursorTask = createPostgresV11EvidenceAdoption({ pool, schema, cursorSecret, clock: () => Date.now() + 31 * 60_000 });
+    await assert.rejects(expiredCursorTask({ body: body(true, firstCursor), identityKey: actor }),
+      error => error.status === 400 && error.code === "BODY_INVALID");
+    const audits = (await pool.query(`SELECT details_json FROM ${q(schema.primarySchema, "admin_action_audit")}`)).rows;
+    for (const privateValue of [owner.participantId, owner.deviceId, actor, cursorSecret, firstCursor]) {
+      assert.equal(JSON.stringify(audits).includes(privateValue), false);
+    }
+  } finally { await close(); }
+});
+
 function envelopeDependencies(modules, keys, overrides = {}) {
   const { live, transport, crypto, constants } = modules;
   return {

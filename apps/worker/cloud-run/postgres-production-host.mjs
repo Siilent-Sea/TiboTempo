@@ -40,7 +40,8 @@
  * every admin-host request) stays available to a caller that passes it.
  *
  * Nothing here reads process.env except through CR-3, and nothing here
- * logs: the handler and EP-6 own the request and refusal lines.
+ * logs except closed, identifier-free telemetry outcomes; the handler and
+ * EP-6 own the request and refusal lines.
  */
 
 import { Connector } from "@google-cloud/cloud-sql-connector";
@@ -135,6 +136,8 @@ import {
 } from "@app-usagemonitor/telemetry-contract";
 import { assertPostgresTelemetryTransportWriteAllowed } from "../src/postgres-telemetry-format-authority.ts";
 import * as postgresTelemetryV11Live from "../src/postgres-telemetry-v11-live-admission.ts";
+import { createPostgresV11EvidenceAdoption } from "../src/postgres-v11-evidence-adoption.ts";
+import { createTelemetryActivationObserver, createTelemetryRequestObserver } from "../src/telemetry-activation-observation.ts";
 import * as postgresDeviceBearerAuth from "../src/postgres-device-bearer-auth.ts";
 import * as postgresTypedV12Transport from "../src/postgres-typed-v12-transport.ts";
 import * as postgresPersonalDevices from "../src/postgres-personal-devices.ts";
@@ -156,7 +159,7 @@ import { createPostgresRateLimiter } from "../src/postgres-rate-limiter.ts";
 import { createGcsQuarantineObjectStore } from "../src/gcs-quarantine-object-store.ts";
 import { recordPostgresDiagnosticError } from "../src/postgres-host-diagnostics.ts";
 import { POSTGRES_RUNTIME_MIGRATIONS } from "../src/postgres-runtime-schema.ts";
-import { WORKER_ROUTE_POLICY } from "../src/route-registry.ts";
+import { WORKER_ROUTE_POLICY, matchWorkerRoute } from "../src/route-registry.ts";
 import {
   POSTGRES_ADMIN_HOST_ROUTE_IDS,
   POSTGRES_PORTED_WORKER_ROUTE_IDS,
@@ -428,6 +431,17 @@ export function createLifecyclePassMaintenance({ pool, objectStore, primarySchem
   });
 }
 
+/** The same owner maintenance composition is exercised by the PostgreSQL
+ * HTTP test. Optional tasks belong inside maintenance, not route options. */
+export function createPostgresOwnerMaintenance({ pool, objectStore, primarySchema,
+  cursorSecret, clock = Date.now, observeActivation, distributionEnabled = false, fetcher = fetch } = {}) {
+  return Object.freeze({
+    ...createLifecyclePassMaintenance({ pool, objectStore, primarySchema, distributionEnabled, fetcher, clock }),
+    v11EvidenceAdoption: createPostgresV11EvidenceAdoption({ pool, schema: { primarySchema },
+      cursorSecret, clock, observeActivation }),
+  });
+}
+
 function isPool(value) {
   return value !== null && typeof value === "object" && typeof value.connect === "function";
 }
@@ -468,7 +482,7 @@ export function composeOriginFamilies(deps) {
     dataPool, primarySchema, sourceIdentity, admissionEnv, storageGate, dispatchOrigin,
     productionConfiguration = null, objectStore, envelopePublicJwk, envelopePrivateJwk, requestContext,
     uploadIngress, statusDispatchers, routeModules = [], routeModuleContext, composeIntake = true,
-    adminHandlers = null, intakeClock = null,
+    adminHandlers = null, intakeClock = null, observeActivation = (_protocol, invoke) => invoke(),
   } = deps;
   if (intakeClock !== null && typeof intakeClock !== "function") refuse(ORIGIN_COMPOSITION_INVALID);
   if (!isPool(dataPool) || typeof primarySchema !== "string"
@@ -551,7 +565,14 @@ export function composeOriginFamilies(deps) {
   // same storage gate as the built-in routes.
   const intake = composeIntake ? createOriginIntakeComposition({
     adapters: {
-      live: postgresTelemetryV11Live,
+      live: {
+        ...postgresTelemetryV11Live,
+        createPostgresTelemetryV11Domain: (...args) => {
+          const domain = postgresTelemetryV11Live.createPostgresTelemetryV11Domain(...args);
+          return Object.freeze({ ...domain, activate: (...activationArgs) =>
+            observeActivation("v1.1", () => domain.activate(...activationArgs)) });
+        },
+      },
       bearer: postgresDeviceBearerAuth,
       transport: postgresTypedV12Transport,
       personalDevices: postgresPersonalDevices,
@@ -623,7 +644,11 @@ export function composeOriginFamilies(deps) {
     readPostgresV12DayCandidates,
     publicEnvelopeKey,
     sourceNamespace: sourceIdentity.sourceNamespace,
-    createPostgresTypedV12Domain,
+    createPostgresTypedV12Domain: (...args) => {
+      const domain = createPostgresTypedV12Domain(...args);
+      return Object.freeze({ ...domain, activate: (...activationArgs) =>
+        observeActivation("v1.2", () => domain.activate(...activationArgs)) });
+    },
     readPostgresTelemetryV12EffectivePage,
     registerPostgresTypedV12DayManifest,
     claimPostgresDeviceUploadAuthorization,
@@ -832,6 +857,10 @@ export async function createPostgresProductionRuntime({
   const createAnalyticsRoute = dependencies.createAnalyticsV2CommunityDailyRoute
     ?? createAnalyticsV2CommunityDailyRoute;
   const clock = dependencies.clock ?? Date.now;
+  const observeActivation = createTelemetryActivationObserver(
+    (event) => (dependencies.logger ?? console.info)(JSON.stringify(event)), clock);
+  const observeRequest = createTelemetryRequestObserver(
+    (event) => (dependencies.logger ?? console.info)(JSON.stringify(event)), clock);
   const { primary, iamUser, bucket, bucketHistoryProof } = configuration.resources;
   const primarySchema = primary.schema;
   const connector = typeof dependencies.createConnector === "function"
@@ -913,11 +942,14 @@ export async function createPostgresProductionRuntime({
         // analytics_v2 lives in primary (0059): no separate analytics pool.
         pools: { primary: dataPool },
         schemaOptions: { primarySchema },
-        maintenance: createLifecyclePassMaintenance({ pool: dataPool, objectStore, primarySchema,
-          distributionEnabled: configuration.plane === "production", clock }),
+        maintenance: createPostgresOwnerMaintenance({ pool: dataPool, objectStore, primarySchema,
+          cursorSecret: env.POSTGRES_RATE_LIMIT_SECRET, clock,
+          observeActivation: (invoke) => observeActivation("v1.1", invoke),
+          distributionEnabled: configuration.plane === "production" }),
       })
       : null;
     const families = composeOriginFamilies({
+      observeActivation,
       dataPool,
       primarySchema,
       sourceIdentity,
@@ -962,7 +994,8 @@ export async function createPostgresProductionRuntime({
       audience: configuration.edge.audience,
       publicOrigin: configuration.origins.public,
       admission: edgeAdmission,
-      inner: handler,
+      inner: (request) => observeRequest(matchWorkerRoute(new URL(request.url).pathname).id,
+        () => handler(request)),
       clock,
       onRefusal: (diagnostic) => logOriginBoundaryRefusal(diagnostic),
     });

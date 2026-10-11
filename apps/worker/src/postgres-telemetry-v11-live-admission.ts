@@ -84,6 +84,7 @@ import {
 } from "./postgres-client";
 import { verifyPostgresTypedIdentityHeadroom } from "./postgres-typed-live-allocators";
 import { assertPostgresTelemetryTransportWriteAllowed } from "./postgres-transport-write-authority";
+import { assertPostgresCollectionControl } from "./postgres-collection-controls";
 import { telemetryV11LegacyProjection } from "./telemetry-v11-compatibility";
 import {
   MAX_V1_SOURCE_CHUNKS,
@@ -1666,12 +1667,18 @@ export function createPostgresTelemetryV11Domain(
   options: PostgresTelemetryV11Options = {},
 ): {
   createPredecessor(principal: PostgresTelemetryV11Principal, nowEpoch?: number): Promise<TelemetryV11DomainPredecessor>;
-  activate(principal: PostgresTelemetryV11Principal, value: unknown, nowEpoch?: number): Promise<TelemetryV11DomainActivation>;
+  /** Owner recovery only: the range must retain all known history, but need
+   * not invent an empty manifest for the current UTC day. */
+  createUploadedEvidencePredecessor(principal: PostgresTelemetryV11Principal, range: {
+    fromDay: string; throughDay: string; previousGenerationId: string; inputRevision: number;
+  }, nowEpoch?: number): Promise<TelemetryV11DomainPredecessor>;
+  activate(principal: PostgresTelemetryV11Principal, value: unknown, nowEpoch?: number,
+    uploadedEvidenceOnly?: boolean): Promise<TelemetryV11DomainActivation>;
 } {
   const { quoted: s, config } = schemaOf(options);
 
-  return Object.freeze({
-    async createPredecessor(principal: PostgresTelemetryV11Principal, nowEpoch = Date.now()) {
+  async function createPredecessor(principal: PostgresTelemetryV11Principal, nowEpoch = Date.now(),
+    recovery?: { fromDay: string; throughDay: string; previousGenerationId: string; inputRevision: number }) {
       validPrincipal(principal);
       const now = nowDate(nowEpoch).toISOString();
       const expiresAt = nowDate(nowEpoch + PREDECESSOR_TTL_MS).toISOString();
@@ -1707,6 +1714,23 @@ export function createPostgresTelemetryV11Domain(
           )).rows[0];
           if (!state || !legacyRange) throw manifestConflict();
           const inputRevision = count(state.input_revision);
+          if (recovery) {
+            await assertPostgresCollectionControl(client, config.primarySchema, "processing", { forShare: true });
+            if (!utcDay(recovery.fromDay) || !utcDay(recovery.throughDay)
+                || recovery.fromDay > recovery.throughDay
+                || state.generation_id !== recovery.previousGenerationId
+                || inputRevision !== recovery.inputRevision) throw manifestConflict();
+            // Recheck under the same participant-version lock as a client
+            // predecessor. A live pass or successor must retain ownership.
+            const busy = await client.query(`SELECT 1 WHERE
+              EXISTS (SELECT 1 FROM ${t(s, "telemetry_v11_domain_predecessors")}
+                WHERE participant_id = $1 AND consumed_at IS NULL AND created_at > $2::timestamptz)
+              OR EXISTS (SELECT 1 FROM ${t(s, "telemetry_v12_day_manifests")} WHERE participant_id = $1)
+              OR EXISTS (SELECT 1 FROM ${t(s, "telemetry_v12_domain_heads")} WHERE participant_id = $1)
+              OR EXISTS (SELECT 1 FROM ${t(s, "telemetry_v12_typed_active_authorizations")} WHERE participant_id = $1)`,
+              [principal.participantId, new Date(nowEpoch - PREDECESSOR_TTL_MS).toISOString()]);
+            if (busy.rows.length) throw manifestConflict();
+          }
           if ([legacyRange.from_day, legacyRange.through_day].some((day) => day !== null && !utcDay(day))) {
             throw manifestConflict();
           }
@@ -1720,12 +1744,15 @@ export function createPostgresTelemetryV11Domain(
           const allSourceTuples = runtime?.source_state === "active" ? allAdmittedSourceTuples(chunks) : null;
           const closureDevices = allSourceTuples ?? winners;
           const today = now.slice(0, 10);
-          const knownDays = [today, ...closureDevices.map((winner) =>
+          const knownDays = [...(recovery ? [] : [today]), ...closureDevices.map((winner) =>
             "chunk_day" in winner ? winner.chunk_day : winner.observed_day),
           ...[state.from_day, state.through_day, legacyRange.from_day, legacyRange.through_day]
             .filter((day): day is string => day !== null)].sort();
-          const fromDay = knownDays[0]!;
-          const throughDay = knownDays.at(-1)!;
+          const fromDay = recovery?.fromDay ?? knownDays[0]!;
+          const throughDay = recovery?.throughDay ?? knownDays.at(-1)!;
+          if (recovery && (fromDay > knownDays[0]! || throughDay < knownDays.at(-1)!)) {
+            throw manifestConflict();
+          }
           if ((Date.parse(throughDay) - Date.parse(fromDay)) / DAY_MS + 1 > MAX_TELEMETRY_V11_DOMAIN_DAYS) {
             throw new ApiError(400, "SYNC_RANGE_TOO_LARGE");
           }
@@ -1779,9 +1806,18 @@ export function createPostgresTelemetryV11Domain(
       } catch (error) {
         storageFailure(error);
       }
+    }
+
+  return Object.freeze({
+    createPredecessor,
+    createUploadedEvidencePredecessor(principal: PostgresTelemetryV11Principal, range: {
+      fromDay: string; throughDay: string; previousGenerationId: string; inputRevision: number;
+    }, nowEpoch = Date.now()) {
+      return createPredecessor(principal, nowEpoch, range);
     },
 
-    async activate(principal: PostgresTelemetryV11Principal, value: unknown, nowEpoch = Date.now()) {
+    async activate(principal: PostgresTelemetryV11Principal, value: unknown, nowEpoch = Date.now(),
+      uploadedEvidenceOnly = false) {
       let manifest: ReturnType<typeof parseTelemetryV11DomainManifest>;
       try {
         manifest = JSON.parse(canonicalTelemetryV11Json(parseTelemetryV11DomainManifest(value)));
@@ -1812,6 +1848,25 @@ export function createPostgresTelemetryV11Domain(
           if (existing) return activationResult(existing, true);
           const state = await domainState(client, s, principal.participantId);
           if (!state) throw manifestConflict();
+          if (uploadedEvidenceOnly) {
+            await assertPostgresCollectionControl(client, config.primarySchema, "processing", { forShare: true });
+            const excluded = await client.query(`SELECT 1 WHERE
+              EXISTS (SELECT 1 FROM ${t(s, "telemetry_v12_day_manifests")} WHERE participant_id = $1)
+              OR EXISTS (SELECT 1 FROM ${t(s, "telemetry_v12_domain_heads")} WHERE participant_id = $1)
+              OR EXISTS (SELECT 1 FROM ${t(s, "telemetry_v12_typed_active_authorizations")} WHERE participant_id = $1)
+              OR EXISTS (SELECT 1 FROM ${t(s, "telemetry_v11_domain_predecessors")}
+                WHERE participant_id = $1 AND token_hash <> $3 AND consumed_at IS NULL
+                  AND created_at > $4::timestamptz)
+              OR EXISTS (SELECT 1 FROM ${t(s, "telemetry_v11_domain_days")} day
+                JOIN ${t(s, "telemetry_v11_day_manifests")} accepted ON accepted.id = day.manifest_id
+                JOIN ${t(s, "telemetry_v11_day_manifests")} newer ON newer.participant_id = accepted.participant_id
+                  AND newer.device_id = accepted.device_id AND newer.chunk_day = accepted.chunk_day
+                  AND newer.state = 'ready' AND (newer.created_at, newer.id COLLATE "C") >
+                    (accepted.created_at, accepted.id COLLATE "C")
+                WHERE day.generation_id = $2)`, [principal.participantId, state.generation_id, tokenHash,
+                  new Date(nowEpoch - PREDECESSOR_TTL_MS).toISOString()]);
+            if (excluded.rows.length) throw manifestConflict();
+          }
           const predecessorResult = await client.query<PredecessorRow>(
             `${currentPredecessorSql(s)} FOR UPDATE OF x`, [tokenHash, now],
           );

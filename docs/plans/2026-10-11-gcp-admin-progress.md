@@ -214,3 +214,17 @@ regenerate embedded assets, and retain the exact public release tree. This
 authorization does not include running telemetry preview, adoption, a backfill
 or a diagnostic job. Those recovery gates remain separately owner-approved.
 Do not reuse the initial release's commit/image/backup/migration bindings.
+
+Follow-up local qualification: 59 PostgreSQL tests passed with no skips,
+including both admin readers, forced GitHub sync through the combined owner
+maintenance composition, v1.1 recovery and v1.2 unchanged behavior. Origin
+admin checks passed 105 cases; compatible edge admin checks passed 112 cases.
+The regenerated origin bundle retains kernel 16 and the same compute, vendor
+and closure hashes. Rebuilt Cloud Run checks passed 648 cases with four existing
+PostgreSQL-dependent skips. Typecheck, architecture, docs and 21 preflight
+checks passed. Edge UI passed 1,107 cases with one privacy-title assertion
+failure; its source/test are unchanged from live edge `ed3aee03`, where that
+failure was reproduced. The earlier edge Worker run passed 2,746 cases and
+failed six cases across four unchanged files; three graph timeouts were
+reproduced on the exact live-edge archive. This is not a passing full Worker
+gate. No assertion, limit or timeout was relaxed.
