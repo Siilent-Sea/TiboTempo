@@ -1141,10 +1141,15 @@ test("PG17: K-STAMP stamps every row with the registry kernel, refuses conflicts
         await client.query("BEGIN");
         await client.query(`SET LOCAL search_path TO "${schema}"`);
         await client.query(sql);
-        // REV-SEED's floor, which the store reads, follows the run stamps.
-        await client.query(await readFile(join(FLOOR_STAGED_FILE.directory, FLOOR_STAGED_FILE.name), "utf8"));
-        // K-PERCARD's tables (additive; the store writes them with every run).
-        await client.query(await priceMigrationSql());
+        // Every promoted migration after the run stamps, in order: the store
+        // reads REV-SEED's floor, writes K-PERCARD's tables and E-OWNERSET's
+        // sets with every run, and checks kernel regressions across the
+        // reprice runs (0077), so the schema must be the current one.
+        for (const migration of await readPostgresMigrations({ role: "primary" })) {
+          if (migration.version > kernelVersion) {
+            await client.query(await readFile(join(PRIMARY_MIGRATIONS_DIRECTORY, migration.name), "utf8"));
+          }
+        }
         await client.query("COMMIT");
         assert.equal(await count(pool, schema, "analytics_v2_kernels"), 0, "no kernel is seeded");
         for (const table of ["analytics_v2_runs", "analytics_v2_owner_day", "analytics_v2_published_daily"]) {
@@ -1588,15 +1593,6 @@ test("PG17: the store refuses to write without the refresh lock when another ses
     }
   });
 });
-
-/** K-PERCARD's migration text, staged or promoted (found by its name suffix). */
-async function priceMigrationSql() {
-  for (const directory of [join(WORKER_ROOT, "postgres", "staged-migrations", "primary"), PRIMARY_MIGRATIONS_DIRECTORY]) {
-    const name = (await readdir(directory).catch(() => [])).find((entry) => /^\d{4}_analytics_v2_price_cards\.sql$/u.test(entry));
-    if (name !== undefined) return readFile(join(directory, name), "utf8");
-  }
-  throw new Error("the analytics_v2_price_cards migration is neither staged nor promoted");
-}
 
 function minimalOutputs(overrides = {}) {
   const nowMs = Date.parse(NOW_1);

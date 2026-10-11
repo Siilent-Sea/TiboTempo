@@ -543,11 +543,14 @@ test("two devices of one social participant never cross-match an unchanged recei
 
     // B presents A's exact current vector against A's head. Only the device
     // scope separates this from an unchanged receipt for A's generation.
+    // A's manifests are not B's ready manifests, so activation refuses them
+    // as incomplete (29e8bb029 runs the ready-manifest check before the
+    // same-day successor closure, as D1's activation does).
     const quiet = await snapshot(context);
     const borrowed = await context.domain.createPredecessor(deviceB);
     assert.equal(borrowed.previousGenerationId, a2.generationId);
     await assert.rejects(context.domain.activate(deviceB, domainManifest(borrowed, vectorA)),
-      { status: 409, code: "TELEMETRY_MANIFEST_CONFLICT" });
+      { status: 409, code: "TELEMETRY_MANIFEST_INCOMPLETE" });
     const afterBorrowed = await snapshot(context);
     for (const name of SNAPSHOT_TABLES) {
       if (name === "telemetry_v12_domain_predecessors") continue;
