@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import { buildCommunityAllowanceChartModel, renderCommunityAllowanceSection } from "../public/community-view.js";
 import { COMMUNITY_ALLOWANCE_BREAKDOWN_SCHEMA_VERSIONS, COMMUNITY_DAILY_CACHE_SCHEMA_IDENTITY,
@@ -8,7 +9,7 @@ import { COMMUNITY_ALLOWANCE_BREAKDOWN_SCHEMA_VERSIONS, COMMUNITY_DAILY_CACHE_SC
   projectCommunityDailyPayloadForCache, PUBLIC_ALLOWANCE_MODEL_CONFIG, publicAllowanceModels } from "../public/community-data.js";
 import { translate, translatePlural } from "../public/localization.js";
 import { createLastKnownGoodStore } from "../public/last-known-good.js";
-import { publicAllowanceFixture } from "./fixtures/public-allowance.js";
+import { publicAllowanceFixture, SERVER_V15_COMMUNITY_DAILY, serverV15CommunityDailyBody } from "./fixtures/public-allowance.js";
 
 // Synthetic presentation data only; never served by a production client.
 const summary = (centralUsd, participants = 2) => ({
@@ -1471,4 +1472,138 @@ test("v1.5 current metadata names GPT-6.1 Sol exactly as v1.4 does", () => {
   assert.deepEqual(rendered.cards.map(card => card.label), ["GPT-6 Astra", "GPT-6.1 Sol", ...SIX_CARDS.slice(1)]);
   assert.equal(rendered.cards[1].value, "—");
   assert.doesNotMatch(renderView(v15Fixture()).text, /GPT-6\.1 Sol/u);
+});
+
+// ---- R1 server output: the exact v1.5 body the kernel-16 origin route served ----
+// Unlike v15Fixture, nothing here is shaped by the reader's own tests: the
+// fixture is the route's response bytes (see fixtures/public-allowance.js).
+const SERVER_NOW = Date.parse(SERVER_V15_COMMUNITY_DAILY.servedAt);
+const SERVER_RETAINED = Object.freeze({ fetchedAt: SERVER_V15_COMMUNITY_DAILY.servedAt, ageMs: 60_000 });
+const V15_PLAN_DIVISORS = Object.freeze({ pro: 1, prolite: 4, promax: 0.8, plus: 20 });
+const servedSummary = value => ({ centralUsd: value.centralUsd, participantCount: value.participantCount,
+  fitCount: value.fitCount, band80Usd: value.band80Usd === null ? null
+    : { lowerUsd: value.band80Usd.lowerUsd, upperUsd: value.band80Usd.upperUsd } });
+
+function renderServer(payload, { view = "plans", lang = "en-US", cache = null } = {}) {
+  const documentRef = { documentElement: { lang }, createElement: tag => new Element(tag),
+    createElementNS: (_, tag) => new Element(tag) };
+  const container = new Element("div"), heading = new Element("h2"), hero = new Element("p");
+  const state = renderCommunityAllowanceSection({ documentRef, container, headingNode: heading, heroNode: hero,
+    payload, view, cache });
+  const cards = container.descendants().filter(element => element.tag === "article")
+    .map(card => ({ label: card.descendants().find(element => element.tag === "h3")?.text, className: card.className,
+      value: card.descendants().find(element => element.tag === "strong")?.text, text: card.text }));
+  const panels = container.descendants()
+    .filter(element => element.tag === "div" && (element.className ?? "").split(" ").includes("allowance-panel"))
+    .map(panel => ({ title: panel.descendants().find(element => element.tag === "h4")?.text, className: panel.className,
+      hasSvg: panel.descendants().some(element => element.tag === "svg"), text: panel.text }));
+  return { state, cards, panels, text: container.text, heading: heading.text,
+    heroKey: hero.attributes.get("data-i18n") };
+}
+
+test("the R1 server's v1.5 body is its served bytes and normalizes under its exact claim with every value unchanged", () => {
+  const body = serverV15CommunityDailyBody();
+  const text = JSON.stringify(body);
+  assert.equal(Buffer.byteLength(text), SERVER_V15_COMMUNITY_DAILY.bodyBytes);
+  assert.equal(createHash("sha256").update(text).digest("hex"), SERVER_V15_COMMUNITY_DAILY.bodySha256,
+    "the fixture is the route's response body, unedited");
+  const served = body.allowanceBreakdowns;
+  assert.equal(served.schemaVersion, "community-allowance-breakdowns-v1.5");
+  // The premise of the empty Pro 25× assertions below: the server published no Pro Max fit.
+  assert.ok(served.days.every(day => day.byPlanType.promax.centralUsd === null && day.byPlanType.promax.fitCount === 0));
+  const series = normalizeCommunityDailySeries(body, { nowMs: SERVER_NOW });
+  assert.equal(series.state, "published");
+  const breakdowns = series.breakdowns;
+  assert.notEqual(breakdowns, null, "this reader accepts the served v1.5 breakdowns");
+  assert.equal(breakdowns.basis, COMMUNITY_ALLOWANCE_PRO20_PROMAX_BASIS);
+  assert.equal(breakdowns.normalization, COMMUNITY_ALLOWANCE_PRO20_PROMAX_NORMALIZATION);
+  assert.equal(breakdowns.modelBasis, V15_MODEL_BASIS);
+  assert.deepEqual(breakdowns.planIds, ["pro", "prolite", "promax", "plus"]);
+  assert.equal(breakdowns.modelMetadata, "applied");
+  assert.equal(breakdowns.unrecognizedModelTuples, 0);
+  assert.equal(breakdowns.generatedAt, served.generatedAt);
+  assert.deepEqual(breakdowns.days.map(day => day.day), served.days.map(day => day.day));
+  for (const [index, day] of served.days.entries()) {
+    assert.deepEqual(breakdowns.days[index].combined, servedSummary(day.combined), `${day.day} combined`);
+    for (const plan of breakdowns.planIds) {
+      assert.deepEqual(breakdowns.days[index].byPlanType[plan], servedSummary(day.byPlanType[plan]), `${day.day} ${plan}`);
+    }
+    assert.deepEqual(breakdowns.days[index].models, day.models, `${day.day} models`);
+  }
+  // A plan's own week is its latest published reference value / 1, 4, 0.8 or 20.
+  for (const [plan, divisor] of Object.entries(V15_PLAN_DIVISORS)) {
+    const panel = buildCommunityAllowanceChartModel(series, { view: "plans", seriesKeys: [plan] });
+    const latest = served.days.findLast(day => day.byPlanType[plan].centralUsd !== null);
+    if (latest === undefined) {
+      assert.equal(panel, null, `${plan} is never drawn at zero`);
+      continue;
+    }
+    assert.equal(panel.latest.day, latest.day);
+    assert.equal(panel.latest.centralUsd, latest.byPlanType[plan].centralUsd / divisor, plan);
+  }
+  // The page reads with the visitor's clock; a later visit sees the same publication.
+  assert.deepEqual(normalizeCommunityDailySeries(serverV15CommunityDailyBody()).breakdowns, breakdowns);
+});
+
+test("the R1 server's v1.5 body renders four plan cards, an empty Pro 25× card and panel, and the neutral cohort note", () => {
+  const english = renderServer(serverV15CommunityDailyBody());
+  assert.deepEqual(english.cards.map(card => [card.label, card.value]),
+    [["Plus", "$60"], ["Pro 5×", "$355"], ["Pro 25×", "—"], ["Pro 20×", "$1,485"]]);
+  assert.match(english.text, /Pro 5× \$355 Pro 20x-equivalent: \$1,421\/week/u, "own week leads; the served reference is unchanged");
+  assert.equal(english.heading, "Pro 20x-equivalent allowance");
+  for (const lang of ["en-US", "zh-Hans", "es"]) {
+    const rendered = renderServer(serverV15CommunityDailyBody(), { lang });
+    assert.equal(rendered.state, "published", lang);
+    assert.equal(rendered.heroKey, "community.allowance.heroCopy");
+    assert.deepEqual(rendered.cards.map(card => card.label), V15_PLAN_LABELS, `${lang} cards`);
+    assert.deepEqual(rendered.panels.map(panel => panel.title), V15_PLAN_LABELS, `${lang} panels`);
+    const noEstimate = translate("community.allowance.noModelEstimate", {}, lang);
+    assert.equal(rendered.cards[2].value, "—");
+    assert.ok(rendered.cards[2].text.includes(noEstimate), `${lang} empty Pro 25× card`);
+    assert.ok(rendered.cards.filter((_, index) => index !== 2).every(card => card.value !== "—"));
+    assert.match(rendered.panels[2].className, /allowance-panel-empty/u);
+    assert.ok(rendered.panels[2].text.includes(noEstimate), `${lang} empty Pro 25× panel`);
+    assert.equal(rendered.panels[2].hasSvg, false, "Pro Max is never drawn");
+    assert.ok(rendered.panels.filter((_, index) => index !== 2).every(panel => panel.hasSvg));
+    const note = translate("community.allowance.pro20Promax.planCohortNote", {}, lang);
+    assert.notEqual(note, "community.allowance.pro20Promax.planCohortNote");
+    assert.ok(rendered.text.includes(note), `${lang} cohort note`);
+    assert.doesNotMatch(note, /20[0-9]{2}|October|octubre|月|grandfather|anterior/u, "the cohort note is neutral");
+    assert.doesNotMatch(rendered.text, /Pro 10[×x]/u);
+    for (const view of ["aggregate", "models"]) {
+      const other = renderServer(serverV15CommunityDailyBody(), { view, lang });
+      assert.equal(other.state, "published", `${lang} ${view}`);
+      assert.equal(other.text.includes(note), false, "the cohort note belongs to the plan view");
+      assert.doesNotMatch(other.text, /Pro 10[×x]/u);
+    }
+  }
+});
+
+test("the R1 server's v1.5 body round-trips through the cache and the last-known-good store as v1.5", () => {
+  const body = serverV15CommunityDailyBody();
+  const live = normalizeCommunityDailySeries(body, { nowMs: SERVER_NOW });
+  const cached = projectCommunityDailyPayloadForCache(body, { nowMs: SERVER_NOW });
+  assert.equal(cached.allowanceBreakdowns.schemaVersion, "community-allowance-breakdowns-v1.5");
+  assert.equal(cached.allowanceBreakdowns.basis, COMMUNITY_ALLOWANCE_PRO20_PROMAX_BASIS);
+  assert.equal(cached.allowanceBreakdowns.normalization, COMMUNITY_ALLOWANCE_PRO20_PROMAX_NORMALIZATION);
+  assert.equal(cached.allowanceBreakdowns.modelBasis, V15_MODEL_BASIS);
+  assert.deepEqual(normalizeCommunityDailySeries(cached, { nowMs: SERVER_NOW, retained: true }).breakdowns, live.breakdowns);
+  for (const view of ["aggregate", "plans", "models"]) {
+    assert.deepEqual(renderServer(cached, { view, cache: SERVER_RETAINED }).cards, renderServer(body, { view }).cards, view);
+  }
+  const items = new Map();
+  const storage = { getItem: key => items.get(key) ?? null, setItem: (key, value) => { items.set(key, String(value)); },
+    removeItem: key => { items.delete(key); } };
+  const store = createLastKnownGoodStore({ key: "community-daily", schemaVersion: COMMUNITY_DAILY_CACHE_SCHEMA_IDENTITY,
+    project: payload => projectCommunityDailyPayloadForCache(payload, { nowMs: SERVER_NOW }), storage, now: () => SERVER_NOW });
+  assert.equal(store.resolve({ payload: serverV15CommunityDailyBody(), failure: null }).state, "live");
+  const offline = store.resolve({ payload: null, failure: Object.assign(new Error("read failed"), { status: 503 }) });
+  assert.equal(offline.state, "cached");
+  assert.equal(offline.payload.allowanceBreakdowns.schemaVersion, "community-allowance-breakdowns-v1.5");
+  assert.deepEqual(normalizeCommunityDailySeries(offline.payload, { nowMs: SERVER_NOW, retained: true }).breakdowns,
+    live.breakdowns, "the retained copy keeps every served value");
+  const retained = renderServer(offline.payload, { cache: SERVER_RETAINED });
+  assert.deepEqual(retained.cards, renderServer(body).cards);
+  assert.deepEqual(retained.cards.map(card => card.label), V15_PLAN_LABELS);
+  assert.equal(retained.cards[2].value, "—");
 });
