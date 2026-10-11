@@ -1356,6 +1356,200 @@ test("session closure reads every usage row of a large session in numeric order"
   });
 });
 
+// ---- Cross-format re-key guard (2026-10-11) ---------------------------------
+// Client occurrence ids are positional, so a re-parse can emit the same event
+// at the same instant under a new id. Effective readers union a participant's
+// accepted legacy candidates with its v1.2 head per day by occurrence id, so
+// an activation that re-keys this device's accepted older-format record would
+// count it twice. edca848 (the frozen oracle) had no such guard.
+const V11_TABLES = ["telemetry_classification_correction_links", "telemetry_v11_domains", "telemetry_v11_domain_days",
+  "telemetry_v11_domain_heads", "telemetry_v11_domain_predecessors", "storage_v11_event_sources",
+  "storage_ingestion_changes", "storage_owner_revisions", "input_versions", "community_analytical_input_versions"];
+const v11At = (day, index, patch = {}) => {
+  const { boundaryFlags, tieOrder, cacheWriteTtl, ...record } = usageAt(day, index,
+    { components: { ...usage().components, inputCacheWriteTokens: null }, ...patch });
+  return { ...record, schemaVersion: "usage-event-v1.1" };
+};
+// The same event in v1.2 with identical quantities (v1.1 has no cache-write split).
+const asV12 = (record, patch = {}) => ({ ...record, schemaVersion: "usage-event-v1.2",
+  boundaryFlags: 1, tieOrder: null, cacheWriteTtl: null, ...patch });
+const rekeyedId = label => `event:v2:${sha256Hex(`rekeyed:${label}`)}`;
+const pairWork = statements => statements.filter(sql => /classification_(?:foreign|exact)_\d+/u.test(sql));
+const guardStatement = statements => {
+  const found = statements.filter(sql => /\) rekeyed_legacy\s/u.test(sql));
+  assert.equal(found.length, 1, "the proof runs exactly one re-key guard statement");
+  return found[0];
+};
+
+/** The live proof refuses a re-key the frozen edca848 proof accepted, before any pair work. */
+async function rekeyRefusal(context, format, principal, manifest, token, label) {
+  const input = await proofInput(context, format, principal, manifest, token);
+  assert.equal((await runProof(modules.oracle.preparePostgresClassificationActivation, context, input)).outcome, ACCEPTED,
+    `${label}: edca848 accepted the re-key`);
+  const live = await runProof(modules.activation.preparePostgresClassificationActivation, context, input);
+  assert.equal(live.outcome, REFUSED, `${label}: the guard refuses`);
+  assert.equal(live.links.length, 0, `${label}: no link written`);
+  assert.deepEqual(pairWork(live.statements), [], `${label}: refused before any pair set or page`);
+  return guardStatement(live.statements);
+}
+
+/** Plan a captured guard statement over synthetic working sets of `rows` rows, then roll back. */
+async function syntheticGuardPlan(text, deviceId, rows) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT set_config('work_mem','64MB',true)");
+    for (const [name, streamType] of [["candidate", "integer"], ["source_10", "smallint"], ["source_11", "smallint"]]) {
+      await client.query(`CREATE TEMP TABLE pg_temp."classification_${name}" ON COMMIT DROP AS
+        SELECT (i%3+1)::${streamType} AS stream,decode(md5(i::text),'hex') AS occurrence_id,
+          (1780000000000+i*1000)::bigint AS observed_at_ms,((1780000000000+i*1000)/${DAY_MS})::integer AS observed_day,
+          $1::text AS source_device_id FROM generate_series(1,$2::integer) i`, [deviceId, rows]);
+      await client.query(`ANALYZE pg_temp."classification_${name}"`);
+    }
+    return (await client.query(`EXPLAIN (FORMAT JSON) ${text}`, [deviceId])).rows[0]["QUERY PLAN"][0].Plan;
+  } finally {
+    await client.query("ROLLBACK");
+    client.release();
+  }
+}
+
+test("v1.2 activation refuses a same-instant re-key of this device's accepted v1.1 history", {
+  skip: !PG_TEST_SOCKET, timeout: 180_000,
+}, async () => {
+  await withSchema(async context => {
+    const today = new Date().toISOString().slice(0, 10);
+    const participant = await seedParticipant(context, "rekey-v11");
+    const principal = await seedDevice(context, participant, "rekey-v11", { v12: false });
+    const options = { ...context.options, sourceNamespace: SOURCE_NAMESPACE };
+    await initializeScaleV11(modules, pool, context.schema, options);
+    await grantScaleV11(modules, pool, participant, principal, options);
+    const v11Domain = modules.live.createPostgresTelemetryV11Domain(pool, options);
+    const legacy = [0, 1, 2].map(index => v11At(today, index));
+    const legacyDay = await stageScaleV11Day(modules, pool, context.schema, options, principal, today, legacy);
+    assert.equal((await v11Domain.activate(principal, scaleV11DomainManifest(await v11Domain.createPredecessor(principal),
+      [legacyDay]))).replay, false);
+    await enableV12(context, principal);
+    const range = { fromDay: today, throughDay: today };
+    assert.equal((await evidence(context, participant, range)).usage.get(today).length, 3);
+    const v12Day = records => stage(context, principal, today, "usage", records);
+    const fresh = async days => { const predecessor = await context.domain.createPredecessor(principal);
+      return { predecessor, manifest: domainManifest(predecessor, days) }; };
+    const known = record => asV12(record, KNOWN);
+
+    // (b) The third legacy event is simply absent and the candidate has no
+    // record at its instant: the union keeps its legacy copy, so this accepts
+    // exactly as the frozen proof does, and activates.
+    const absent = await fresh([await v12Day([known(legacy[0]), known(legacy[1]), known(v11At(today, 3))])]);
+    const absentProof = await proofParity(context, 12, principal, absent.manifest, absent.predecessor.token, ACCEPTED,
+      "absent without a twin");
+    const guard = guardStatement(absentProof.live.statements);
+    assert.equal(absentProof.live.links.length, 2, "the two kept unknown v1.1 originals take exact links");
+    assert.equal((await context.domain.activate(principal, absent.manifest)).replay, false);
+    assert.equal((await evidence(context, participant, range)).usage.get(today).length, 4,
+      "the absent legacy event and the new event each count once");
+
+    // (c) Every id preserved: identical to the frozen proof, and the union
+    // still counts each event once.
+    const preserved = await fresh([await v12Day([...legacy, v11At(today, 3)].map(known))]);
+    const kept = await proofParity(context, 12, principal, preserved.manifest, preserved.predecessor.token, ACCEPTED,
+      "all ids preserved");
+    assert.equal(guardStatement(kept.live.statements), guard);
+    assert.equal(kept.live.links.length, 1, "the last unknown v1.1 original takes its exact link");
+    assert.ok(kept.live.links.every(row => Number(row.before_format) === 11));
+    assert.equal((await context.domain.activate(principal, preserved.manifest)).replay, false);
+    const accepted = await evidence(context, participant, range);
+    assert.equal(accepted.usage.get(today).length, 4, "each preserved occurrence counts once");
+    assert.ok(accepted.usage.get(today).every(row => JSON.parse(row.recordJson)?.modelId === MODEL));
+
+    // (a) The third event re-parsed under a new id at the same instant. The
+    // same-day closure passes (the earliest READY day's ids are all kept), so
+    // only the guard stands between this and a double count: with the guard
+    // bypassed it commits and the union counts five occurrences for four
+    // events. It refuses before any pair work and nothing is written.
+    const rekeyed = await fresh([await v12Day([known(legacy[0]), known(legacy[1]),
+      known({ ...legacy[2], eventId: rekeyedId("v11") }), known(v11At(today, 3))])]);
+    assert.equal(await rekeyRefusal(context, 12, principal, rekeyed.manifest, rekeyed.predecessor.token, "v1.1 re-key"), guard);
+    await refused(context, principal, rekeyed.manifest);
+    assert.deepEqual((await evidence(context, participant, range)).usage, accepted.usage);
+    // The same statement plans as two set joins over large working sets,
+    // never a per-row rescan of the candidate.
+    const joins = [...planNodes(await syntheticGuardPlan(guard, principal.deviceId, 20_000))]
+      .filter(node => /Join|Nested Loop/u.test(node["Node Type"]));
+    assert.equal(joins.length, 2);
+    for (const node of joins) {
+      assert.ok(["Hash Join", "Merge Join"].includes(node["Node Type"]), `the guard joins as a set (${node["Node Type"]})`);
+    }
+  });
+});
+
+test("the re-key guard covers v1 history for v1.1 and v1.2 activations, scoped to the activating device", {
+  skip: !PG_TEST_SOCKET, timeout: 180_000,
+}, async () => {
+  await withSchema(async context => {
+    const today = new Date().toISOString().slice(0, 10);
+    const participant = await seedParticipant(context, "rekey-v1");
+    const principal = await seedDevice(context, participant, "rekey-v1", { v12: false });
+    const other = await seedDevice(context, participant, "rekey-v1-other", { v12: false });
+    const options = { ...context.options, sourceNamespace: SOURCE_NAMESPACE };
+    await pool.query(`UPDATE ${context.table("telemetry_transport_formats")} SET lifecycle='accepted'
+      WHERE schema_version='telemetry-contribution-v1.1'`);
+    await modules.live.initializePostgresTypedV11Admission(pool, options);
+    await pool.query(`INSERT INTO ${context.table("typed_v1_admission_state")}(
+      id,source_namespace,namespace_id,runtime_contract_version,next_source_row_id)
+      SELECT 1,source_namespace,namespace_id,1,5 FROM ${context.table("typed_v11_admission_state")} WHERE id=1`);
+    const project = record => JSON.parse(modules.compatibility.telemetryV11LegacyProjection("usage", record).canonicalRecord);
+    const v11 = [0, 1, 2].map(index => v11At(today, index));
+    // This device's retained v1 history, and another device's v1 event at its own instant.
+    const own = await seedTypedV1Chunk(modules, pool, context.schema, { ...principal, principal },
+      { day: today, stream: "usage", chunkSeq: 0, records: v11.map(project) });
+    await own.admit({ ownerDigest: participant.ownerDigest, firstSourceRowId: 1 });
+    const foreignEvent = v11At(today, 5);
+    const foreign = await seedTypedV1Chunk(modules, pool, context.schema, { ...other, principal: other },
+      { day: today, stream: "usage", chunkSeq: 0, records: [project(foreignEvent)] });
+    await foreign.admit({ ownerDigest: participant.ownerDigest, firstSourceRowId: 4 });
+    await grantScaleV11(modules, pool, participant, principal, options);
+    const v2Rekeyed = { ...v11[2], eventId: rekeyedId("v1") };
+
+    // (d) A v1.1 activation that re-keys a v1 record at the same instant
+    // refuses with the existing compatibility code and writes nothing.
+    const v11Domain = modules.live.createPostgresTelemetryV11Domain(pool, options);
+    const rekeyedV11 = await stageScaleV11Day(modules, pool, context.schema, options, principal, today,
+      [v11[0], v11[1], v2Rekeyed]);
+    const v11Predecessor = await v11Domain.createPredecessor(principal);
+    const v11Manifest = scaleV11DomainManifest(v11Predecessor, [rekeyedV11]);
+    await rekeyRefusal(context, 11, principal, v11Manifest, v11Predecessor.token, "v1 re-key into v1.1");
+    const tables = async () => { const result = {}; for (const name of V11_TABLES) {
+      result[name] = (await pool.query(`SELECT count(*)::integer AS n,md5(COALESCE(string_agg(row::text,E'\\n'
+        ORDER BY row::text),'')) AS digest FROM ${context.table(name)} row`)).rows[0];
+    } return result; };
+    const quiet = await tables();
+    await assert.rejects(v11Domain.activate(principal, v11Manifest),
+      { status: 409, code: "TELEMETRY_COMPATIBILITY_PROOF_UNAVAILABLE" });
+    assert.deepEqual(await tables(), quiet, "refusal rolls back links, head, predecessor consumption and journal");
+
+    // (e) Another device's v1 event is absent from this candidate, which holds
+    // its own event at that instant: not this device's history, so accepted.
+    // This device's third v1 event is simply absent (no twin) as well.
+    await enableV12(context, principal);
+    const fresh = async days => { const predecessor = await context.domain.createPredecessor(principal);
+      return { predecessor, manifest: domainManifest(predecessor, days) }; };
+    const ownAtForeignInstant = asV12(foreignEvent, { eventId: rekeyedId("own-event-at-foreign-instant") });
+    const scoped = await fresh([await stage(context, principal, today, "usage",
+      [asV12(v11[0]), asV12(v11[1]), ownAtForeignInstant])]);
+    await proofParity(context, 12, principal, scoped.manifest, scoped.predecessor.token, ACCEPTED, "another device's history");
+    assert.equal((await context.domain.activate(principal, scoped.manifest)).replay, false);
+
+    // A v1.2 activation that re-keys this device's v1 record at the same
+    // instant (it has no accepted v1.1 history, so only the v1 set can
+    // refuse) uses the v1.2 conflict code. It keeps every id of the earliest
+    // READY day, so the same-day closure alone would have accepted it.
+    const rekeyedV12 = await fresh([await stage(context, principal, today, "usage",
+      [asV12(v11[0]), asV12(v11[1]), ownAtForeignInstant, asV12(v2Rekeyed)])]);
+    await rekeyRefusal(context, 12, principal, rekeyedV12.manifest, rekeyedV12.predecessor.token, "v1 re-key into v1.2");
+    await refused(context, principal, rekeyedV12.manifest);
+  });
+});
+
 test("migration76 is a forward-only addition to the current75 ledger and fences both reader generations", {
   skip: !PG_TEST_SOCKET, timeout: 120_000,
 }, async () => {

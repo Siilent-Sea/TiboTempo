@@ -149,6 +149,33 @@ class ClassificationWork {
     if (!this.built.has(`source_${format}`)) await this.records(`source_${format}`, oldSql(this.s, format));
     return work(`source_${format}`);
   }
+  /** Whether this device's accepted history in an older format holds a record
+   * the candidate re-keyed: its (stream, occurrence) is absent from the
+   * candidate on its observed day while the candidate has a record of the same
+   * stream at the same instant. Effective readers union legacy and v1.2
+   * candidates per day by occurrence id, so both copies would count. A record
+   * absent with no same-instant twin keeps only its legacy copy and passes.
+   * One hash semi-join and one hash anti-join over the analyzed working sets.
+   * It counts rather than stopping at the first row: a LIMIT lets the planner
+   * pick a fast-start nested-loop anti-join that rescans the candidate per
+   * legacy row (synthetic 2.75M candidate and 2.12M v1.1 rows: over 60 s,
+   * against about 2 s for the two hash joins). */
+  async rekeyed(formats: readonly (10 | 11)[]): Promise<boolean> {
+    const legacy: string[] = [];
+    for (const format of formats) {
+      legacy.push(`SELECT stream,occurrence_id,observed_at_ms,observed_day FROM ${await this.source(format)}
+        WHERE source_device_id=$1`);
+    }
+    const candidate = work("candidate");
+    const counted = await this.client.query<{rekeyed:string}>(`SELECT count(*)::text AS rekeyed
+      FROM (${legacy.join(" UNION ALL ")}) rekeyed_legacy
+      WHERE EXISTS (SELECT 1 FROM ${candidate} twin WHERE twin.stream=rekeyed_legacy.stream
+          AND twin.observed_day=rekeyed_legacy.observed_day AND twin.observed_at_ms=rekeyed_legacy.observed_at_ms)
+        AND NOT EXISTS (SELECT 1 FROM ${candidate} kept WHERE kept.stream=rekeyed_legacy.stream
+          AND kept.observed_day=rekeyed_legacy.observed_day AND kept.occurrence_id=rekeyed_legacy.occurrence_id)`,
+    [this.input.deviceId]);
+    return number(counted.rows[0]?.rekeyed) > 0;
+  }
   /** The exact pair multiset each original per-page statement joined. */
   async pairs(kind: "foreign" | "exact", format: PostgresClassificationFormat): Promise<void> {
     const old = await this.source(format);
@@ -254,8 +281,12 @@ export async function preparePostgresClassificationActivation(client: PostgresCl
   await client.query("SELECT set_config('work_mem',$1,true)",[CLASSIFICATION_WORK_MEM]);
   const sets=new ClassificationWork(client,s,input);
   // Every pair joins a candidate row, so an empty candidate proves both pair
-  // sets empty without reading history, as the per-page joins did.
-  if(await sets.candidate()>0) await prepareClassificationPairs(client,s,input,owner,sets);
+  // sets empty without reading history, as the per-page joins did. A
+  // cross-format re-key refuses before any pair work, so it fails fast.
+  if(await sets.candidate()>0){
+    if(await sets.rekeyed(input.format===12?[10,11]:[10])) fail();
+    await prepareClassificationPairs(client,s,input,owner,sets);
+  }
   await assertSessionClassificationClosure(client,s,input,sets);
   await sets.drop();
   await client.query("SELECT set_config('work_mem',$1,true)",[workMem]);

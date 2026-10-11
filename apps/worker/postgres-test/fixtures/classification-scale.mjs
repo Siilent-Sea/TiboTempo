@@ -288,6 +288,7 @@ export function statementFamily(text) {
     [/^CREATE TEMP TABLE\s+(\S+)/u, (m) => `temp:${m[1]}`],
     [/^CREATE INDEX\s+ON\s+(\S+)/u, (m) => `temp_index:${m[1]}`],
     [/^ANALYZE\s+(\S+)/u, (m) => `temp_analyze:${m[1]}`],
+    [/\) rekeyed_legacy\s/u, () => "proof:rekeyed"],
     [/candidate AS MATERIALIZED[\s\S]*original AS MATERIALIZED/u, () => "proof:session_closure"],
     [/old_source\.source_device_id<>\$3/u, () => "proof:foreign"],
     [/candidate AS MATERIALIZED[\s\S]*old_source AS MATERIALIZED/u, () => "proof:exact"],

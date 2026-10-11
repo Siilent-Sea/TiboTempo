@@ -436,6 +436,31 @@ each device id once, and join the device's chunks as a set. The proof raises
 `work_mem` to 64MB transaction-locally and restores it before returning, so
 multi-million-row histories hash in memory within the 60 s statement budget.
 
+Client occurrence ids are positional, so a re-parsed rollout can re-emit an
+event at the same instant under a new id. The effective readers union a
+participant's accepted v1 and v1.1 candidates with its v1.2 head per observed
+day by occurrence id, and the proof's other checks compare only same-id records
+or same-format baselines. Before any pair work, the proof therefore refuses an
+activation when the activating device's accepted history in a strictly older
+format (v1 for a v1.1 activation; v1 and v1.1 for a v1.2 activation) holds a
+record whose stream and occurrence id are absent from the candidate on its
+observed day while the candidate has a record of the same stream at the same
+instant: activating it would count that event twice. The refusal uses the
+callers' existing 409 codes (`TELEMETRY_MANIFEST_CONFLICT` for v1.2,
+`TELEMETRY_COMPATIBILITY_PROOF_UNAVAILABLE` for v1.1). A legacy record that is
+absent with no same-instant candidate record does not refuse, because the union
+keeps its legacy copy, and other devices' history is out of scope. The check
+is one count over the existing working sets, a hash semi-join and a hash
+anti-join; it reads every row rather than stopping at the first, because a
+`LIMIT` lets the planner choose a nested-loop anti-join that rescans the
+candidate per legacy row. With synthetic sets of 2.75M candidate and 2.12M
+v1.1 rows it took about 2 s locally (about 3.5 s with 1M more v1 rows).
+Because the same-day closure keeps every occurrence of a day's earliest READY
+v1.2 manifest in each successor, a device whose earliest READY manifest for a
+day already holds such a twin stays refused for that day while the legacy
+record remains accepted. The guard prevents the double count; it does not
+reconcile the two copies.
+
 The proof lives in `src/postgres-classification-activation.ts`, outside the
 analytics kernel's compute closure; the overlay readers and link predicate stay
 in `src/postgres-classification-links.ts`, which is inside it. A proof-only
@@ -448,7 +473,10 @@ postgres-test/classification-correction.spec.mjs` with an owned local
 whole-session provider closure, replay and the populated migration75-to76
 receipt fence. It also compares the bounded proof and the v1.1 closures with the
 frozen edca848 oracles in `postgres-test/fixtures/classification/` and bounds
-their plans. `scripts/classification-activation-scale-bench.mjs` reports
+their plans. The re-key cases show the frozen proof accepting each same-instant
+re-key that the live proof refuses, with nothing written, and the two agreeing
+when ids are preserved, a record is absent without a twin, or the history is
+another device's. `scripts/classification-activation-scale-bench.mjs` reports
 local, aggregate-only statement timings at synthetic scale; it is evidence, not
 a gate. Migration, image rollout and installed-client acceptance remain separate
 operational gates. GCP performance admission stays retired.
