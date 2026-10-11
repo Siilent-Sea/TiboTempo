@@ -135,26 +135,48 @@ days its active exclusions do not cover, where d43c8f92 withholds every day
 (round 19). The frozen interim export, served before GCP's first
 publication, keeps the breakdown version Cloudflare published.
 
-The post-cutover GCP projection serves `community-allowance-breakdowns-v1.4`
-from a newly computed `admin-community-allowance-preview-v0.4`, following the
-2026-10-02 round-9 decision. Its canonical base is v1.2; v1.2 remains reserved
-for the separate, never-deployed main release. v1.4 appends the same closed
-`modelConfig` metadata envelope. Its exact basis is
-`seven_day_codex_pro10x_equivalent_personal_plans_trailing_30d_promax25`,
-normalization is `pro_x1_prolite_x2_promax_x0_4_plus_x10`, and model basis is
-`seven_day_codex_pro10x_equivalent_per_model_composition`. Its four reviewed
-plans normalize raw fits and model capacities as Pro 10x ×1, Pro 5x ×2,
-Pro Max 25x ×0.4 and Plus ×10 before cohort summaries are computed. The
-Pro Max multiplier is a normalization assumption against the common personal
-plan baseline, not a provider-authoritative entitlement claim.
+The current GCP projection serves `community-allowance-breakdowns-v1.5` from
+a newly computed `admin-community-allowance-preview-v0.5` (owner option B',
+2026-10-10). It reports every personal plan in Pro 20x-week units. Its exact
+basis is
+`seven_day_codex_pro20x_equivalent_personal_plans_trailing_30d_promax25`,
+normalization is `pro_x1_prolite_x4_promax_x0_8_plus_x20`, and model basis is
+`seven_day_codex_pro20x_equivalent_per_model_composition_promax25`; the preview
+basis is the public basis with a `_preview` suffix. Its four reviewed plans, in
+this order, normalize raw fits and model capacities as Pro 20x ×1, Pro 5x ×4,
+Pro Max 25x ×0.8 and Plus ×20 before cohort summaries are computed; the
+reference plan stays `pro` and the model gate is unchanged. Every account whose
+plan type is `pro` counts at ×1 against the Pro 20x week; accounts on the newer
+10× Pro allowance are not separated.
+The Pro Max multiplier is a normalization assumption against the common
+personal plan baseline, not a provider-authoritative entitlement claim. Pro Max
+is always present in `byPlanType`, with an explicit empty summary when it has
+no fit. The v1.5 base envelope is never served without its closed `modelConfig`
+block, which is the same block v1.4 carries. With the same factors, the Pro,
+Pro 5x and Plus values and, without Pro Max fits, the combined value equal
+the retained v1.3 values exactly; against v1.4 a plan's own-week value can
+differ only by rounding below one cent. In the per-model view, Pro Max
+participants now enter at ×0.8, where v1.3 counted them unstable and v1.4
+used ×0.4.
 
-Retained v0.3 previews continue to validate against their frozen contract and
-project as v1.3, with the original Pro 20x ×1, Pro 5x ×4 and Plus ×20 values.
-Neither schema relabelling nor dividing an old combined median converts it to
-the new meaning. Raw `pro` fits and history remain continuous; normalization
-joins the derived projection identity, while the raw fit identity is unchanged.
-A new kernel and completed preview recomputation are required before new
-values can be served. This source contract does not claim a production rollout.
+Stored previews keep their own contract and meaning. Retained v0.4 previews
+validate against the frozen Pro 10x contract and project as v1.4 with
+unchanged bytes: basis
+`seven_day_codex_pro10x_equivalent_personal_plans_trailing_30d_promax25`,
+normalization `pro_x1_prolite_x2_promax_x0_4_plus_x10`, model basis
+`seven_day_codex_pro10x_equivalent_per_model_composition`, and plans Pro 10x
+×1, Pro 5x ×2, Pro Max 25x ×0.4 and Plus ×10 over a v1.2 canonical base (v1.2
+remains reserved for the separate, never-deployed main release). Retained v0.3
+previews continue to validate against their frozen contract and project as
+v1.3, with the original Pro 20x ×1, Pro 5x ×4 and Plus ×20 values. The three
+validators are mutually exclusive by schema version. Neither schema
+relabelling nor dividing an old combined median converts a stored preview to
+another meaning. Raw `pro` fits and history remain continuous; normalization
+joins the derived projection identity, while the raw fit identity is
+unchanged. Analytics kernel 15 and a completed preview recomputation are
+required before v1.5 values can be served; the public reader and admin client
+must accept v1.5 and v0.5 first, then the origin, then the Jobs. This source
+contract does not claim a production rollout.
 Unknown plans and separate-track Spark estimates remain excluded. Model values require the existing composition identification gate;
 historical values are never carried backward from today's fit.
 

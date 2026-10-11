@@ -398,6 +398,8 @@ import { CACHE_RETENTION_BAND_IDS, CACHE_RETENTION_METHOD,
 import { captureStorageCommunityAuthority } from "./storage-community-authority";
 import { readPublishedStorageCommunityDaily } from "./storage-community-daily";
 import { projectPublicAllowanceGraph } from "./public-allowance-breakdowns";
+import { wrapPublicAllowanceBreakdownsV15 } from "./analytics-v2/public-allowance-breakdowns-v15";
+import { buildCurrentPublicModelMetadata } from "./analytics-v2/public-model-metadata-current";
 import {
   COMMUNITY_ALLOWANCE_BASIS,
   COMMUNITY_ATTRIBUTION_METHOD_VERSION,
@@ -4022,9 +4024,16 @@ async function handleCommunityDaily(
   ).toISOString().slice(0, 10);
   // The read has already fenced the snapshot against hard invalidation. New
   // append-only inputs can leave it visible while the next calculation runs.
-  const graph = projectPublicAllowanceGraph(read.allowanceBreakdownsCache, {
+  const projected = projectPublicAllowanceGraph(read.allowanceBreakdownsCache, {
     publishedDays: read.rows.map((row) => row.day), nowMs,
   });
+  // The current base envelope already carries the public v1.5 label, which
+  // the public reader accepts only with its closed model metadata block, so
+  // this path never emits it bare. Only a current (v0.5) preview projects
+  // here; a stored retained preview is refused, never relabelled.
+  const graph = projected === null ? null : {
+    breakdowns: wrapPublicAllowanceBreakdownsV15(projected.breakdowns, buildCurrentPublicModelMetadata()),
+  };
   const dailyAllowanceReady = isCurrentCommunityAllowancePublication(read.allowancePublicationState, todayStartMs);
   const allowanceState = graph !== null || dailyAllowanceReady
     ? "ready"

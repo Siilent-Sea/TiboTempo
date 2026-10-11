@@ -13,7 +13,8 @@
  * analytics_v2_preview singleton, or NULL when a run could not build one.
  * This reader applies the same acceptance as the public community-daily
  * route's preview read (src/analytics-v2/community-daily-route.ts): canonical
- * JSON within the byte limit, the exact current or frozen legacy validator at nowMs, and
+ * JSON within the byte limit, the exact current (v0.5), retained Pro 10x (v0.4)
+ * or frozen legacy (v0.3) validator at nowMs, and
  * the payload returned in canonical key order (production stores and serves
  * canonicalJson(preview); jsonb does not keep key order).
  *

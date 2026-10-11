@@ -24,6 +24,9 @@ import {
   COMMUNITY_ATTRIBUTION_METHOD_VERSION,
 } from "../src/community-allowance";
 import type { PublicAllowanceBreakdowns } from "../src/public-allowance-breakdowns";
+import { buildCurrentPublicModelMetadata } from "../src/analytics-v2/public-model-metadata-current";
+// The synthetic retained Pro 10x (v0.4) preview the 22d9d90f builder wrote.
+import retainedPro10Preview from "../analytics-v2-test/fixtures/allowance-preview-v04.json";
 import {
   COMMUNITY_DAILY_SPEND_BASIS, COMMUNITY_DAILY_SPEND_PRICING_METHOD,
   COMMUNITY_DAILY_SPEND_REGISTRY_SHA256,
@@ -223,26 +226,32 @@ describe("GET /api/v1/community/daily", () => {
     expect(body.allowanceBreakdowns.days.map((day) => day.day)).toEqual([earlier, yesterday]);
     expect(body.allowanceBreakdowns.days[0]?.models).toEqual([]);
     expect(body.allowanceBreakdowns.days[1]?.models).toEqual([["gpt-6-astra", 1_166, 1]]);
-    // The single synthetic Plus fit is $60 at its own week; the genuine
-    // Pro10 reference uses Plus ×10, so both combined and Plus are $600.
+    // The single synthetic Plus fit is $60 at its own week; the Pro 20x B'
+    // reference uses Plus ×20, so both combined and Plus are $1,200.
     expect(body.allowanceBreakdowns).toMatchObject({
-      schemaVersion: "community-allowance-breakdowns-v1.2",
-      basis: "seven_day_codex_pro10x_equivalent_personal_plans_trailing_30d_promax25",
-      normalization: "pro_x1_prolite_x2_promax_x0_4_plus_x10",
-      modelBasis: "seven_day_codex_pro10x_equivalent_per_model_composition",
+      schemaVersion: "community-allowance-breakdowns-v1.5",
+      basis: "seven_day_codex_pro20x_equivalent_personal_plans_trailing_30d_promax25",
+      normalization: "pro_x1_prolite_x4_promax_x0_8_plus_x20",
+      modelBasis: "seven_day_codex_pro20x_equivalent_per_model_composition_promax25",
     });
+    // v1.5 is never emitted bare: the closed public block is the last member,
+    // and none of the private admin catalog fields cross with it.
+    const breakdowns = body.allowanceBreakdowns as unknown as Record<string, unknown>;
+    expect(Object.keys(breakdowns).at(-1)).toBe("modelConfig");
+    expect(breakdowns.modelConfig).toEqual(buildCurrentPublicModelMetadata());
     expect(Object.keys(body.allowanceBreakdowns.days[1]!.byPlanType).sort()).toEqual(["plus", "pro", "prolite", "promax"]);
     expect(body.allowanceBreakdowns.days[1]?.combined).toEqual({
-      centralUsd: 600, participantCount: 1, fitCount: 1, band80Usd: null,
+      centralUsd: 1_200, participantCount: 1, fitCount: 1, band80Usd: null,
     });
     expect(body.allowanceBreakdowns.days[1]?.byPlanType.promax).toEqual({
       centralUsd: null, participantCount: 0, fitCount: 0, band80Usd: null,
     });
     expect(body.allowanceBreakdowns.days[1]?.byPlanType.plus).toEqual({
-      centralUsd: 600, participantCount: 1, fitCount: 1, band80Usd: null,
+      centralUsd: 1_200, participantCount: 1, fitCount: 1, band80Usd: null,
     });
     for (const privateField of ["capacityByPlanType", "synthetic-private", "coverage", "catalogVersion",
-      "modelConfig", "source_mutation_epoch", "refusedParticipantCount", "unsupportedSourceParticipantCount"]) {
+      "allowanceTrack", "pricingStatus", "source_mutation_epoch", "refusedParticipantCount",
+      "unsupportedSourceParticipantCount"]) {
       expect(JSON.stringify(body)).not.toContain(privateField);
     }
     const narrow = await api(`/api/v1/community/daily?from=${yesterday}&to=${yesterday}`);
@@ -295,7 +304,7 @@ describe("GET /api/v1/community/daily", () => {
     const published = await updating.json();
     expect(published).toMatchObject({ allowanceState: "ready", days: [{ day }], allowanceBreakdowns: {
       generatedAt: new Date(nowMs).toISOString(),
-      days: [{ day, combined: { centralUsd: 600, participantCount: 1, fitCount: 1 } }],
+      days: [{ day, combined: { centralUsd: 1_200, participantCount: 1, fitCount: 1 } }],
     } });
     // Partially recomputed daily amounts cannot displace any graph mode.
     await seedDailyRevision({ day, revision: 2, payload: { allowance: { centralUsd: 9999 } } });
@@ -368,6 +377,21 @@ describe("GET /api/v1/community/daily", () => {
     });
     await seedBreakdownCache(nowMs + 5 * 60 * 1_000 + 5_000);
     await assertAbsent();
+  });
+
+  it("never relabels a retained Pro 10x preview or serves it bare on the legacy D1 path", async () => {
+    const nowMs = Date.now(), day = "2026-10-07";
+    expect(retainedPro10Preview.schemaVersion).toBe("admin-community-allowance-preview-v0.4");
+    await seedDailyRevision({ day, revision: 1 });
+    await seedReadyAllowanceState(nowMs);
+    await seedBreakdownCache(nowMs, { generatedAt: retainedPro10Preview.generatedAt,
+      payload: JSON.stringify(retainedPro10Preview) });
+    const response = await api(`/api/v1/community/daily?from=${day}&to=${day}`);
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toMatchObject({ allowanceState: "ready", days: [{ day }] });
+    expect(body).not.toHaveProperty("allowanceBreakdowns");
+    expect(JSON.stringify(body)).not.toMatch(/pro10x|community-allowance-breakdowns-v1\.[245]/u);
   });
 
   it("preserves activity without any cross-snapshot preview if the optional cache schema is unavailable", async () => {
@@ -530,10 +554,10 @@ describe("GET /api/v1/community/daily", () => {
 
     const mergedAllowance = {
       basis:
-        "seven_day_codex_pro10x_equivalent_personal_plans_trailing_30d_promax25",
+        "seven_day_codex_pro20x_equivalent_personal_plans_trailing_30d_promax25",
       limitId: "codex",
       referencePlanType: "pro",
-      normalization: "pro_x1_prolite_x2_promax_x0_4_plus_x10",
+      normalization: "pro_x1_prolite_x4_promax_x0_8_plus_x20",
       windowDurationMinutes: 10_080,
       trailingDays: 30,
       qualification: "shared_reset_fit_gates_25pp_span_floor",
@@ -567,7 +591,7 @@ describe("GET /api/v1/community/daily", () => {
     expect(updatingState).toMatchObject({
       publication_state: "updating",
       expected_basis:
-        "seven_day_codex_pro10x_equivalent_personal_plans_trailing_30d_promax25",
+        "seven_day_codex_pro20x_equivalent_personal_plans_trailing_30d_promax25",
       safe_to_day: today,
     });
 
@@ -609,7 +633,7 @@ describe("GET /api/v1/community/daily", () => {
     expect(readyBody.allowanceState).toBe("ready");
     expect(readyBody.days[0]?.payload.allowance).toMatchObject({
       basis:
-        "seven_day_codex_pro10x_equivalent_personal_plans_trailing_30d_promax25",
+        "seven_day_codex_pro20x_equivalent_personal_plans_trailing_30d_promax25",
       fitCount: 0,
       participantCount: 0,
       centralUsd: null,

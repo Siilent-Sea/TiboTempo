@@ -24,10 +24,12 @@
  *   historical publication contract described below, and allowance always
  *   removed (typed storage never has a current daily allowance publication);
  * - allowanceBreakdowns projects the stored preview under its declared basis:
- *   legacy v0.3 as community-allowance-breakdowns-v1.3 and current v0.4 as v1.4
- *   with the same closed catalog model-metadata block. The legacy projection
- *   retains its frozen 20x arithmetic; v1.4 uses the reviewed four-plan 10x
- *   normalization. Historical values are never relabelled as a new basis.
+ *   current v0.5 as community-allowance-breakdowns-v1.5 (the B' Pro
+ *   20x-equivalent four-plan normalization: Pro 20x x1, Pro 5x x4, Pro Max
+ *   25x x0.8, Plus x20), retained v0.4 as v1.4 (the frozen four-plan 10x
+ *   normalization) and legacy v0.3 as v1.3 (the frozen three-plan 20x
+ *   arithmetic), each with the same closed catalog model-metadata block.
+ *   Historical values are never relabelled as a new basis.
  *   allowanceReadState is
  *   `temporarily_unavailable`
  *   whenever the preview is absent, unreadable, oversized or fails the
@@ -565,8 +567,9 @@ function publicDayPayload(day: PublishedDay, historicalSpendDays: ReadonlySet<st
  * projection; owner decision round 7 keeps the compiled registry at cutover),
  * which is exactly the six models the d43c8f92 public page charts and never a
  * model the owner's selected comparison hides. Binding a later manifest here
- * is the post-cutover KM-4 change. Current v1.4 response metadata is bound
- * separately to the current preview catalog after the validated projection.
+ * is the post-cutover KM-4 change. Current v1.5 and retained v1.4 response
+ * metadata is bound separately to the current preview catalog after the
+ * validated projection.
  */
 export function analyticsV2PublicModelMetadata(): readonly PublicModelMetadataEntry[] {
   return buildPublicModelMetadata(compiledBaselineCatalogManifest());

@@ -1,18 +1,20 @@
-/** Post-cutover Pro 10x projection: canonical v1.2 meaning plus model metadata.
- * This wrapper never converts stored values. Only a freshly validated v0.4
- * preview can reach it through allowance-projection.ts. */
+/** Retained Pro 10x projection (2026-10-09): canonical v1.2 meaning plus model
+ * metadata. This wrapper never converts stored values. Only a freshly validated
+ * retained v0.4 preview can reach it through allowance-projection.ts. It
+ * compares against the frozen COMMUNITY_ALLOWANCE_PRO10_* literals, never the
+ * moving current basis, so the B' (v0.5) cutover cannot relabel it. */
 import {
   isPublicModelMetadataBlock,
   PUBLIC_ALLOWANCE_BREAKDOWNS_V11_KEYS,
   type PublicModelMetadataEntry,
 } from "./public-allowance-breakdowns-v13";
 import {
-  COMMUNITY_ALLOWANCE_BASIS,
-  COMMUNITY_ALLOWANCE_NORMALIZATION,
+  COMMUNITY_ALLOWANCE_PRO10_BASIS,
+  COMMUNITY_ALLOWANCE_PRO10_NORMALIZATION,
 } from "../community-allowance";
 import {
-  ADMIN_COMMUNITY_ALLOWANCE_MODELS_BASIS,
   ADMIN_COMMUNITY_ALLOWANCE_MODELS_GATE,
+  ADMIN_COMMUNITY_ALLOWANCE_PRO10_MODELS_BASIS,
 } from "../admin-community-allowance";
 
 export const PUBLIC_ALLOWANCE_BREAKDOWNS_V14_SCHEMA_VERSION = "community-allowance-breakdowns-v1.4" as const;
@@ -30,10 +32,10 @@ function validBase(value: unknown): value is Record<string, unknown> {
   return keys.length === PUBLIC_ALLOWANCE_BREAKDOWNS_V11_KEYS.length
     && keys.every((key, index) => key === PUBLIC_ALLOWANCE_BREAKDOWNS_V11_KEYS[index])
     && row.schemaVersion === PUBLIC_ALLOWANCE_BREAKDOWNS_V14_BASE_SCHEMA_VERSION
-    && row.basis === COMMUNITY_ALLOWANCE_BASIS
+    && row.basis === COMMUNITY_ALLOWANCE_PRO10_BASIS
     && row.referencePlanType === "pro"
-    && row.normalization === COMMUNITY_ALLOWANCE_NORMALIZATION
-    && row.modelBasis === ADMIN_COMMUNITY_ALLOWANCE_MODELS_BASIS
+    && row.normalization === COMMUNITY_ALLOWANCE_PRO10_NORMALIZATION
+    && row.modelBasis === ADMIN_COMMUNITY_ALLOWANCE_PRO10_MODELS_BASIS
     && row.modelGate === ADMIN_COMMUNITY_ALLOWANCE_MODELS_GATE;
 }
 

@@ -93,6 +93,8 @@ async function loadModules() {
     route: await vite.ssrLoadModule("/src/analytics-v2/community-daily-route.ts"),
     v13: await vite.ssrLoadModule("/src/analytics-v2/public-allowance-breakdowns-v13.ts"),
     v14: await vite.ssrLoadModule("/src/analytics-v2/public-allowance-breakdowns-v14.ts"),
+    v15: await vite.ssrLoadModule("/src/analytics-v2/public-allowance-breakdowns-v15.ts"),
+    currentMetadata: await vite.ssrLoadModule("/src/analytics-v2/public-model-metadata-current.ts"),
     projection: await vite.ssrLoadModule("/src/analytics-v2/allowance-projection.ts"),
     kernel: await vite.ssrLoadModule("/src/analytics-v2/kernel.ts"),
     repriceRead: await vite.ssrLoadModule("/src/analytics-v2/reprice-read.ts"),
@@ -277,7 +279,17 @@ function preview() {
   });
 }
 
-/** The same raw owner fits, projected by the current Pro10x contract. */
+/**
+ * The retained Pro 10x (v0.4) preview of the same raw owner fits and model
+ * tuples: exactly what currentPreview() built at 22d9d90f, before the B'
+ * cutover, stored as its canonical bytes. Nothing builds v0.4 any more.
+ */
+function retainedPro10Preview() {
+  return JSON.parse(readFileSync(resolve(WORKER_ROOT,
+    "analytics-v2-test/fixtures/community-daily-route-preview-v04.json"), "utf8"));
+}
+
+/** The same raw owner fits, projected by the current Pro 20x B' (v0.5) contract. */
 function currentPreview() {
   const { projection } = modules;
   return projection.buildAdminCommunityAllowancePreview([
@@ -544,8 +556,13 @@ function expectedAllowanceBreakdowns() {
   };
 }
 
-/** Hand-derived current contract; the legacy expected HTTP bytes stay frozen. */
-function expectedCurrentAllowanceBreakdowns() {
+/** The current presentation block v1.4 and v1.5 responses carry (b89f5fc5). */
+function expectedCurrentModelConfig() {
+  return modules.currentMetadata.buildCurrentPublicModelMetadata();
+}
+
+/** Hand-derived retained Pro 10x contract; the legacy expected HTTP bytes stay frozen. */
+function expectedRetainedPro10AllowanceBreakdowns() {
   const legacy = expectedAllowanceBreakdowns();
   return {
     ...legacy,
@@ -563,6 +580,25 @@ function expectedCurrentAllowanceBreakdowns() {
         plus: index === 0 ? EMPTY_SUMMARY : { ...day.byPlanType.plus, centralUsd: 600 },
       },
     })),
+    modelConfig: expectedCurrentModelConfig(),
+  };
+}
+
+/** Hand-derived current B' contract: the legacy Pro 20x amounts, Pro Max empty. */
+function expectedCurrentAllowanceBreakdowns() {
+  const legacy = expectedAllowanceBreakdowns();
+  return {
+    ...legacy,
+    schemaVersion: "community-allowance-breakdowns-v1.5",
+    basis: "seven_day_codex_pro20x_equivalent_personal_plans_trailing_30d_promax25",
+    normalization: "pro_x1_prolite_x4_promax_x0_8_plus_x20",
+    modelBasis: "seven_day_codex_pro20x_equivalent_per_model_composition_promax25",
+    days: legacy.days.map((day) => ({
+      ...day,
+      byPlanType: { pro: day.byPlanType.pro, prolite: day.byPlanType.prolite, promax: EMPTY_SUMMARY,
+        plus: day.byPlanType.plus },
+    })),
+    modelConfig: expectedCurrentModelConfig(),
   };
 }
 
@@ -712,15 +748,18 @@ test("breakdowns v1.3: only the declared relabel and catalog-baseline block diff
   assert.equal(named.has("gpt-5.5"), false);
 });
 
-test("breakdowns v1.4: real current preview changes plan amounts and preserves the other HTTP bytes", { skip }, async () => {
-  await reseed({ previewValue: currentPreview() });
+test("breakdowns v1.4: a retained Pro 10x preview keeps its plan amounts and every other HTTP byte", { skip }, async () => {
+  const retained = retainedPro10Preview();
+  assert.equal(retained.schemaVersion, "admin-community-allowance-preview-v0.4");
+  assert.equal(modules.projection.validCachedAdminCommunityAllowancePreview(retained, retained.generatedAt, NOW_MS), false);
+  await reseed({ previewValue: retained });
   const { response, text } = await get(`?from=${FROM}&to=${TO}`);
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("cache-control"), "public, max-age=300");
-  const expected = { ...expectedResponse(), allowanceBreakdowns: expectedCurrentAllowanceBreakdowns() };
+  const expected = { ...expectedResponse(), allowanceBreakdowns: expectedRetainedPro10AllowanceBreakdowns() };
   assert.equal(text, JSON.stringify(expected));
   const { base, metadata } = modules.v14.reducePublicAllowanceBreakdownsV14(JSON.parse(text).allowanceBreakdowns);
-  assert.deepEqual(metadata, expectedModelConfig());
+  assert.deepEqual(metadata, expectedCurrentModelConfig());
   assert.equal(base.schemaVersion, "community-allowance-breakdowns-v1.2");
   assert.deepEqual(base.days[2].byPlanType.promax, EMPTY_SUMMARY);
   for (const secret of [OWNER_A, OWNER_B, "synthetic-participant", "capacityByPlanType"]) {
@@ -728,17 +767,54 @@ test("breakdowns v1.4: real current preview changes plan amounts and preserves t
   }
 });
 
+test("breakdowns v1.5: the current B' preview serves the Pro 20x amounts with Pro Max explicitly empty", { skip }, async () => {
+  const current = currentPreview();
+  assert.equal(current.schemaVersion, "admin-community-allowance-preview-v0.5");
+  await reseed({ previewValue: current });
+  const { response, text } = await get(`?from=${FROM}&to=${TO}`);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "public, max-age=300");
+  const expected = { ...expectedResponse(), allowanceBreakdowns: expectedCurrentAllowanceBreakdowns() };
+  assert.equal(text, JSON.stringify(expected));
+  const served = JSON.parse(text).allowanceBreakdowns;
+  const { base, metadata } = modules.v15.reducePublicAllowanceBreakdownsV15(served);
+  assert.deepEqual(metadata, expectedCurrentModelConfig());
+  // Only the block is declared: the base keeps the v1.5 label, never v1.2 or v1.3.
+  assert.equal(base.schemaVersion, "community-allowance-breakdowns-v1.5");
+  for (const day of served.days) {
+    assert.deepEqual(Object.keys(day.byPlanType), ["pro", "prolite", "promax", "plus"]);
+    assert.deepEqual(day.byPlanType.promax, EMPTY_SUMMARY);
+  }
+  // Pro, Pro 5x, Plus and combined equal the retained v1.3 amounts exactly.
+  const legacy = expectedAllowanceBreakdowns();
+  assert.deepEqual(served.days.map((day) => [day.day, day.combined, day.byPlanType.pro, day.byPlanType.prolite,
+    day.byPlanType.plus, day.models]), legacy.days.map((day) => [day.day, day.combined, day.byPlanType.pro,
+    day.byPlanType.prolite, day.byPlanType.plus, day.models]));
+  for (const secret of [OWNER_A, OWNER_B, "synthetic-participant", "capacityByPlanType"]) {
+    assert.equal(text.includes(secret), false, secret);
+  }
+});
+
 test("mixed or malformed preview meaning withholds breakdowns while preserving published days", { skip }, async () => {
-  const legacy = preview(), current = currentPreview();
+  const legacy = preview(), current = currentPreview(), retained = retainedPro10Preview();
   const malformed = structuredClone(current);
   malformed.days.at(-1).combined.centralUsd = -1;
+  const malformedRetained = structuredClone(retained);
+  malformedRetained.days.at(-1).combined.centralUsd = -1;
+  const crossed = [];
+  // Every swap of a declared field between the three contracts is refused.
+  for (const [target, source] of [[current, legacy], [legacy, current], [current, retained], [retained, current],
+    [retained, legacy], [legacy, retained]]) {
+    crossed.push({ ...target, schemaVersion: source.schemaVersion }, { ...target, basis: source.basis },
+      { ...target, plans: source.plans }, { ...target, models: { ...target.models, basis: source.models.basis } });
+  }
   for (const previewValue of [
-    { ...current, schemaVersion: legacy.schemaVersion },
-    { ...current, basis: legacy.basis },
-    { ...legacy, schemaVersion: current.schemaVersion },
-    { ...legacy, plans: current.plans },
+    ...crossed,
+    { ...current, schemaVersion: "admin-community-allowance-preview-v0.6" },
     { ...current, participantId: "synthetic-private-field" },
+    { ...retained, participantId: "synthetic-private-field" },
     malformed,
+    malformedRetained,
   ]) {
     await reseed({ previewValue });
     const { response, text } = await get(`?from=${FROM}&to=${TO}`);

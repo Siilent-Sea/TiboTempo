@@ -1,6 +1,6 @@
 // A-2 analytics-refresh compute core: computeAnalyticsV2 over synthetic,
 // content-free effective occurrences. Raw owner kernels remain vendored; the
-// cross-owner projection uses the current Pro 10x facade. The retained legacy
+// cross-owner projection uses the current Pro 20x B' facade. The retained legacy
 // compose oracle remains independently pinned in compose-proof.spec.ts.
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
@@ -35,6 +35,8 @@ import {
   mergeCacheRetentionBands,
   publicCacheRetentionWindow,
   type CacheRetentionBandRow,
+  buildAdminCommunityAllowancePreview as buildLegacyPreview,
+  type CommunityAllowanceFit,
 } from "../vendor/analytics-d43c8f92/entry";
 import { validCachedAdminCommunityAllowancePreview } from "../src/analytics-v2/allowance-projection";
 import type { AdminCommunityAllowancePreview } from "../src/admin-community-allowance";
@@ -149,7 +151,7 @@ const refusalsOf = (outputs: AnalyticsV2ComputeOutputs, ownerDigest: string) =>
 const fitOwners = (outputs: AnalyticsV2ComputeOutputs) => outputs.ownerFits.map((row) => row.ownerDigest);
 
 describe("computeAnalyticsV2 (A-2)", () => {
-  it("(a) preserves raw compose evidence and (f) emits a valid current Pro 10x preview", async () => {
+  it("(a) preserves raw compose evidence and (f) emits a valid current Pro 20x B' preview", async () => {
     const corpus = composeProofCorpus();
     const outputs = await computeAnalyticsV2(inputFor(corpus, corpus.publishedDays));
     expect(outputs.refusals).toEqual([]);
@@ -188,11 +190,24 @@ describe("computeAnalyticsV2 (A-2)", () => {
     expect(cacheRetention!.windows.length).toBe(4);
     // The new projection has an explicitly changed unit and plan roster. Raw
     // owner results keep their existing separate pinned parity evidence.
-    expect(preview.schemaVersion).toBe("admin-community-allowance-preview-v0.4");
-    expect(graph!.breakdowns.schemaVersion).toBe("community-allowance-breakdowns-v1.2");
+    expect(preview.schemaVersion).toBe("admin-community-allowance-preview-v0.5");
+    expect(graph!.breakdowns.schemaVersion).toBe("community-allowance-breakdowns-v1.5");
     expect(Object.keys(preview.days.at(-1)!.byPlanType)).toEqual(["pro", "prolite", "promax", "plus"]);
-    expect(sha(JSON.stringify(response))).toBe("ec959e16133ddc9e95cdf7f07a4a48751c036f0edea8e6975e61a09b3289fa5f");
-    expect(sha(JSON.stringify(preview))).toBe("8fd1aff6a455a6bba2c533fcba9f55f719234190a2ecd28a87e5f2c559dc4ec8");
+    // Anchor the re-derived pins: the compose corpus holds no Pro Max fit, so
+    // every B' day equals the vendored v0.3 Pro 20x build over the same fits.
+    const ownerFits = outputs.ownerFits.flatMap((row) => row.fits as CommunityAllowanceFit[]);
+    expect(ownerFits.some((fit) => fit.planType === "promax")).toBe(false);
+    const legacy = buildLegacyPreview(ownerFits, NOW_MS);
+    expect(legacy.days.map((day) => day.day)).toEqual(preview.days.map((day) => day.day));
+    for (const [index, day] of preview.days.entries()) {
+      const old = legacy.days[index]!;
+      expect(JSON.stringify([day.combined, day.byPlanType.pro, day.byPlanType.prolite, day.byPlanType.plus]))
+        .toBe(JSON.stringify([old.combined, old.byPlanType.pro, old.byPlanType.prolite, old.byPlanType.plus]));
+      expect(day.byPlanType.promax).toEqual({ fitCount: 0, participantCount: 0, centralUsd: null, band80Usd: null });
+    }
+    expect(preview.days.filter((day) => day.combined.fitCount > 0).length).toBeGreaterThan(0);
+    expect(sha(JSON.stringify(response))).toBe("51a7d0cb490c82b92e88783d5d14ea01bbe6a44dd636522ce40e4b3cce2e3a9a");
+    expect(sha(JSON.stringify(preview))).toBe("7e69cbb790b249ef40fef152b28dfc2c786d99e30102f0551ebe0fe5ba284ba9");
 
     // Content identity excludes only the revision stamp; a restamp keeps it.
     const first = outputs.dailyCandidates[0]!;

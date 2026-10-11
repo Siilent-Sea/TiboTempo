@@ -117,6 +117,7 @@ async function loadModules() {
     workerMetricsHistory: await load("/src/admin-metrics-history.ts"),
     kernels: await load("/vendor/analytics-d43c8f92/entry.ts"),
     contract: await load("/vendor/analytics-d43c8f92/packages/telemetry-contract/index.js"),
+    projection: await load("/src/analytics-v2/allowance-projection.ts"),
   };
 }
 
@@ -889,6 +890,37 @@ test("allowance preview serves the stored preview exactly as the Worker stores a
       "503 BACKEND_STORAGE_UNAVAILABLE");
   } finally {
     await pool.query(`ALTER TABLE ${q("c_admin_hidden_preview")} RENAME TO analytics_v2_preview`);
+  }
+});
+
+test("allowance preview reads back the current v0.5 and retained v0.4 contracts exactly and refuses crossed claims", { skip }, async () => {
+  const read = (nowMs) => m.preview.readPostgresAdminAllowancePreview(pool, schema, nowMs);
+  const current = m.projection.buildAdminCommunityAllowancePreview([
+    { participantId: "synthetic-participant-promax", planType: "promax",
+      capacityNanousd: 1_750_000_000_000, lastObservedAt: new Date(NOW_MS - 2 * DAY_MS).toISOString() },
+  ], NOW_MS);
+  assert.equal(current.schemaVersion, "admin-community-allowance-preview-v0.5");
+  await setPreview(current);
+  assert.equal(JSON.stringify(await read(NOW_MS)), m.canonical.canonicalJson(current));
+  // The retained v0.4 golden written by the 22d9d90f (Pro 10x) builder.
+  const retainedText = (await readFile(join(WORKER_ROOT, "analytics-v2-test", "fixtures",
+    "allowance-preview-v04.json"), "utf8")).trimEnd();
+  const retained = JSON.parse(retainedText);
+  const retainedNow = Date.parse(retained.generatedAt);
+  assert.equal(retained.schemaVersion, "admin-community-allowance-preview-v0.4");
+  await setPreview(retained);
+  assert.equal(JSON.stringify(await read(retainedNow)), retainedText);
+  for (const [value, nowMs] of [
+    [{ ...current, schemaVersion: retained.schemaVersion }, NOW_MS], [{ ...current, basis: retained.basis }, NOW_MS],
+    [{ ...current, plans: retained.plans }, NOW_MS],
+    [{ ...current, models: { ...current.models, basis: retained.models.basis } }, NOW_MS],
+    [{ ...current, schemaVersion: "admin-community-allowance-preview-v0.6" }, NOW_MS],
+    [{ ...retained, schemaVersion: current.schemaVersion }, retainedNow], [{ ...retained, basis: current.basis }, retainedNow],
+    [{ ...retained, plans: current.plans }, retainedNow],
+    [{ ...retained, models: { ...retained.models, basis: current.models.basis } }, retainedNow],
+  ]) {
+    await setPreview(value);
+    assert.equal(await read(nowMs), null);
   }
 });
 
