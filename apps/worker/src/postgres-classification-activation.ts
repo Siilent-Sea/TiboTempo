@@ -14,6 +14,9 @@ import {
 } from "./postgres-classification-correction";
 import { readPostgresClassificationRecords, readPostgresClassificationHeaderProofs } from "./postgres-classification-records";
 import { PAGE, HEX, fail, t, hex, number, readLinks, resolveLinks, type LinkRow } from "./postgres-classification-links";
+// The occurrence reader's own retained v1.2 authorization scope. Importing it
+// here leaves the kernel closure unchanged: no closure file imports this module.
+import { v12RetainedAuthorizationScopeSql } from "./analytics-v2/owners";
 
 const CLASSIFICATION_WORK_MEM = "64MB";
 
@@ -131,6 +134,14 @@ const WORK_SETS: readonly WorkSet[] = ["candidate", "rekey_twins", "rekey_accept
 // design with a 'quota-occurrence:v1:' id that admission maps only through
 // typed_v11_record_admissions.legacy_occurrence_id (assertTypedV1Transition).
 const V1_STABLE_STREAMS = "1,3";
+// The token quantities a usage twin keeps (null-safe). Cache write is compared
+// only when both formats carry it (v1 and v1.1 may leave it null). Model,
+// provider and attribution are not compared: a classification correction may
+// change them.
+const USAGE_QUANTITIES = ["total_input_context_tokens", "input_uncached_tokens", "input_cache_read_tokens",
+  "output_text_tokens", "output_reasoning_tokens"] as const;
+const USAGE_QUANTITIES_DIFFER = [...USAGE_QUANTITIES.map(name => `legacy_usage.${name} IS DISTINCT FROM twin_usage.${name}`),
+  "legacy_usage.input_cache_write_tokens<>twin_usage.input_cache_write_tokens"].join(" OR ");
 // Every set statement binds the same three values; the unused scope CTE only
 // types them, so oldSql(10|11) may leave $3 unreferenced.
 function workPrelude(): string {
@@ -163,85 +174,116 @@ class ClassificationWork {
     return value;
   }
   /** Whether activating would introduce a re-keyed twin of the participant's
-   * accepted older-format history (v1 for v1.1; v1 and v1.1 for v1.2). The
-   * effective readers union legacy and v1.2 candidates per observed day by
-   * occurrence id, so an event re-emitted under a new id counts twice. Client
-   * ids are positional, so a rewritten rollout re-emits an event at the same
-   * instant under a new id but keeps what the event is. A twin is a candidate
-   * record that
+   * accepted history: v1 for v1.1; v1, v1.1 and the other devices' v1.2 for
+   * v1.2. The effective readers union legacy and v1.2 candidates per observed
+   * day by occurrence id, so an event re-emitted under a new id counts twice.
+   * Client ids are positional, so a rewritten rollout re-emits an event at the
+   * same instant under a new id but keeps what the event is. A twin is a
+   * candidate record that
    *  - shares (stream, day, instant) with a legacy record whose (stream,
    *    occurrence) the candidate lacks on that day, and is the same event:
-   *    usage in the same session (null-safe); quota with the same limit and
-   *    slot (an observation id hashes source position, limit and slot); a
-   *    session record, whose id is its session, linked by a usage occurrence
-   *    kept under its own id that names the dropped session in legacy and
-   *    the twin in the candidate (the client's only session re-key is its
-   *    stand-in to raw identity switch, which keeps every event id),
+   *    usage in the same session (null-safe) with the same token quantities
+   *    (USAGE_QUANTITIES), so a distinct event of a same-instant tie group is
+   *    none; quota with the same limit and slot (an observation id hashes
+   *    source position, limit and slot); a session record, whose id is its
+   *    session, linked by a usage occurrence kept under its own id that names
+   *    the dropped session in legacy and the twin in the candidate (the
+   *    client's only session re-key is its stand-in to raw identity switch,
+   *    which keeps every event id),
    *  - matches no legacy record by (stream, occurrence): a same-instant
    *    sibling kept under its own id is not a twin (nor is a re-keyed copy
    *    kept beside its original id, which has the same shape),
-   *  - is not already in this device's accepted history of the activating
-   *    format (every accepted v1.2 generation, which the v1.2 reader reads
-   *    whole; the accepted v1.1 set), so a twin an earlier proof accepted
-   *    neither wedges the device nor counts as newly introduced. Pinned
-   *    predecessor days are not that history: they are each day's earliest
-   *    READY manifest, which a refused activation leaves pinned. Another
-   *    device's accepted history is not consulted: whether the readers still
-   *    read it depends on that device's retained authorization.
+   *  - is not already in accepted history of the activating format that the
+   *    readers read, so a twin an earlier proof accepted neither wedges a
+   *    device nor counts as newly introduced. For v1.2 that is every accepted
+   *    generation of this device and of the participant's other devices in
+   *    the occurrence reader's retained authorization scope (the reader reads
+   *    each of those generations whole), so a re-paired machine is not wedged
+   *    by its old device's accepted twin. For v1.1 it is the participant's
+   *    accepted v1.1 set, which the legacy reader reads for every device.
+   *    Pinned predecessor days are not that history: they are each day's
+   *    earliest READY manifest, which a refused activation leaves pinned.
    * Usage and session legacy is every device of the participant: a machine
    * re-paired under a new device id keeps its device salt, so its event and
    * session ids persist. Event ids are salted and a session id is the
-   * machine's own (a random Codex session id or a salted stand-in), so a
-   * twin across device ids is the same machine's. Quota legacy stays this
-   * device's: a quota record names no session, so another device's
+   * machine's own (a random Codex session id or a salted stand-in), so a twin
+   * across device ids is the same machine's. For v1.2 it also holds the usage
+   * and session records of the participant's current head generation
+   * (source_12) that belong to another retained device, so a re-paired
+   * machine cannot re-key its old device's v1.2 history while that history
+   * is the head. Older generations are not legacy; the exemption above still
+   * reads them, so this subset only loses recall. Quota legacy stays this
+   * device's v1.1: a quota record names no session, so another device's
    * observation at the same instant, limit and slot is no evidence of the
    * same one. v1 quota is excluded (V1_STABLE_STREAMS): its id change is
    * designed.
    *
-   * The working sets have no indexes, so the statements over them run with
-   * nested loops disabled transaction-locally (restored before returning):
-   * the earlier single-statement v1-only form planned a nested-loop
-   * semi-join that rescans the candidate per unmatched legacy row and
-   * exceeded the 60 s budget (synthetic 2.75M candidate, 1M v1 rows). The
-   * quota detail lookup and the v1.2 history probe look rows up by key in
-   * indexed tables (the probe's accepted manifests in a keyed temporary
-   * table) and keep the planner default. */
+   * The working sets have no indexes, so the statements over them (the twin
+   * statement, the session link and the v1.1 history probe) run with nested
+   * loops disabled transaction-locally, restored before returning: the
+   * earlier single-statement v1-only form planned a nested-loop semi-join
+   * that rescans the candidate per unmatched legacy row and exceeded the
+   * 60 s budget (synthetic 2.75M candidate, 1M v1 rows). The usage and quota
+   * detail lookups and the v1.2 history probe look rows up by key in indexed
+   * tables (the probe's accepted manifests in a keyed temporary table) and
+   * keep the planner default. */
   async rekeyed(): Promise<boolean> {
     // Built here under the planner defaults: each is the v1.1 baseline or
-    // legacy history the pair work reads next for either activation format.
+    // legacy history the pair work reads next for either activation format
+    // (source_12 is the v1.2 pair work's history).
     const v1 = await this.source(10), v11 = await this.source(11);
     const v12 = this.input.format === 12, columns = "id,stream,occurrence_id,observed_at_ms,observed_day,session_id";
-    const legacy = [`SELECT ${columns} FROM ${v1} WHERE stream IN (${V1_STABLE_STREAMS})`];
-    if (v12) legacy.push(`SELECT ${columns} FROM ${v11} WHERE stream IN (${V1_STABLE_STREAMS}) OR source_device_id=$1`);
+    // The participant's other devices whose v1.2 generations the reader reads.
+    const others = v12 ? (await this.client.query<{device_id:string}>(`SELECT DISTINCT retained.device_id
+        FROM (${v12RetainedAuthorizationScopeSql(this.s, "now()", "reader")}) retained
+       WHERE retained.participant_id=$1 AND retained.device_id<>$2 ORDER BY retained.device_id`,
+      [this.input.participantId, this.input.deviceId])).rows.map(row => String(row.device_id)) : [];
+    // legacy_format names the detail tables a legacy id keys: 10 and 11 the
+    // typed legacy tables, 12 the v1.2 tables.
+    const legacy = [`SELECT ${columns},10 AS legacy_format FROM ${v1} WHERE stream IN (${V1_STABLE_STREAMS})`];
+    if (v12) {
+      const v12Source = await this.source(12);
+      legacy.push(`SELECT ${columns},11 FROM ${v11} WHERE stream IN (${V1_STABLE_STREAMS}) OR source_device_id=$1`,
+        `SELECT ${columns},12 FROM ${v12Source} WHERE stream IN (1,3) AND source_device_id=ANY($2::text[])`);
+    }
     const candidate = work("candidate"), pairs = work("rekey_twins");
     const nestloop = await this.setting("enable_nestloop");
-    await this.client.query("SELECT set_config('enable_nestloop','off',true)");
+    const planner = (value: string) => this.client.query("SELECT set_config('enable_nestloop',$1,true)", [value]);
+    await planner("off");
     // Provisional twin pairs: same stream, day, instant and (for usage) session.
     // A usage row always has a session; a missing one compares as the empty
     // id, which no session id is (2 to 257 bytes), so the key stays hashable.
-    // Quota pairs carry the dropped legacy record, session pairs its session.
+    // Usage and quota pairs carry the dropped legacy record, session pairs its
+    // session.
     let remaining = number((await this.client.query(`CREATE TEMP TABLE ${pairs} ON COMMIT DROP AS
       WITH rekeyed_legacy AS NOT MATERIALIZED (${legacy.join(" UNION ALL ")}),
       dropped AS MATERIALIZED (SELECT DISTINCT legacy.stream,legacy.observed_day,legacy.observed_at_ms,
-          COALESCE(legacy.session_id,''::bytea) AS session_key,CASE legacy.stream WHEN 2 THEN legacy.id END AS legacy_id,
+          COALESCE(legacy.session_id,''::bytea) AS session_key,
+          CASE WHEN legacy.stream<>3 THEN legacy.legacy_format END AS legacy_format,
+          CASE WHEN legacy.stream<>3 THEN legacy.id END AS legacy_id,
           CASE legacy.stream WHEN 3 THEN legacy.occurrence_id END AS legacy_session
         FROM rekeyed_legacy legacy WHERE NOT EXISTS (SELECT 1 FROM ${candidate} kept WHERE kept.stream=legacy.stream
           AND kept.observed_day=legacy.observed_day AND kept.occurrence_id=legacy.occurrence_id))
-      SELECT twin.id,twin.stream,twin.observed_day,twin.observed_at_ms,twin.occurrence_id,dropped.legacy_id,dropped.legacy_session
+      SELECT twin.id,twin.stream,twin.observed_day,twin.observed_at_ms,twin.occurrence_id,
+          dropped.legacy_format,dropped.legacy_id,dropped.legacy_session
         FROM ${candidate} twin JOIN dropped ON dropped.stream=twin.stream AND dropped.observed_day=twin.observed_day
          AND dropped.observed_at_ms=twin.observed_at_ms AND dropped.session_key=COALESCE(twin.session_id,''::bytea)
        WHERE NOT EXISTS (SELECT 1 FROM rekeyed_legacy matched WHERE matched.stream=twin.stream
-           AND matched.occurrence_id=twin.occurrence_id)`, v12 ? [this.input.deviceId] : [])).rowCount);
+           AND matched.occurrence_id=twin.occurrence_id)`, v12 ? [this.input.deviceId, others] : [])).rowCount);
     this.built.add("rekey_twins");
     let introduced = 0;
     if (remaining > 0) {
       await this.client.query(`ANALYZE ${pairs}`);
-      const streams = new Set((await this.client.query<{stream:number}>(`SELECT DISTINCT stream FROM ${pairs}`))
-        .rows.map(row => Number(row.stream)));
-      if (streams.has(3)) {
+      const kinds = (await this.client.query<{stream:number;legacy_format:number|null}>(
+        `SELECT DISTINCT stream,legacy_format FROM ${pairs}`)).rows
+        .map(row => ({ stream: Number(row.stream), legacy: row.legacy_format === null ? null : Number(row.legacy_format) }));
+      if (kinds.some(kind => kind.stream === 3)) {
         // Only usage rows of the provisional sessions join, by occurrence id.
         const usage = [`SELECT occurrence_id,session_id FROM ${v1} WHERE stream=1`];
-        if (v12) usage.push(`SELECT occurrence_id,session_id FROM ${v11} WHERE stream=1`);
+        if (v12) {
+          usage.push(`SELECT occurrence_id,session_id FROM ${v11} WHERE stream=1`,
+            `SELECT occurrence_id,session_id FROM ${work("source_12")} WHERE stream=1 AND source_device_id=ANY($1::text[])`);
+        }
         remaining -= number((await this.client.query(`WITH linked AS MATERIALIZED (
             SELECT DISTINCT old_usage.session_id AS legacy_session,new_usage.session_id AS twin_session
               FROM (${usage.join(" UNION ALL ")}) old_usage
@@ -249,10 +291,24 @@ class ClassificationWork {
              WHERE old_usage.session_id IN (SELECT legacy_session FROM ${pairs} WHERE stream=3)
                AND new_usage.session_id IN (SELECT occurrence_id FROM ${pairs} WHERE stream=3))
           DELETE FROM ${pairs} pair WHERE pair.stream=3 AND NOT EXISTS (SELECT 1 FROM linked
-            WHERE linked.legacy_session=pair.legacy_session AND linked.twin_session=pair.occurrence_id)`)).rowCount);
+            WHERE linked.legacy_session=pair.legacy_session AND linked.twin_session=pair.occurrence_id)`,
+        v12 ? [others] : [])).rowCount);
       }
-      if (v12) await this.client.query("SELECT set_config('enable_nestloop',$1,true)", [nestloop]);
-      if (streams.has(2)) {
+      // The detail lookups probe primary keys: the planner default from here.
+      await planner(nestloop);
+      // Only the provisional usage pairs are looked up, each in its own
+      // format's detail table, and a pair is dropped only when both detail
+      // rows exist and a quantity both carry differs; one missing a detail
+      // row stays a twin.
+      const twinUsage = t(this.s, v12 ? "telemetry_v12_typed_usage" : "typed_telemetry_usage");
+      for (const [legacyUsage, legacyFormat] of [["typed_telemetry_usage", "<12"], ["telemetry_v12_typed_usage", "=12"]] as const) {
+        if (!kinds.some(kind => kind.stream === 1 && (legacyFormat === "=12") === (kind.legacy === 12))) continue;
+        remaining -= number((await this.client.query(`DELETE FROM ${pairs} pair
+          USING ${t(this.s, legacyUsage)} legacy_usage,${twinUsage} twin_usage
+          WHERE pair.stream=1 AND pair.legacy_format${legacyFormat} AND legacy_usage.record_id=pair.legacy_id
+            AND twin_usage.record_id=pair.id AND (${USAGE_QUANTITIES_DIFFER})`)).rowCount);
+      }
+      if (kinds.some(kind => kind.stream === 2)) {
         // Quota legacy is v1.1 only, so only a v1.2 activation has quota
         // pairs. Both share the v1.2 dictionary, so limit and slot ids
         // compare. A pair is dropped only when both detail rows exist and
@@ -265,13 +321,16 @@ class ClassificationWork {
     }
     if (remaining > 0) {
       if (!v12) {
+        // A hash anti-join over the participant's accepted v1.1 set.
+        await planner("off");
         introduced = number((await this.client.query<{introduced:string}>(`SELECT count(*)::text AS introduced
           FROM ${pairs} twin WHERE NOT EXISTS (SELECT 1 FROM ${v11} accepted
-            WHERE accepted.source_device_id=$1 AND accepted.stream=twin.stream AND accepted.observed_day=twin.observed_day
-              AND accepted.occurrence_id=twin.occurrence_id)`, [this.input.deviceId])).rows[0]?.introduced);
+            WHERE accepted.stream=twin.stream AND accepted.observed_day=twin.observed_day
+              AND accepted.occurrence_id=twin.occurrence_id)`)).rows[0]?.introduced);
       } else {
-        // This device's accepted manifests of the twins' days, keyed, so the
-        // anti-joins below look each one up rather than rescanning a set.
+        // The accepted manifests of the twins' days of this device and of the
+        // other retained devices, keyed, so the anti-joins below look each one
+        // up rather than rescanning a set.
         const accepted = work("rekey_accepted"), v12Records = t(this.s,"telemetry_v12_typed_records");
         await this.client.query(`CREATE TEMP TABLE ${accepted} ON COMMIT DROP AS
           SELECT DISTINCT (day.observed_day-DATE '1970-01-01')::integer AS observed_day,day.manifest_id
@@ -280,9 +339,9 @@ class ClassificationWork {
             JOIN ${t(this.s,"telemetry_v12_day_manifests")} manifest ON manifest.id=day.manifest_id
              AND manifest.participant_id=generation.participant_id AND manifest.device_id=generation.device_id
              AND manifest.chunk_day=day.observed_day AND manifest.manifest_digest=day.manifest_digest AND manifest.state='ready'
-            WHERE generation.participant_id=$1 AND generation.device_id=$2
+            WHERE generation.participant_id=$1 AND generation.device_id=ANY($2::text[])
               AND (day.observed_day-DATE '1970-01-01')::integer IN (SELECT observed_day FROM ${pairs})`,
-        [this.input.participantId, this.input.deviceId]);
+        [this.input.participantId, [this.input.deviceId, ...others]]);
         this.built.add("rekey_accepted");
         await this.client.query(`CREATE UNIQUE INDEX ON ${accepted} (observed_day,manifest_id)`);
         await this.client.query(`ANALYZE ${accepted}`);
@@ -307,7 +366,7 @@ class ClassificationWork {
                AND record.occurrence_id=twin.occurrence_id)) introduced`)).rows[0]?.introduced);
       }
     }
-    await this.client.query("SELECT set_config('enable_nestloop',$1,true)", [nestloop]);
+    await planner(nestloop);
     return introduced > 0;
   }
   /** The exact pair multiset each original per-page statement joined. */

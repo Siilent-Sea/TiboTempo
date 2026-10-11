@@ -1432,7 +1432,8 @@ async function syntheticGuardPlan(text, deviceId, rows) {
     await client.query("SELECT set_config('work_mem','64MB',true)");
     // As the proof runs the twin statement (pinned by runProof's guardNestloop).
     await client.query("SELECT set_config('enable_nestloop','off',true)");
-    for (const [name, streamType] of [["candidate", "integer"], ["source_10", "smallint"], ["source_11", "smallint"]]) {
+    for (const [name, streamType] of [["candidate", "integer"], ["source_10", "smallint"], ["source_11", "smallint"],
+      ["source_12", "integer"]]) {
       await client.query(`CREATE TEMP TABLE pg_temp."classification_${name}" ON COMMIT DROP AS
         SELECT i::bigint AS id,(i%3+1)::${streamType} AS stream,decode(md5(i::text),'hex') AS occurrence_id,
           (1780000000000+i*1000)::bigint AS observed_at_ms,((1780000000000+i*1000)/${DAY_MS})::integer AS observed_day,
@@ -1440,8 +1441,10 @@ async function syntheticGuardPlan(text, deviceId, rows) {
           $1::text AS source_device_id FROM generate_series(1,$2::integer) i`, [deviceId, rows]);
       await client.query(`ANALYZE pg_temp."classification_${name}"`);
     }
-    // Only a v1.2 twin statement binds the device (its quota legacy is the device's).
-    const values = /\$1\b/u.test(text) ? [deviceId] : [];
+    // Only a v1.2 twin statement binds the device (its quota legacy is the
+    // device's) and the other retained devices (here the synthetic v1.2 set's
+    // own, so that branch contributes every row to the plan).
+    const values = /\$2\b/u.test(text) ? [deviceId, [deviceId]] : /\$1\b/u.test(text) ? [deviceId] : [];
     return (await client.query(`EXPLAIN (FORMAT JSON) ${text}`, values)).rows[0]["QUERY PLAN"][0].Plan;
   } finally {
     await client.query("ROLLBACK");
@@ -1981,6 +1984,229 @@ test("a twin this device's accepted v1.1 history already holds does not wedge a 
     assert.equal(historyProbes(proof.live.statements).length, 1, "the twin was checked against accepted v1.1 history");
     assert.deepEqual(proof.live.guardNestloop, ["off", "off"]);
     assert.equal((await v11Domain.activate(principal, manifest)).replay, false);
+  });
+});
+
+// A machine re-paired under a new device id: the old credential and its v1.2
+// capability are revoked. The occurrence reader retains a revoked v1.2
+// capability's generations (its retained authorization scope), so the union
+// keeps reading the old device's accepted v1.2 history.
+async function revokeDevice(context, principal) {
+  await pool.query(`UPDATE ${context.table("device_credentials")} SET state='revoked',revoked_at=clock_timestamp()
+    WHERE id=$1`, [principal.deviceId]);
+  await pool.query(`UPDATE ${context.table("telemetry_v12_device_capabilities")} SET state='revoked',revoked_at=clock_timestamp()
+    WHERE device_id=$1`, [principal.deviceId]);
+}
+
+test("a re-paired machine is not wedged by a twin its old device's retained v1.2 history already holds", {
+  skip: !PG_TEST_SOCKET, timeout: 240_000,
+}, async () => {
+  const { v12: deployedV12 } = await deployedDomains();
+  await withSchema(async context => {
+    const [yesterday, today] = [1, 0].map(back => new Date(Date.now() - back * DAY_MS).toISOString().slice(0, 10));
+    const participant = await seedParticipant(context, "repaired-accepted");
+    const old = await seedDevice(context, participant, "repaired-accepted-old", { v12: false });
+    const repaired = await seedDevice(context, participant, "repaired-accepted-new", { v12: false });
+    const options = { ...context.options, sourceNamespace: SOURCE_NAMESPACE };
+    await initializeScaleV11(modules, pool, context.schema, options);
+    await grantScaleV11(modules, pool, participant, old, options);
+    const v11Domain = modules.live.createPostgresTelemetryV11Domain(pool, options);
+    const legacy = Object.fromEntries([yesterday, today].map(day => [day, [0, 1, 2].map(index => v11At(day, index))]));
+    const v11Days = [];
+    for (const day of [yesterday, today]) {
+      v11Days.push(await stageScaleV11Day(modules, pool, context.schema, options, old, day, legacy[day]));
+    }
+    assert.equal((await v11Domain.activate(old, scaleV11DomainManifest(await v11Domain.createPredecessor(old), v11Days)))
+      .replay, false);
+    // Production's proof before this guard accepted the old device's v1.2
+    // re-key of each day's third event, so the union counts each twice.
+    await enableV12(context, old);
+    const rekeyed = Object.fromEntries([yesterday, today].map(day => [day, [asV12(legacy[day][0], KNOWN),
+      asV12(legacy[day][1], KNOWN), asV12({ ...legacy[day][2], eventId: rekeyedId(`repaired-accepted:${day}`) }, KNOWN)]]));
+    const oldDays = [];
+    for (const day of [yesterday, today]) oldDays.push(await stage(context, old, day, "usage", rekeyed[day]));
+    assert.equal((await deployedV12.createPostgresTypedV12Domain(pool, context.options)
+      .activate(old, domainManifest(await context.domain.createPredecessor(old), oldDays))).replay, false);
+    const counts = () => usageCounts(context, participant, yesterday, today);
+    assert.deepEqual(await counts(), { [yesterday]: 4, [today]: 4 });
+    await revokeDevice(context, old);
+    assert.deepEqual(await counts(), { [yesterday]: 4, [today]: 4 }, "the reader retains the revoked device's generations");
+    await enableV12(context, repaired);
+    const fresh = async days => { const predecessor = await context.domain.createPredecessor(repaired);
+      return { predecessor, manifest: domainManifest(predecessor, days) }; };
+
+    // The same machine (same device salt, so the same ids) uploads yesterday
+    // under its new credential while the old device's generation is the head:
+    // its twin is the other retained device's head record by id, so no twin.
+    const newYesterday = await stage(context, repaired, yesterday, "usage", rekeyed[yesterday]);
+    const first = await fresh([newYesterday]);
+    const headProof = await proofParity(context, 12, repaired, first.manifest, first.predecessor.token, ACCEPTED,
+      "a twin the old device's head generation holds");
+    assert.deepEqual(historyProbes(headProof.live.statements), [], "matched by id in another retained device's head");
+    assert.equal((await context.domain.activate(repaired, first.manifest)).replay, false);
+    assert.deepEqual(await counts(), { [yesterday]: 4, [today]: 4 }, "no occurrence is added");
+
+    // The head is now this device's, so today's twin is found. The old
+    // device's accepted generation holds it and the reader reads that
+    // generation, so it is exempt (guard v3 read only the activating device's
+    // history, refused, and the refused day stayed pinned).
+    const newToday = await stage(context, repaired, today, "usage", rekeyed[today]);
+    const next = await fresh([newYesterday, newToday]);
+    const proof = await proofParity(context, 12, repaired, next.manifest, next.predecessor.token, ACCEPTED,
+      "a twin another retained device's accepted generation holds");
+    assert.equal(historyProbes(proof.live.statements).length, 1, "the twin was checked against accepted history");
+    assert.deepEqual(perRowRescans(historyPlan(proof.live)), [], "the history probe rescans no set per row");
+    assert.deepEqual(proof.live.exactness, [{ stream: 1, nestloop: proof.live.nestloopBefore }],
+      "the usage quantities lookup kept the twin");
+    assert.equal((await context.domain.activate(repaired, next.manifest)).replay, false);
+    assert.deepEqual(await counts(), { [yesterday]: 4, [today]: 4 }, "no occurrence is added");
+  });
+});
+
+test("a re-paired machine is not wedged by a twin its old device's accepted v1.1 history already holds", {
+  skip: !PG_TEST_SOCKET, timeout: 180_000,
+}, async () => {
+  const { live: deployedLive } = await deployedDomains();
+  await withSchema(async context => {
+    const [yesterday, today] = [1, 0].map(back => new Date(Date.now() - back * DAY_MS).toISOString().slice(0, 10));
+    const participant = await seedParticipant(context, "repaired-accepted-v11");
+    const old = await seedDevice(context, participant, "repaired-accepted-v11-old", { v12: false });
+    const repaired = await seedDevice(context, participant, "repaired-accepted-v11-new", { v12: false });
+    const other = await seedDevice(context, participant, "repaired-accepted-v11-other", { v12: false });
+    const options = { ...context.options, sourceNamespace: SOURCE_NAMESPACE };
+    await v1Ready(context, participant);
+    const project = record => JSON.parse(modules.compatibility.telemetryV11LegacyProjection("usage", record).canonicalRecord);
+    const own = [0, 1, 2].map(index => v11At(today, index));
+    const oldV1 = await seedTypedV1Chunk(modules, pool, context.schema, { ...old, principal: old },
+      { day: today, stream: "usage", chunkSeq: 0, records: own.map(project) });
+    await oldV1.admit({ ownerDigest: participant.ownerDigest, firstSourceRowId: 1 });
+    // Another device's newer v1 chunk wins the day, so the v1-to-v1.1
+    // transition closure requires its event of each activation.
+    await new Promise(done => setTimeout(done, 20));
+    const winner = v11At(today, 5);
+    const otherV1 = await seedTypedV1Chunk(modules, pool, context.schema, { ...other, principal: other },
+      { day: today, stream: "usage", chunkSeq: 0, records: [project(winner)] });
+    await otherV1.admit({ ownerDigest: participant.ownerDigest, firstSourceRowId: 4 });
+    // Production's proof before this guard accepted the old device's re-key of its third v1 event.
+    await grantScaleV11(modules, pool, participant, old, options);
+    const rekeyedToday = [own[0], own[1], { ...own[2], eventId: rekeyedId("repaired-accepted-v11") }, winner];
+    const deployedV11 = deployedLive.createPostgresTelemetryV11Domain(pool, options);
+    const oldDay = await stageScaleV11Day(modules, pool, context.schema, options, old, today, rekeyedToday);
+    assert.equal((await deployedV11.activate(old, scaleV11DomainManifest(await deployedV11.createPredecessor(old),
+      [oldDay]))).replay, false);
+    const counts = () => usageCounts(context, participant, yesterday, today);
+    assert.deepEqual(await counts(), { [today]: 5 }, "the union counts the re-keyed event twice");
+
+    // The same machine re-paired re-uploads the day with the same ids and adds
+    // yesterday. Its twin of the v1 event is in the old device's accepted v1.1
+    // set, which the legacy reader reads, so it introduces nothing (guard v3
+    // read only the activating device's v1.1 set and refused).
+    await grantScaleV11(modules, pool, participant, repaired, options);
+    const v11Domain = modules.live.createPostgresTelemetryV11Domain(pool, options);
+    const days = [await stageScaleV11Day(modules, pool, context.schema, options, repaired, yesterday, [v11At(yesterday, 0)]),
+      await stageScaleV11Day(modules, pool, context.schema, options, repaired, today, rekeyedToday)];
+    const predecessor = await v11Domain.createPredecessor(repaired);
+    const manifest = scaleV11DomainManifest(predecessor, days);
+    const proof = await proofParity(context, 11, repaired, manifest, predecessor.token, ACCEPTED,
+      "a v1.1 twin another device's accepted v1.1 history holds");
+    assert.equal(historyProbes(proof.live.statements).length, 1, "the twin was checked against accepted v1.1 history");
+    assert.deepEqual(proof.live.guardNestloop, ["off", "off"]);
+    assert.deepEqual(proof.live.exactness, [{ stream: 1, nestloop: proof.live.nestloopBefore }]);
+    assert.equal((await v11Domain.activate(repaired, manifest)).replay, false);
+    assert.deepEqual(await counts(), { [yesterday]: 1, [today]: 5 }, "no occurrence is added today");
+  });
+});
+
+test("a re-paired machine cannot re-key its old device's v1.2 history while that history is the head", {
+  skip: !PG_TEST_SOCKET, timeout: 180_000,
+}, async () => {
+  await withSchema(async context => {
+    const [yesterday, today] = [1, 0].map(back => new Date(Date.now() - back * DAY_MS).toISOString().slice(0, 10));
+    const participant = await seedParticipant(context, "repaired-v12");
+    const old = await seedDevice(context, participant, "repaired-v12-old", { v12: true });
+    const repaired = await seedDevice(context, participant, "repaired-v12-new", { v12: true });
+    const events = Object.fromEntries([[yesterday, 2], [today, 3]].map(([day, count]) =>
+      [day, Array.from({ length: count }, (_, index) => asV12(v11At(day, index), KNOWN))]));
+    const oldDays = [];
+    for (const day of [yesterday, today]) oldDays.push(await stage(context, old, day, "usage", events[day]));
+    assert.equal((await context.domain.activate(old, domainManifest(await context.domain.createPredecessor(old), oldDays)))
+      .replay, false);
+    const counts = () => usageCounts(context, participant, yesterday, today);
+    assert.deepEqual(await counts(), { [yesterday]: 2, [today]: 3 });
+    await revokeDevice(context, old);
+    const fresh = async days => { const predecessor = await context.domain.createPredecessor(repaired);
+      return { predecessor, manifest: domainManifest(predecessor, days) }; };
+
+    // The same machine's ids preserved under the new credential: no twin.
+    const newYesterday = await stage(context, repaired, yesterday, "usage", events[yesterday]);
+    const kept = await fresh([newYesterday]);
+    const keptProof = await proofParity(context, 12, repaired, kept.manifest, kept.predecessor.token, ACCEPTED,
+      "ids preserved across device ids");
+    assert.deepEqual(historyProbes(keptProof.live.statements), [], "every id is matched in the old device's head");
+
+    // Today's third event is absent and another session's event sits at its
+    // instant: a different event, not a twin.
+    const sibling = await fresh([newYesterday, await stage(context, repaired, today, "usage", [events[today][0], events[today][1],
+      asV12(v11At(today, 2, { eventId: rekeyedId("repaired-v12-other-session"), sessionUuid: OTHER_SESSION }), KNOWN)])]);
+    const siblingProof = await proofParity(context, 12, repaired, sibling.manifest, sibling.predecessor.token, ACCEPTED,
+      "another session at the old device's dropped event's instant");
+    assert.deepEqual(historyProbes(siblingProof.live.statements), [], "a different session is no twin");
+
+    // The third event re-keyed in its session: the old device's v1.2 event
+    // counted twice (guard v3 had no v1.2 legacy and accepted it).
+    const rekeyed = await fresh([newYesterday, await stage(context, repaired, today, "usage", [events[today][0],
+      events[today][1], { ...events[today][2], eventId: rekeyedId("repaired-v12") }])]);
+    const { live } = await rekeyRefusal(context, 12, repaired, rekeyed.manifest, rekeyed.predecessor.token,
+      "re-paired machine v1.2 re-key");
+    assert.deepEqual(live.exactness, [{ stream: 1, nestloop: live.nestloopBefore }]);
+    await refused(context, repaired, rekeyed.manifest);
+    assert.deepEqual(await counts(), { [yesterday]: 2, [today]: 3 });
+  });
+});
+
+test("a usage twin keeps the dropped event's token quantities; a distinct event of its tie group is none", {
+  skip: !PG_TEST_SOCKET, timeout: 180_000,
+}, async () => {
+  await withSchema(async context => {
+    const today = new Date().toISOString().slice(0, 10);
+    const participant = await seedParticipant(context, "rekey-tie-group");
+    const principal = await seedDevice(context, participant, "rekey-tie-group", { v12: false });
+    const options = { ...context.options, sourceNamespace: SOURCE_NAMESPACE };
+    await initializeScaleV11(modules, pool, context.schema, options);
+    await grantScaleV11(modules, pool, participant, principal, options);
+    const v11Domain = modules.live.createPostgresTelemetryV11Domain(pool, options);
+    // E1 and E3 share session and instant (a tie group) but are distinct
+    // events with different token quantities. v1.1 kept E1 and not E3.
+    const e1 = v11At(today, 0);
+    const e3 = v11At(today, 1, { eventTime: e1.eventTime, totalInputContextTokens: 5000,
+      components: { ...e1.components, inputUncachedTokens: 4000, inputCacheReadTokens: 1000 } });
+    const v11Day = await stageScaleV11Day(modules, pool, context.schema, options, principal, today, [e1]);
+    assert.equal((await v11Domain.activate(principal, scaleV11DomainManifest(await v11Domain.createPredecessor(principal),
+      [v11Day]))).replay, false);
+    await enableV12(context, principal);
+    const counts = () => usageCounts(context, participant, today, today);
+    assert.deepEqual(await counts(), { [today]: 1 });
+    const fresh = async days => { const predecessor = await context.domain.createPredecessor(principal);
+      return { predecessor, manifest: domainManifest(predecessor, days) }; };
+
+    // v1.2 keeps E3 and not E1: E3 pairs with E1 provisionally (same session
+    // and instant) and the quantities lookup drops the pair under the planner
+    // default (guard v3 refused it, and the refused day stayed pinned).
+    const tie = await fresh([await stage(context, principal, today, "usage", [asV12(e3, KNOWN)])]);
+    const proof = await proofParity(context, 12, principal, tie.manifest, tie.predecessor.token, ACCEPTED,
+      "a distinct event of the dropped event's tie group");
+    assert.deepEqual(proof.live.exactness, [{ stream: 1, nestloop: proof.live.nestloopBefore }]);
+    assert.deepEqual(historyProbes(proof.live.statements), [], "different quantities are no twin");
+    assert.equal((await context.domain.activate(principal, tie.manifest)).replay, false);
+    assert.deepEqual(await counts(), { [today]: 2 }, "E1 keeps its legacy copy beside E3");
+
+    // E1 itself under a new id with its quantities, beside E3: a twin.
+    const twin = await fresh([await stage(context, principal, today, "usage",
+      [asV12(e3, KNOWN), asV12({ ...e1, eventId: rekeyedId("tie-group") }, KNOWN)])]);
+    const { live } = await rekeyRefusal(context, 12, principal, twin.manifest, twin.predecessor.token, "tie-group re-key");
+    assert.deepEqual(live.exactness, [{ stream: 1, nestloop: live.nestloopBefore }]);
+    await refused(context, principal, twin.manifest);
+    assert.deepEqual(await counts(), { [today]: 2 });
   });
 });
 
