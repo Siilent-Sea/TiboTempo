@@ -98,8 +98,12 @@ export function createTelemetryV11OriginIntake(options) {
   if (requestContext !== undefined && typeof requestContext !== "function") {
     throw routeConfigurationError(route, "requestContext must be a function");
   }
+  if (options.clock !== undefined && typeof options.clock !== "function") {
+    throw routeConfigurationError(route, "clock must be a function");
+  }
   const device = {
     primaryPool, schema, maxRequestBytes, requestContext,
+    ...(options.clock === undefined ? {} : { clock: options.clock }),
     admissionEnv: options.admissionEnv,
     assertAdmissionBindings: options.assertAdmissionBindings,
     assertAttemptAllowed: options.assertAttemptAllowed,

@@ -214,6 +214,7 @@ export function createOriginIntakeComposition(options) {
     assertAttemptAllowed: options.assertAttemptAllowed,
     maxRequestBytes,
     requestContext,
+    ...(options.clock === undefined ? {} : { clock: options.clock }),
     socialConsentVersion: options.socialConsentVersion,
     sourceNamespace: options.sourceNamespace,
     envelopePublicJwk: options.envelopePublicJwk,

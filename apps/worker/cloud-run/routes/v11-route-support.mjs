@@ -116,7 +116,13 @@ export function validateDeviceRouteDependencies(route, dependencies) {
       || !Number.isSafeInteger(maxRequestBytes) || maxRequestBytes < 1) {
     throw routeConfigurationError(route, "pool, schema and maxRequestBytes are required");
   }
-  return Object.freeze({ ...dependencies });
+  // The request clock: Date.now, or the fastpath-test origin's injected test
+  // clock (createRuntime's intakeClock), so one injected time covers the
+  // predecessor, its day manifests and the activation that checks its expiry.
+  if (dependencies.clock !== undefined && typeof dependencies.clock !== "function") {
+    throw routeConfigurationError(route, "clock must be a function");
+  }
+  return Object.freeze({ ...dependencies, clock: dependencies.clock ?? Date.now });
 }
 
 /**

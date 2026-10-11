@@ -443,6 +443,8 @@ function isPool(value) {
  *   community-daily module), mounted beside the intake's;
  * - routeModuleContext: (request) => frozen per-request module context;
  * - composeIntake: whether the legacy intake is composed;
+ * - intakeClock: null, or the fastpath-test origin's test clock for the v1.1
+ *   intake routes (createRuntime passes it in that mode only);
  * - adminHandlers: null, or C-ADMIN's six handlers (Map by route id).
  *
  * Returns {handlers, routeModules, routeModuleContext, dispatchers}: handlers
@@ -459,8 +461,9 @@ export function composeOriginFamilies(deps) {
     dataPool, primarySchema, sourceIdentity, admissionEnv, storageGate, dispatchOrigin,
     productionConfiguration = null, objectStore, envelopePublicJwk, envelopePrivateJwk, requestContext,
     uploadIngress, statusDispatchers, routeModules = [], routeModuleContext, composeIntake = true,
-    adminHandlers = null,
+    adminHandlers = null, intakeClock = null,
   } = deps;
+  if (intakeClock !== null && typeof intakeClock !== "function") refuse(ORIGIN_COMPOSITION_INVALID);
   if (!isPool(dataPool) || typeof primarySchema !== "string"
       || admissionEnv === null || typeof admissionEnv !== "object" || !Object.isFrozen(admissionEnv)
       || storageGate === null || typeof storageGate !== "object" || typeof storageGate.probe !== "function"
@@ -556,6 +559,7 @@ export function composeOriginFamilies(deps) {
     schemaOptions,
     admissionEnv,
     requestContext,
+    ...(intakeClock === null ? {} : { clock: intakeClock }),
     assertAdmissionBindings,
     assertAttemptAllowed,
     assertUploadAuthorizationBindings,
