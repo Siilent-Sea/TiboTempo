@@ -1015,15 +1015,19 @@ async function proofInput(context, format, principal, manifest, token) {
 /** One proof implementation inside a transaction that is always rolled back. */
 async function runProof(prepare, context, input, { explain = false } = {}) {
   const client = await pool.connect();
-  const statements = [], plans = [], setWorkMem = [], guardNestloop = [];
+  const statements = [], plans = [], setWorkMem = [], guardNestloop = [], exactness = [];
   const proofClient = { async query(text, values) {
     const pairs = /^CREATE TEMP TABLE pg_temp\."classification_((?:exact|foreign)_\d+)"/u.exec(text);
+    const nestloop = async () => (await client.query("SELECT current_setting('enable_nestloop') AS v")).rows[0].v;
     if (/^CREATE TEMP TABLE pg_temp\."classification_/u.test(text)) {
       setWorkMem.push((await client.query("SELECT current_setting('work_mem') AS v")).rows[0].v);
     }
-    if (/^CREATE TEMP TABLE pg_temp\."classification_rekey_twins"|FROM pg_temp\."classification_rekey_twins" twin/u.test(text)) {
-      guardNestloop.push((await client.query("SELECT current_setting('enable_nestloop') AS v")).rows[0].v);
-    }
+    const history = /FROM pg_temp\."classification_rekey_twins" twin/u.test(text);
+    if (/^CREATE TEMP TABLE pg_temp\."classification_rekey_twins"/u.test(text) || history) guardNestloop.push(await nestloop());
+    // The quota (2) and session (3) exactness filters over provisional twin pairs.
+    const exact = /DELETE FROM pg_temp\."classification_rekey_twins" pair[\s\S]*?pair\.stream=(\d)/u.exec(text);
+    if (exact) exactness.push({ stream: Number(exact[1]), nestloop: await nestloop() });
+    if (explain && history) plans.push({ set: "rekey_history", plan: (await client.query(`EXPLAIN (FORMAT JSON) ${text}`, values)).rows[0]["QUERY PLAN"][0].Plan });
     if (explain && pairs) plans.push({ set: pairs[1], plan: (await client.query(`EXPLAIN (FORMAT JSON) ${text}`, values)).rows[0]["QUERY PLAN"][0].Plan });
     statements.push(text);
     return client.query(text, values);
@@ -1043,7 +1047,7 @@ async function runProof(prepare, context, input, { explain = false } = {}) {
     const leftovers = (await client.query(`SELECT count(*)::integer AS n FROM pg_class
       WHERE relpersistence='t' AND relname LIKE 'classification\\_%' AND pg_table_is_visible(oid)`)).rows[0].n;
     return { outcome, links, statements, plans, leftovers, workMemBefore, workMemAfter, setWorkMem,
-      nestloopBefore, nestloopAfter, guardNestloop };
+      nestloopBefore, nestloopAfter, guardNestloop, exactness };
   } finally {
     await client.query("ROLLBACK");
     client.release();
@@ -1367,8 +1371,11 @@ test("session closure reads every usage row of a large session in numeric order"
 // Client occurrence ids are positional, so a re-parse can emit the same event
 // at the same instant under a new id. Effective readers union a participant's
 // accepted legacy candidates with its v1.2 generations per day by occurrence
-// id, so an activation that re-keys this device's accepted older-format record
-// would count it twice. edca848 (the frozen oracle) had no such guard.
+// id, so an activation that re-keys an accepted older-format record would
+// count it twice. edca848 (the frozen oracle) had no such guard. A twin is the
+// same event: usage in the same session, quota with the same limit and slot,
+// and a session linked through a usage event kept under its own id.
+const OTHER_SESSION = "00000000-0000-4000-8000-0000000000b2";
 const V11_TABLES = ["telemetry_classification_correction_links", "telemetry_v11_domains", "telemetry_v11_domain_days",
   "telemetry_v11_domain_heads", "telemetry_v11_domain_predecessors", "storage_v11_event_sources",
   "storage_ingestion_changes", "storage_owner_revisions", "input_versions", "community_analytical_input_versions"];
@@ -1387,22 +1394,34 @@ const guardStatement = statements => {
   assert.equal(found.length, 1, "the proof runs exactly one re-key twin statement");
   return found[0];
 };
-// The accepted-history probe runs only when the twin statement found a twin.
+// The accepted-history probe runs only when a twin survives the exactness filters.
 const historyProbes = statements => statements.filter(sql => /FROM pg_temp\."classification_rekey_twins" twin/u.test(sql));
+// A correlated subplan re-runs per outer row; the history probe joins as sets.
+// Nor may the twin set sit on the inner side of a nested loop, which rescans it
+// per outer row (per accepted manifest, in the shape a CTE-only probe planned).
+const perRowRescans = plan => [...planNodes(plan)].filter(node => node["Parent Relationship"] === "SubPlan"
+  || (node["Node Type"] === "Nested Loop" && (node.Plans ?? []).some(child => child["Parent Relationship"] === "Inner"
+    && [...planNodes(child)].some(inner => inner["CTE Name"] === "twins"))));
+const historyPlan = live => {
+  const found = live.plans.filter(entry => entry.set === "rekey_history");
+  assert.equal(found.length, 1, "one history probe was planned");
+  return found[0].plan;
+};
 
 /** The live proof refuses a re-key the frozen edca848 proof accepted, before any pair work. */
 async function rekeyRefusal(context, format, principal, manifest, token, label) {
   const input = await proofInput(context, format, principal, manifest, token);
   assert.equal((await runProof(modules.oracle.preparePostgresClassificationActivation, context, input)).outcome, ACCEPTED,
     `${label}: edca848 accepted the re-key`);
-  const live = await runProof(modules.activation.preparePostgresClassificationActivation, context, input);
+  const live = await runProof(modules.activation.preparePostgresClassificationActivation, context, input, { explain: true });
   assert.equal(live.outcome, REFUSED, `${label}: the guard refuses`);
   assert.equal(live.links.length, 0, `${label}: no link written`);
   assert.deepEqual(pairWork(live.statements), [], `${label}: refused before any pair set or page`);
   assert.equal(historyProbes(live.statements).length, 1, `${label}: the twin was checked against accepted history`);
+  assert.deepEqual(perRowRescans(historyPlan(live)), [], `${label}: the history probe rescans no set per row`);
   // v1.1 compares working sets (no nested loops); v1.2 probes indexed history under the default.
   assert.deepEqual(live.guardNestloop, ["off", format === 11 ? "off" : live.nestloopBefore], `${label}: planner settings`);
-  return guardStatement(live.statements);
+  return { statement: guardStatement(live.statements), live };
 }
 
 /** Plan a captured guard statement over synthetic working sets of `rows` rows, then roll back. */
@@ -1415,12 +1434,15 @@ async function syntheticGuardPlan(text, deviceId, rows) {
     await client.query("SELECT set_config('enable_nestloop','off',true)");
     for (const [name, streamType] of [["candidate", "integer"], ["source_10", "smallint"], ["source_11", "smallint"]]) {
       await client.query(`CREATE TEMP TABLE pg_temp."classification_${name}" ON COMMIT DROP AS
-        SELECT (i%3+1)::${streamType} AS stream,decode(md5(i::text),'hex') AS occurrence_id,
+        SELECT i::bigint AS id,(i%3+1)::${streamType} AS stream,decode(md5(i::text),'hex') AS occurrence_id,
           (1780000000000+i*1000)::bigint AS observed_at_ms,((1780000000000+i*1000)/${DAY_MS})::integer AS observed_day,
+          CASE WHEN i%3=0 THEN decode(md5('session:'||(i/500)),'hex') END AS session_id,
           $1::text AS source_device_id FROM generate_series(1,$2::integer) i`, [deviceId, rows]);
       await client.query(`ANALYZE pg_temp."classification_${name}"`);
     }
-    return (await client.query(`EXPLAIN (FORMAT JSON) ${text}`, [deviceId])).rows[0]["QUERY PLAN"][0].Plan;
+    // Only a v1.2 twin statement binds the device (its quota legacy is the device's).
+    const values = /\$1\b/u.test(text) ? [deviceId] : [];
+    return (await client.query(`EXPLAIN (FORMAT JSON) ${text}`, values)).rows[0]["QUERY PLAN"][0].Plan;
   } finally {
     await client.query("ROLLBACK");
     client.release();
@@ -1482,22 +1504,37 @@ test("v1.2 activation refuses a same-instant re-key of this device's accepted v1
     // events. It refuses before any pair work and nothing is written.
     const rekeyed = await fresh([await v12Day([known(legacy[0]), known(legacy[1]),
       known({ ...legacy[2], eventId: rekeyedId("v11") }), known(v11At(today, 3))])]);
-    assert.equal(await rekeyRefusal(context, 12, principal, rekeyed.manifest, rekeyed.predecessor.token, "v1.1 re-key"), guard);
+    assert.equal((await rekeyRefusal(context, 12, principal, rekeyed.manifest, rekeyed.predecessor.token, "v1.1 re-key"))
+      .statement, guard);
     await refused(context, principal, rekeyed.manifest);
     assert.deepEqual((await evidence(context, participant, range)).usage, accepted.usage);
     // The same statement plans as set joins over large working sets (the
-    // kept anti-join, the same-instant semi-join and the legacy-id anti-join),
-    // never a per-row rescan of the candidate.
+    // kept anti-join, the same-instant-and-session join and the legacy-id
+    // anti-join), never a per-row rescan of the candidate.
     const joins = [...planNodes(await syntheticGuardPlan(guard, principal.deviceId, 20_000))]
       .filter(node => /Join|Nested Loop/u.test(node["Node Type"]));
     assert.ok(joins.length >= 3, `the twin statement joins three times (${joins.length})`);
     for (const node of joins) {
       assert.ok(["Hash Join", "Merge Join"].includes(node["Node Type"]), `the guard joins as a set (${node["Node Type"]})`);
     }
+
+    // (f) The third event absent and another session's event at its instant
+    // under its own id: a re-keyed twin keeps its session, so this is no
+    // re-key (guard v2 refused it, and the refused day stayed pinned). The
+    // proof agrees with the frozen one without probing history, and the
+    // union counts the new event once beside the four.
+    const otherSession = known(v11At(today, 2, { eventId: rekeyedId("other-session"), sessionUuid: OTHER_SESSION }));
+    const sibling = await fresh([await v12Day([known(legacy[0]), known(legacy[1]), otherSession, known(v11At(today, 3))])]);
+    const siblingProof = await proofParity(context, 12, principal, sibling.manifest, sibling.predecessor.token, ACCEPTED,
+      "another session at a dropped event's instant");
+    assert.deepEqual(historyProbes(siblingProof.live.statements), [], "a different session is no twin");
+    assert.equal((await context.domain.activate(principal, sibling.manifest)).replay, false);
+    assert.equal((await evidence(context, participant, range)).usage.get(today).length, 5,
+      "the four events and the other session's event each count once");
   });
 });
 
-test("the re-key guard covers v1 history for v1.1 and v1.2 activations, scoped to the activating device", {
+test("the re-key guard covers v1 history for v1.1 and v1.2 activations; another device's other session is no twin", {
   skip: !PG_TEST_SOCKET, timeout: 180_000,
 }, async () => {
   await withSchema(async context => {
@@ -1514,11 +1551,12 @@ test("the re-key guard covers v1 history for v1.1 and v1.2 activations, scoped t
       SELECT 1,source_namespace,namespace_id,1,5 FROM ${context.table("typed_v11_admission_state")} WHERE id=1`);
     const project = record => JSON.parse(modules.compatibility.telemetryV11LegacyProjection("usage", record).canonicalRecord);
     const v11 = [0, 1, 2].map(index => v11At(today, index));
-    // This device's retained v1 history, and another device's v1 event at its own instant.
+    // This device's retained v1 history, and another device's v1 event, in a
+    // session of its own, at its own instant.
     const own = await seedTypedV1Chunk(modules, pool, context.schema, { ...principal, principal },
       { day: today, stream: "usage", chunkSeq: 0, records: v11.map(project) });
     await own.admit({ ownerDigest: participant.ownerDigest, firstSourceRowId: 1 });
-    const foreignEvent = v11At(today, 5);
+    const foreignEvent = v11At(today, 5, { sessionUuid: OTHER_SESSION });
     const foreign = await seedTypedV1Chunk(modules, pool, context.schema, { ...other, principal: other },
       { day: today, stream: "usage", chunkSeq: 0, records: [project(foreignEvent)] });
     await foreign.admit({ ownerDigest: participant.ownerDigest, firstSourceRowId: 4 });
@@ -1543,12 +1581,15 @@ test("the re-key guard covers v1 history for v1.1 and v1.2 activations, scoped t
     assert.deepEqual(await tables(), quiet, "refusal rolls back links, head, predecessor consumption and journal");
 
     // (e) Another device's v1 event is absent from this candidate, which holds
-    // its own event at that instant: not this device's history, so accepted.
-    // This device's third v1 event is simply absent (no twin) as well.
+    // its own event at that instant in this device's session. Usage history is
+    // the participant's (a re-paired machine keeps its ids), but a twin keeps
+    // its session, so a different session's event is none: accepted. This
+    // device's third v1 event is simply absent (no twin) as well.
     await enableV12(context, principal);
     const fresh = async days => { const predecessor = await context.domain.createPredecessor(principal);
       return { predecessor, manifest: domainManifest(predecessor, days) }; };
-    const ownAtForeignInstant = asV12(foreignEvent, { eventId: rekeyedId("own-event-at-foreign-instant") });
+    const ownAtForeignInstant = asV12({ ...foreignEvent, sessionUuid: SESSION_ID },
+      { eventId: rekeyedId("own-event-at-foreign-instant") });
     const scoped = await fresh([await stage(context, principal, today, "usage",
       [asV12(v11[0]), asV12(v11[1]), ownAtForeignInstant])]);
     await proofParity(context, 12, principal, scoped.manifest, scoped.predecessor.token, ACCEPTED, "another device's history");
@@ -1595,11 +1636,12 @@ const quotaV11 = (day, index, patch = {}) => ({ schemaVersion: "quota-observatio
   limitId: "codex", slot: "primary", usedPercent: 12, windowDurationMinutes: 300, resetsAt: `${day}T10:00:00.000Z`,
   accountPlanAttribution: { accountBasis: "unavailable", accountTrackId: null, planBasis: "same_source_occurrence",
     planType: "pro", planEraId: null }, ...patch });
-const usageCounts = async (context, participant, fromDay, throughDay) => {
+const usageCounts = async (context, participant, fromDay, throughDay, stream = "usage") => {
   const read = await modules.occurrences.readOwnerOccurrences({ pool, schema: context.schema, nowMs: Date.now() },
-    { ownerDigest: participant.ownerDigest, fromDay, throughDay, stream: "usage" });
+    { ownerDigest: participant.ownerDigest, fromDay, throughDay, stream });
   return Object.fromEntries([...read].map(([day, rows]) => [day, rows.length]));
 };
+const asV12Quota = record => ({ ...record, schemaVersion: "quota-observation-v1.2" });
 const v1Ready = async (context, participant) => {
   await pool.query(`UPDATE ${context.table("telemetry_transport_formats")} SET lifecycle='accepted'
     WHERE schema_version='telemetry-contribution-v1.1'`);
@@ -1657,13 +1699,181 @@ test("v1 quota's designed id change and a same-instant sibling kept under its ow
     assert.deepEqual(await usageCounts(context, participant, today, today), { [today]: 3 },
       "A keeps its legacy copy; B and C count once");
 
-    // Documented residual: the sets carry no limit or slot, so dropping an
-    // accepted quota observation while adding a different, new one at the
-    // same instant refuses.
-    const otherSlot = quotaV11(today, 1, { schemaVersion: "quota-observation-v1.2", slot: "secondary" });
+    // The accepted observation dropped and one of another slot new at its
+    // instant: a different observation, not a twin (guard v2 refused it, its
+    // sets carrying no limit or slot). The provisional pair is dropped by the
+    // indexed detail lookup under the planner default, before any history
+    // probe. Proof level only: the same-day closure keeps the sibling day's ids.
+    const otherSlot = asV12Quota(quotaV11(today, 1, { slot: "secondary" }));
     const swapped = await fresh([await stageScaleV12Day(modules, pool, context.schema, context.options, principal, today,
       [otherSlot, asV12(b), asV12(c)])]);
-    await rekeyRefusal(context, 12, principal, swapped.manifest, swapped.predecessor.token, "quota slot swap");
+    const swappedProof = await proofParity(context, 12, principal, swapped.manifest, swapped.predecessor.token, ACCEPTED,
+      "quota of another slot");
+    assert.deepEqual(swappedProof.live.exactness, [{ stream: 2, nestloop: swappedProof.live.nestloopBefore }]);
+    assert.deepEqual(historyProbes(swappedProof.live.statements), [], "another slot is no twin");
+  });
+});
+
+test("a quota observation is a twin only with the dropped observation's limit and slot", {
+  skip: !PG_TEST_SOCKET, timeout: 180_000,
+}, async () => {
+  await withSchema(async context => {
+    const today = new Date().toISOString().slice(0, 10);
+    const participant = await seedParticipant(context, "rekey-quota");
+    const principal = await seedDevice(context, participant, "rekey-quota", { v12: false });
+    const options = { ...context.options, sourceNamespace: SOURCE_NAMESPACE };
+    await initializeScaleV11(modules, pool, context.schema, options);
+    await grantScaleV11(modules, pool, participant, principal, options);
+    const v11Domain = modules.live.createPostgresTelemetryV11Domain(pool, options);
+    // One accepted snapshot observation P (codex, primary) and one usage event.
+    const p = quotaV11(today, 0), a = v11At(today, 0);
+    const v11Day = await stageScaleV11Day(modules, pool, context.schema, options, principal, today, [p, a]);
+    assert.equal((await v11Domain.activate(principal, scaleV11DomainManifest(await v11Domain.createPredecessor(principal),
+      [v11Day]))).replay, false);
+    await enableV12(context, principal);
+    const quotaCounts = () => usageCounts(context, participant, today, today, "quota");
+    assert.deepEqual(await quotaCounts(), { [today]: 1 });
+    const fresh = async days => { const predecessor = await context.domain.createPredecessor(principal);
+      return { predecessor, manifest: domainManifest(predecessor, days) }; };
+
+    // P is no longer emitted, and observations of another limit and of
+    // another slot are new at its instant: each pairs with P provisionally,
+    // and the detail lookup drops both. Guard v2 refused this, and the
+    // refused day stayed pinned as the day's earliest READY manifest.
+    const otherLimit = asV12Quota(quotaV11(today, 1, { limitId: "codex_other" }));
+    const otherSlot = asV12Quota(quotaV11(today, 2, { slot: "secondary" }));
+    const distinctDay = await stageScaleV12Day(modules, pool, context.schema, context.options, principal, today,
+      [otherLimit, otherSlot, asV12(a)]);
+    const distinct = await fresh([distinctDay]);
+    const proof = await proofParity(context, 12, principal, distinct.manifest, distinct.predecessor.token, ACCEPTED,
+      "another limit and another slot at a dropped observation's instant");
+    assert.deepEqual(proof.live.exactness, [{ stream: 2, nestloop: proof.live.nestloopBefore }],
+      "the detail lookup ran once, under the planner default");
+    assert.deepEqual(historyProbes(proof.live.statements), [], "both provisional pairs were dropped");
+    assert.equal((await context.domain.activate(principal, distinct.manifest)).replay, false);
+    assert.deepEqual(await quotaCounts(), { [today]: 3 }, "P keeps its legacy copy beside the two new observations");
+
+    // P itself under a new id at its instant, beside the two: a twin.
+    const rekeyedP = asV12Quota({ ...p, observationId: `quota-occurrence:v1:${sha256Hex("rekeyed:quota")}` });
+    const twin = await fresh([await stageScaleV12Day(modules, pool, context.schema, context.options, principal, today,
+      [otherLimit, otherSlot, rekeyedP, asV12(a)])]);
+    const { live } = await rekeyRefusal(context, 12, principal, twin.manifest, twin.predecessor.token, "quota re-key");
+    assert.deepEqual(live.exactness, [{ stream: 2, nestloop: live.nestloopBefore }]);
+    await refused(context, principal, twin.manifest);
+    assert.deepEqual(await quotaCounts(), { [today]: 3 });
+  });
+});
+
+test("a machine re-paired under a new device id cannot re-key its old device's usage; another session can share the instant", {
+  skip: !PG_TEST_SOCKET, timeout: 180_000,
+}, async () => {
+  await withSchema(async context => {
+    const [yesterday, today] = [1, 0].map(back => new Date(Date.now() - back * DAY_MS).toISOString().slice(0, 10));
+    const participant = await seedParticipant(context, "rekey-repaired");
+    const old = await seedDevice(context, participant, "rekey-repaired-old", { v12: false });
+    const repaired = await seedDevice(context, participant, "rekey-repaired-new", { v12: false });
+    const options = { ...context.options, sourceNamespace: SOURCE_NAMESPACE };
+    await initializeScaleV11(modules, pool, context.schema, options);
+    await grantScaleV11(modules, pool, participant, old, options);
+    const v11Domain = modules.live.createPostgresTelemetryV11Domain(pool, options);
+    const legacy = Object.fromEntries([yesterday, today].map(day => [day, [0, 1, 2].map(index => v11At(day, index))]));
+    const v11Days = [];
+    for (const day of [yesterday, today]) {
+      v11Days.push(await stageScaleV11Day(modules, pool, context.schema, options, old, day, legacy[day]));
+    }
+    assert.equal((await v11Domain.activate(old, scaleV11DomainManifest(await v11Domain.createPredecessor(old), v11Days)))
+      .replay, false);
+    await enableV12(context, repaired);
+    const counts = () => usageCounts(context, participant, yesterday, today);
+    assert.deepEqual(await counts(), { [yesterday]: 3, [today]: 3 });
+    const fresh = async days => { const predecessor = await context.domain.createPredecessor(repaired);
+      return { predecessor, manifest: domainManifest(predecessor, days) }; };
+
+    // The same machine (same device salt, so the same ids) re-uploads today
+    // under its new credential: the third event is absent and another
+    // session's event sits at its instant. No twin, so it activates.
+    const todayDay = await stage(context, repaired, today, "usage", [asV12(legacy[today][0]), asV12(legacy[today][1]),
+      asV12(v11At(today, 2, { eventId: rekeyedId("repaired-other-session"), sessionUuid: OTHER_SESSION }))]);
+    const sibling = await fresh([todayDay]);
+    const proof = await proofParity(context, 12, repaired, sibling.manifest, sibling.predecessor.token, ACCEPTED,
+      "another session on a re-paired machine");
+    assert.deepEqual(historyProbes(proof.live.statements), [], "a different session is no twin on any device");
+    assert.equal((await context.domain.activate(repaired, sibling.manifest)).replay, false);
+    assert.deepEqual(await counts(), { [yesterday]: 3, [today]: 4 });
+
+    // Yesterday's third event re-keyed in its own session under the new
+    // device id is the old device's accepted v1.1 event: guard v2 accepted it
+    // (its history was device-scoped) and the union counted it twice.
+    const rekeyed = await fresh([await stage(context, repaired, yesterday, "usage", [asV12(legacy[yesterday][0]),
+      asV12(legacy[yesterday][1]), asV12({ ...legacy[yesterday][2], eventId: rekeyedId("repaired") })]), todayDay]);
+    await rekeyRefusal(context, 12, repaired, rekeyed.manifest, rekeyed.predecessor.token, "re-paired machine re-key");
+    await refused(context, repaired, rekeyed.manifest);
+    assert.deepEqual(await counts(), { [yesterday]: 3, [today]: 4 });
+  });
+});
+
+test("a session record is a twin only when a usage event kept under its own id links it to the dropped session", {
+  skip: !PG_TEST_SOCKET, timeout: 180_000,
+}, async () => {
+  await withSchema(async context => {
+    const [yesterday, today] = [1, 0].map(back => new Date(Date.now() - back * DAY_MS).toISOString().slice(0, 10));
+    const participant = await seedParticipant(context, "rekey-session");
+    const principal = await seedDevice(context, participant, "rekey-session", { v12: false });
+    const options = { ...context.options, sourceNamespace: SOURCE_NAMESPACE };
+    await initializeScaleV11(modules, pool, context.schema, options);
+    await grantScaleV11(modules, pool, participant, principal, options);
+    const v11Domain = modules.live.createPostgresTelemetryV11Domain(pool, options);
+    // A session id is not positional: the raw Codex session id or, before the
+    // client recorded identity, a stable stand-in (hex of its local session
+    // key). A session record is named by it and anchored at its first event.
+    const session = (format, sessionUuid, firstEventTime) => ({ schemaVersion: `session-dimension-v1.${format}`,
+      sessionUuid, firstEventTime, provider: "unknown", toolClassCounts: { shell: 2 } });
+    const standIn = day => sha256Hex(`stand-in:${day}`);
+    const events = Object.fromEntries([yesterday, today].map(day =>
+      [day, [0, 1].map(index => v11At(day, index, { sessionUuid: standIn(day) }))]));
+    const v11Days = [];
+    for (const day of [yesterday, today]) {
+      v11Days.push(await stageScaleV11Day(modules, pool, context.schema, options, principal, day,
+        [...events[day], session(1, standIn(day), events[day][0].eventTime)]));
+    }
+    assert.equal((await v11Domain.activate(principal, scaleV11DomainManifest(await v11Domain.createPredecessor(principal),
+      v11Days))).replay, false);
+    await enableV12(context, principal);
+    const sessions = () => usageCounts(context, participant, yesterday, today, "session");
+    assert.deepEqual(await sessions(), { [yesterday]: 1, [today]: 1 });
+    const fresh = async days => { const predecessor = await context.domain.createPredecessor(principal);
+      return { predecessor, manifest: domainManifest(predecessor, days) }; };
+
+    // Today the stand-in session's record is absent while its events keep
+    // their ids and session, and an unrelated session starts at the same
+    // instant: no kept event moves between them, so the provisional pair is
+    // dropped by the link join (over the working sets, nested loops off).
+    const unrelated = "00000000-0000-4000-8000-0000000000c3";
+    const todayDay = await stageScaleV12Day(modules, pool, context.schema, context.options, principal, today,
+      [...events[today].map(event => asV12(event)),
+        asV12(v11At(today, 0, { eventId: rekeyedId("unrelated-first-event"), sessionUuid: unrelated })),
+        session(2, unrelated, events[today][0].eventTime)]);
+    const sibling = await fresh([todayDay]);
+    const proof = await proofParity(context, 12, principal, sibling.manifest, sibling.predecessor.token, ACCEPTED,
+      "an unlinked session at a dropped session's instant");
+    assert.deepEqual(proof.live.exactness, [{ stream: 3, nestloop: "off" }]);
+    assert.deepEqual(historyProbes(proof.live.statements), [], "an unlinked session is no twin");
+    assert.equal((await context.domain.activate(principal, sibling.manifest)).replay, false);
+    assert.deepEqual(await sessions(), { [yesterday]: 1, [today]: 2 });
+
+    // Yesterday the client recorded the raw identity: the same events, under
+    // their own ids, now name the raw session, and the session record
+    // follows. That is the stand-in session re-keyed at its instant.
+    const raw = "00000000-0000-4000-8000-0000000000d4";
+    const switched = await stageScaleV12Day(modules, pool, context.schema, context.options, principal, yesterday,
+      [...events[yesterday].map(event => asV12({ ...event, sessionUuid: raw })),
+        session(2, raw, events[yesterday][0].eventTime)]);
+    const rekeyed = await fresh([switched, todayDay]);
+    const { live } = await rekeyRefusal(context, 12, principal, rekeyed.manifest, rekeyed.predecessor.token,
+      "session identity switch");
+    assert.deepEqual(live.exactness, [{ stream: 3, nestloop: "off" }]);
+    await refused(context, principal, rekeyed.manifest);
+    assert.deepEqual(await sessions(), { [yesterday]: 1, [today]: 2 });
   });
 });
 
@@ -1709,6 +1919,7 @@ test("a twin this device's accepted v1.2 history already holds does not wedge it
     const nextProof = await proofParity(context, 12, principal, next.manifest, next.predecessor.token, ACCEPTED,
       "twin already accepted");
     assert.equal(historyProbes(nextProof.live.statements).length, 1, "the twin was checked against accepted history");
+    assert.deepEqual(perRowRescans(historyPlan(nextProof.live)), [], "the history probe joins as sets, rescanning no set per row");
     assert.deepEqual(nextProof.live.guardNestloop, ["off", nextProof.live.nestloopBefore]);
     assert.equal((await context.domain.activate(principal, next.manifest)).replay, false);
     assert.deepEqual(await counts(), { [twoDaysAgo]: 2, [yesterday]: 2, [today]: 4 }, "no further double count");

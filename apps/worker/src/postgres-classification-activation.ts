@@ -119,10 +119,10 @@ function predecessorCte():string{
  * candidateSql/oldSql text the per-page CTEs re-ran, then paged by index.
  * Session-private: dropped once the proof passes, and discarded with the
  * caller's rollback on any refusal or error (ON COMMIT DROP otherwise). */
-type WorkSet = "candidate" | "rekey_twins" | `source_${PostgresClassificationFormat}`
+type WorkSet = "candidate" | "rekey_twins" | "rekey_accepted" | `source_${PostgresClassificationFormat}`
   | `${"foreign" | "exact"}_${PostgresClassificationFormat}`;
 function work(name: WorkSet): string { return `pg_temp.${quotePostgresIdentifier(`classification_${name}`)}`; }
-const WORK_SETS: readonly WorkSet[] = ["candidate", "rekey_twins", "source_10", "source_11", "source_12",
+const WORK_SETS: readonly WorkSet[] = ["candidate", "rekey_twins", "rekey_accepted", "source_10", "source_11", "source_12",
   "foreign_10", "foreign_11", "foreign_12", "exact_10", "exact_11", "exact_12"];
 // Typed stream codes (STREAM_CODES of the effective readers) whose v1
 // occurrence ids each successor format keeps. The clients' v1.1 records reuse
@@ -162,82 +162,149 @@ class ClassificationWork {
     if (!value) fail();
     return value;
   }
-  /** Whether activating would introduce a re-keyed twin of this device's
+  /** Whether activating would introduce a re-keyed twin of the participant's
    * accepted older-format history (v1 for v1.1; v1 and v1.1 for v1.2). The
    * effective readers union legacy and v1.2 candidates per observed day by
-   * occurrence id, so an event re-emitted under a new id at the same instant
-   * counts twice. A twin is a candidate record that
-   *  - shares (stream, day, instant) with a legacy record of this device whose
-   *    (stream, occurrence) the candidate lacks on that day,
-   *  - matches no legacy record of this device by (stream, occurrence): a
-   *    same-instant sibling kept under its own id is not a twin (nor is a
-   *    re-keyed copy kept beside its original id, which has the same shape),
+   * occurrence id, so an event re-emitted under a new id counts twice. Client
+   * ids are positional, so a rewritten rollout re-emits an event at the same
+   * instant under a new id but keeps what the event is. A twin is a candidate
+   * record that
+   *  - shares (stream, day, instant) with a legacy record whose (stream,
+   *    occurrence) the candidate lacks on that day, and is the same event:
+   *    usage in the same session (null-safe); quota with the same limit and
+   *    slot (an observation id hashes source position, limit and slot); a
+   *    session record, whose id is its session, linked by a usage occurrence
+   *    kept under its own id that names the dropped session in legacy and
+   *    the twin in the candidate (the client's only session re-key is its
+   *    stand-in to raw identity switch, which keeps every event id),
+   *  - matches no legacy record by (stream, occurrence): a same-instant
+   *    sibling kept under its own id is not a twin (nor is a re-keyed copy
+   *    kept beside its original id, which has the same shape),
    *  - is not already in this device's accepted history of the activating
    *    format (every accepted v1.2 generation, which the v1.2 reader reads
    *    whole; the accepted v1.1 set), so a twin an earlier proof accepted
    *    neither wedges the device nor counts as newly introduced. Pinned
    *    predecessor days are not that history: they are each day's earliest
-   *    READY manifest, which a refused activation leaves pinned.
-   * v1 quota is excluded (V1_STABLE_STREAMS): its id change is designed.
-   * Quota observations of one snapshot share an instant and the working sets
-   * carry no limit or slot, so dropping one accepted quota observation while
-   * adding a different, genuinely new one at the same instant also refuses.
+   *    READY manifest, which a refused activation leaves pinned. Another
+   *    device's accepted history is not consulted: whether the readers still
+   *    read it depends on that device's retained authorization.
+   * Usage and session legacy is every device of the participant: a machine
+   * re-paired under a new device id keeps its device salt, so its event and
+   * session ids persist. Event ids are salted and a session id is the
+   * machine's own (a random Codex session id or a salted stand-in), so a
+   * twin across device ids is the same machine's. Quota legacy stays this
+   * device's: a quota record names no session, so another device's
+   * observation at the same instant, limit and slot is no evidence of the
+   * same one. v1 quota is excluded (V1_STABLE_STREAMS): its id change is
+   * designed.
    *
-   * The working sets have no indexes, so the set statements run with
+   * The working sets have no indexes, so the statements over them run with
    * nested loops disabled transaction-locally (restored before returning):
    * the earlier single-statement v1-only form planned a nested-loop
    * semi-join that rescans the candidate per unmatched legacy row and
-   * exceeded the 60 s budget (synthetic 2.75M candidate, 1M v1 rows). Only
-   * the v1.2 history probe keeps the planner default: it looks up each twin
-   * on the (manifest, stream, occurrence) unique key. */
+   * exceeded the 60 s budget (synthetic 2.75M candidate, 1M v1 rows). The
+   * quota detail lookup and the v1.2 history probe look rows up by key in
+   * indexed tables (the probe's accepted manifests in a keyed temporary
+   * table) and keep the planner default. */
   async rekeyed(): Promise<boolean> {
     // Built here under the planner defaults: each is the v1.1 baseline or
     // legacy history the pair work reads next for either activation format.
     const v1 = await this.source(10), v11 = await this.source(11);
-    const legacy = [`SELECT stream,occurrence_id,observed_at_ms,observed_day FROM ${v1}
-        WHERE source_device_id=$1 AND stream IN (${V1_STABLE_STREAMS})`];
-    if (this.input.format === 12) legacy.push(`SELECT stream,occurrence_id,observed_at_ms,observed_day
-        FROM ${v11} WHERE source_device_id=$1`);
-    const candidate = work("candidate"), twins = work("rekey_twins");
+    const v12 = this.input.format === 12, columns = "id,stream,occurrence_id,observed_at_ms,observed_day,session_id";
+    const legacy = [`SELECT ${columns} FROM ${v1} WHERE stream IN (${V1_STABLE_STREAMS})`];
+    if (v12) legacy.push(`SELECT ${columns} FROM ${v11} WHERE stream IN (${V1_STABLE_STREAMS}) OR source_device_id=$1`);
+    const candidate = work("candidate"), pairs = work("rekey_twins");
     const nestloop = await this.setting("enable_nestloop");
     await this.client.query("SELECT set_config('enable_nestloop','off',true)");
-    const found = number((await this.client.query(`CREATE TEMP TABLE ${twins} ON COMMIT DROP AS
+    // Provisional twin pairs: same stream, day, instant and (for usage) session.
+    // A usage row always has a session; a missing one compares as the empty
+    // id, which no session id is (2 to 257 bytes), so the key stays hashable.
+    // Quota pairs carry the dropped legacy record, session pairs its session.
+    let remaining = number((await this.client.query(`CREATE TEMP TABLE ${pairs} ON COMMIT DROP AS
       WITH rekeyed_legacy AS NOT MATERIALIZED (${legacy.join(" UNION ALL ")}),
-      dropped AS MATERIALIZED (SELECT DISTINCT legacy.stream,legacy.observed_day,legacy.observed_at_ms
+      dropped AS MATERIALIZED (SELECT DISTINCT legacy.stream,legacy.observed_day,legacy.observed_at_ms,
+          COALESCE(legacy.session_id,''::bytea) AS session_key,CASE legacy.stream WHEN 2 THEN legacy.id END AS legacy_id,
+          CASE legacy.stream WHEN 3 THEN legacy.occurrence_id END AS legacy_session
         FROM rekeyed_legacy legacy WHERE NOT EXISTS (SELECT 1 FROM ${candidate} kept WHERE kept.stream=legacy.stream
           AND kept.observed_day=legacy.observed_day AND kept.occurrence_id=legacy.occurrence_id))
-      SELECT twin.stream,twin.observed_day,twin.occurrence_id FROM ${candidate} twin
-       WHERE EXISTS (SELECT 1 FROM dropped WHERE dropped.stream=twin.stream AND dropped.observed_day=twin.observed_day
-           AND dropped.observed_at_ms=twin.observed_at_ms)
-         AND NOT EXISTS (SELECT 1 FROM rekeyed_legacy matched WHERE matched.stream=twin.stream
-           AND matched.occurrence_id=twin.occurrence_id)`, [this.input.deviceId])).rowCount);
+      SELECT twin.id,twin.stream,twin.observed_day,twin.observed_at_ms,twin.occurrence_id,dropped.legacy_id,dropped.legacy_session
+        FROM ${candidate} twin JOIN dropped ON dropped.stream=twin.stream AND dropped.observed_day=twin.observed_day
+         AND dropped.observed_at_ms=twin.observed_at_ms AND dropped.session_key=COALESCE(twin.session_id,''::bytea)
+       WHERE NOT EXISTS (SELECT 1 FROM rekeyed_legacy matched WHERE matched.stream=twin.stream
+           AND matched.occurrence_id=twin.occurrence_id)`, v12 ? [this.input.deviceId] : [])).rowCount);
     this.built.add("rekey_twins");
     let introduced = 0;
-    if (found > 0) {
-      await this.client.query(`ANALYZE ${twins}`);
-      if (this.input.format === 11) {
+    if (remaining > 0) {
+      await this.client.query(`ANALYZE ${pairs}`);
+      const streams = new Set((await this.client.query<{stream:number}>(`SELECT DISTINCT stream FROM ${pairs}`))
+        .rows.map(row => Number(row.stream)));
+      if (streams.has(3)) {
+        // Only usage rows of the provisional sessions join, by occurrence id.
+        const usage = [`SELECT occurrence_id,session_id FROM ${v1} WHERE stream=1`];
+        if (v12) usage.push(`SELECT occurrence_id,session_id FROM ${v11} WHERE stream=1`);
+        remaining -= number((await this.client.query(`WITH linked AS MATERIALIZED (
+            SELECT DISTINCT old_usage.session_id AS legacy_session,new_usage.session_id AS twin_session
+              FROM (${usage.join(" UNION ALL ")}) old_usage
+              JOIN ${candidate} new_usage ON new_usage.stream=1 AND new_usage.occurrence_id=old_usage.occurrence_id
+             WHERE old_usage.session_id IN (SELECT legacy_session FROM ${pairs} WHERE stream=3)
+               AND new_usage.session_id IN (SELECT occurrence_id FROM ${pairs} WHERE stream=3))
+          DELETE FROM ${pairs} pair WHERE pair.stream=3 AND NOT EXISTS (SELECT 1 FROM linked
+            WHERE linked.legacy_session=pair.legacy_session AND linked.twin_session=pair.occurrence_id)`)).rowCount);
+      }
+      if (v12) await this.client.query("SELECT set_config('enable_nestloop',$1,true)", [nestloop]);
+      if (streams.has(2)) {
+        // Quota legacy is v1.1 only, so only a v1.2 activation has quota
+        // pairs. Both share the v1.2 dictionary, so limit and slot ids
+        // compare. A pair is dropped only when both detail rows exist and
+        // differ; one missing a detail row stays a twin.
+        remaining -= number((await this.client.query(`DELETE FROM ${pairs} pair
+          USING ${t(this.s,"typed_telemetry_quota")} legacy_quota,${t(this.s,"telemetry_v12_typed_quota")} twin_quota
+          WHERE pair.stream=2 AND legacy_quota.record_id=pair.legacy_id AND twin_quota.record_id=pair.id
+            AND (legacy_quota.limit_id<>twin_quota.limit_id OR legacy_quota.slot_id<>twin_quota.slot_id)`)).rowCount);
+      }
+    }
+    if (remaining > 0) {
+      if (!v12) {
         introduced = number((await this.client.query<{introduced:string}>(`SELECT count(*)::text AS introduced
-          FROM ${twins} twin WHERE NOT EXISTS (SELECT 1 FROM ${v11} accepted
+          FROM ${pairs} twin WHERE NOT EXISTS (SELECT 1 FROM ${v11} accepted
             WHERE accepted.source_device_id=$1 AND accepted.stream=twin.stream AND accepted.observed_day=twin.observed_day
               AND accepted.occurrence_id=twin.occurrence_id)`, [this.input.deviceId])).rows[0]?.introduced);
       } else {
-        await this.client.query("SELECT set_config('enable_nestloop',$1,true)", [nestloop]);
-        introduced = number((await this.client.query<{introduced:string}>(`WITH twin_days AS MATERIALIZED (
-            SELECT DISTINCT observed_day FROM ${twins}),
-          accepted AS MATERIALIZED (SELECT DISTINCT day.manifest_id,(day.observed_day-DATE '1970-01-01')::integer AS observed_day
+        // This device's accepted manifests of the twins' days, keyed, so the
+        // anti-joins below look each one up rather than rescanning a set.
+        const accepted = work("rekey_accepted"), v12Records = t(this.s,"telemetry_v12_typed_records");
+        await this.client.query(`CREATE TEMP TABLE ${accepted} ON COMMIT DROP AS
+          SELECT DISTINCT (day.observed_day-DATE '1970-01-01')::integer AS observed_day,day.manifest_id
             FROM ${t(this.s,"telemetry_v12_domains")} generation
             JOIN ${t(this.s,"telemetry_v12_domain_days")} day ON day.generation_id=generation.id
             JOIN ${t(this.s,"telemetry_v12_day_manifests")} manifest ON manifest.id=day.manifest_id
              AND manifest.participant_id=generation.participant_id AND manifest.device_id=generation.device_id
              AND manifest.chunk_day=day.observed_day AND manifest.manifest_digest=day.manifest_digest AND manifest.state='ready'
             WHERE generation.participant_id=$1 AND generation.device_id=$2
-              AND (day.observed_day-DATE '1970-01-01')::integer IN (SELECT observed_day FROM twin_days))
-          SELECT count(*)::text AS introduced FROM ${twins} twin WHERE NOT EXISTS (
-            SELECT 1 FROM accepted JOIN ${t(this.s,"telemetry_v12_typed_records")} record ON record.manifest_id=accepted.manifest_id
-              AND record.stream=CASE twin.stream WHEN 1 THEN 'usage' WHEN 3 THEN 'session' ELSE 'quota' END
-              AND record.occurrence_id=twin.occurrence_id
-             WHERE accepted.observed_day=twin.observed_day)`,
-        [this.input.participantId, this.input.deviceId])).rows[0]?.introduced);
+              AND (day.observed_day-DATE '1970-01-01')::integer IN (SELECT observed_day FROM ${pairs})`,
+        [this.input.participantId, this.input.deviceId]);
+        this.built.add("rekey_accepted");
+        await this.client.query(`CREATE UNIQUE INDEX ON ${accepted} (observed_day,manifest_id)`);
+        await this.client.query(`ANALYZE ${accepted}`);
+        // Each NOT EXISTS correlates only in its WHERE clause, so it plans as
+        // an anti-join (a per-twin index probe or one hashed inner set), never
+        // a subplan rescanning the accepted set per twin. Usage and quota ids
+        // encode their instant, so the (observed_day, stream, observed_at_ms,
+        // occurrence_id) index finds every manifest holding a twin in one
+        // probe. A session's first-event instant can move, so a session twin
+        // (few per day) is looked up in each accepted manifest of its day by
+        // the (manifest_id, stream, occurrence_id) unique key.
+        introduced = number((await this.client.query<{introduced:string}>(`WITH twins AS MATERIALIZED (
+            SELECT DISTINCT twin.stream,twin.observed_day,twin.observed_at_ms,twin.occurrence_id FROM ${pairs} twin)
+          SELECT count(*)::text AS introduced FROM (
+            SELECT 1 FROM twins twin WHERE twin.stream<>3 AND NOT EXISTS (SELECT 1 FROM ${v12Records} record
+              JOIN ${accepted} accepted ON accepted.observed_day=record.observed_day AND accepted.manifest_id=record.manifest_id
+             WHERE record.observed_day=twin.observed_day AND record.stream=CASE twin.stream WHEN 1 THEN 'usage' ELSE 'quota' END
+               AND record.observed_at_ms=twin.observed_at_ms AND record.occurrence_id=twin.occurrence_id)
+            UNION ALL SELECT 1 FROM twins twin WHERE twin.stream=3 AND NOT EXISTS (SELECT 1 FROM ${accepted} accepted
+              JOIN ${v12Records} record ON record.manifest_id=accepted.manifest_id
+             WHERE accepted.observed_day=twin.observed_day AND record.stream='session'
+               AND record.occurrence_id=twin.occurrence_id)) introduced`)).rows[0]?.introduced);
       }
     }
     await this.client.query("SELECT set_config('enable_nestloop',$1,true)", [nestloop]);
