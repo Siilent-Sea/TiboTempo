@@ -690,6 +690,47 @@ test("a dry run validates and prints argv only: no gcloud, no node, no request, 
   assert.deepEqual(gcpPlan.servedCommitCheck, { path: "public-health", url: "https://tibotattle.com/api/health" });
 });
 
+test("preflight recognizes terminal Cloud Run conditions without optional completion timestamps", async (t) => {
+  const paths = await workspace(t);
+  for (const status of ["True", "False"]) {
+    const estate = fakeEstate({ executions: (job) => [completed(job), {
+      metadata: { name: `${job}-terminal1` },
+      status: { conditions: [{ type: "Completed", status, ...(status === "False"
+        ? { reason: "ContainerPermissionDenied" } : {}) }] },
+    }] });
+    const lock = fakeLock();
+    const result = await runRollout(["preflight", "--environment=production", `--commit=${COMMIT}`,
+      `--backup-audit=${paths.audit}`, "--execute"], dependencies(estate, lock));
+    assert.equal(result.scheduledJobs.quiescent, true, status);
+    assert.deepEqual(result.scheduledJobs.running, [], status);
+    assert.deepEqual(lock.events, [], "preflight never takes a mutation lock");
+    assert.equal(estate.calls.some((argv) => ["update", "execute", "cancel", "delete"].includes(argv[3])), false);
+  }
+});
+
+test("unknown, malformed or contradictory execution evidence still blocks migration before any write", async (t) => {
+  const statuses = [
+    {},
+    { conditions: [{ type: "Completed", status: "Unknown" }] },
+    { conditions: [{ type: "Completed", status: "false" }] },
+    { conditions: [{ type: "Completed", status: "False" }, { type: "Completed", status: "True" }] },
+    { conditions: { type: "Completed", status: "False" } },
+    { conditions: [{ type: "Completed", status: "False" }], runningCount: 1 },
+    { conditions: [{ type: "Completed", status: "False" }], runningCount: "0" },
+    { conditions: [{ type: "Completed", status: "Unknown" }], completionTime: "2026-10-02T10:00:00Z" },
+    { completionTime: "invalid" },
+  ];
+  for (const status of statuses) {
+    const paths = await workspace(t);
+    const estate = fakeEstate({ executions: (job) => [{ metadata: { name: `${job}-unknown1` }, status }] });
+    await assert.rejects(runRollout(executeMigrate(paths), dependencies(estate, fakeLock())),
+      isCode("ROLLOUT_JOBS_RUNNING"));
+    assert.equal(estate.calls.some((argv) => ["create", "update", "execute", "cancel", "delete"].includes(argv[3])), false,
+      "no backup, deployment or execution mutation precedes quiescence");
+    await assert.rejects(stat(paths.migrateReceipt));
+  }
+});
+
 test("migrate: preflight, quiescent jobs, one labelled pre-migration backup, then the job update and execution, under the lock",
   async (t) => {
     const paths = await workspace(t);

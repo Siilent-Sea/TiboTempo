@@ -90,6 +90,13 @@ What follows from the decision:
 | Lock | Every mutating verb | The environment's own coordination lock is free. Production takes the shared production deployment lock, `refs/heads/codex/production-deployment-lock`; staging takes only `refs/heads/codex/staging-deployment-lock` and never the production lock (owner decision 2026-10-02, round 9). The mapping is closed, and a dry run prints the exact ref as `lockRef` |
 | Authorization | Owner | Authorized in chat for this verb, this environment and this digest or commit |
 
+The Jobs gate recognizes a single explicit Cloud Run `Completed=True` or
+`Completed=False` condition as terminal; the latter is a failed execution, not
+success. A pre-start failure may omit the optional completion timestamp.
+Unknown, absent, malformed or contradictory terminal evidence keeps the gate
+closed, as does a nonzero or unrecognized running-task count. See the
+[Cloud Run execution contract](https://docs.cloud.google.com/run/docs/reference/rest/v1/namespaces.executions).
+
 Staging notes. The staging plane lives in the shared test project, and the
 rollout's quiescence check counts every job trigger in the location, so a
 running test-estate trigger there refuses a staging migrate or roll. For the

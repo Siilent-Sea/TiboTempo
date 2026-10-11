@@ -166,3 +166,18 @@ client/projection/rendering tests and generated embedded assets are ported.
 The typed edge deploy must preserve the live manifest
 `cedad565d9d5ac420a28b6445b5d66ecaecd3327227f04f63faee813d3df7e81`.
 Never deploy the origin branch's older public layout over the live edge.
+
+The edge client deployed and verified at `d06a2374cd6202895b0dabb5ec23b44d35dfdb47`;
+the cache-busted public manifest retained the exact hash above. The first origin
+image built and qualified at `30061403d`, but was not rolled. Paused-schedule
+preflight found two old maintenance executions with `Completed=False`,
+`ContainerPermissionDenied` and neither a start nor completion timestamp.
+[Cloud Run's v1 contract](https://docs.cloud.google.com/run/docs/reference/rest/v1/namespaces.executions)
+defines that condition as terminal failure and the completion timestamp as
+optional. The rollout reader previously treated every missing timestamp as
+running. Its correction recognizes one explicit terminal condition; absent or
+inconsistent terminal evidence and contradictory running counts still block.
+Existing failed execution history is preserved. The two recorded
+ENABLED schedules were restored, maintenance first, during local qualification
+and preparation of a new commit-bound image. No origin migration or roll had
+occurred at this stopping point.

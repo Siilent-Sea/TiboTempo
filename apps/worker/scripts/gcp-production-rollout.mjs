@@ -556,11 +556,28 @@ const SCHEDULER_NAME = /^[A-Za-z0-9_-]{1,500}$/u;
 /**
  * The scheduled-jobs readback (read-only): every Cloud Scheduler trigger in
  * the target's location that runs a Cloud Run job, with its state, and the
- * executions of each manifest Job that have not completed. Quiescent means
+ * executions of each manifest Job without terminal evidence. Quiescent means
  * every such trigger is PAUSED and nothing is running: OPS-3 pause-all has
  * run and the running executions have finished, so no Job touches the
  * database while it migrates or while its image moves.
  */
+// Cloud Run v1's Completed condition is True for success and False for
+// failure. A pre-start failure can omit the optional completionTime. Missing,
+// unknown, conflicting or malformed terminal evidence must still block a roll.
+// https://docs.cloud.google.com/run/docs/reference/rest/v1/namespaces.executions
+function executionIsTerminal(execution) {
+  const status = execution?.status;
+  if (!isRecord(status)) return false;
+  if (status.runningCount !== undefined && status.runningCount !== 0) return false;
+  if (status.conditions !== undefined) {
+    if (!Array.isArray(status.conditions)) return false;
+    const completed = status.conditions.filter((condition) => condition?.type === "Completed");
+    if (completed.length > 1) return false;
+    if (completed.length === 1) return ["True", "False"].includes(completed[0].status);
+  }
+  return typeof status.completionTime === "string" && Number.isFinite(Date.parse(status.completionTime));
+}
+
 function readScheduledJobs(context, target) {
   const schedulers = parseJson(runChecked(context, ROLLOUT_ARGV.schedulerList(target),
     "ROLLOUT_SCHEDULED_JOBS_READBACK_FAILED"), "ROLLOUT_SCHEDULED_JOBS_READBACK_FAILED");
@@ -578,8 +595,7 @@ function readScheduledJobs(context, target) {
     const executions = parseJson(runChecked(context, ROLLOUT_ARGV.executionsList(target, job),
       "ROLLOUT_SCHEDULED_JOBS_READBACK_FAILED"), "ROLLOUT_SCHEDULED_JOBS_READBACK_FAILED");
     if (!Array.isArray(executions)) fail("ROLLOUT_SCHEDULED_JOBS_READBACK_FAILED");
-    // An execution without a completion time is pending or running.
-    const open = executions.filter((execution) => typeof execution?.status?.completionTime !== "string").length;
+    const open = executions.filter((execution) => !executionIsTerminal(execution)).length;
     if (open > 0) running.push(Object.freeze({ job, executions: open }));
   }
   triggers.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
