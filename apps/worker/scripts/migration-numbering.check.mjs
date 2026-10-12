@@ -12,6 +12,7 @@
  * its run may start anywhere, but none of its numbers may already be promoted.
  *
  * Covered directories: migrations, every top-level *-migrations,
+ * the staging-edge catchup stand-in migrations,
  * postgres/migrations/<role> and postgres/staged-migrations/<role>. Any other
  * directory holding .sql files fails MIGRATION_DIRECTORY_UNCOVERED, except
  * postgres/proposals, which may hold unreferenced drafts (none is tracked:
@@ -58,6 +59,10 @@ export async function migrationDirectories(workerRoot) {
   }
   for (const role of await subdirectories(join(workerRoot, "postgres", "staged-migrations"))) {
     directories.push(`postgres/staged-migrations/${role}`);
+  }
+  const standinRoot = "ops/staging-edge/catchup-standin";
+  if ((await subdirectories(join(workerRoot, standinRoot))).includes("migrations")) {
+    directories.push(`${standinRoot}/migrations`);
   }
   return Object.freeze(directories);
 }

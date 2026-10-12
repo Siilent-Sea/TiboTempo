@@ -2,7 +2,7 @@
 title: Deployed GCP source PR integration
 date: 2026-10-11
 type: plan
-status: qualified
+status: in-progress
 ---
 
 Integrate the deployed origin 7a4bc73ebbc096754adb954fbb2051a6b28b8b35
@@ -72,3 +72,19 @@ Merge sequence: PR #291 targets the production origin branch with the qualified
 combined source, then PR #290 targets main. Use ordinary merge commits and match
 the reviewed head SHA at each operation. Confirm both released commits remain
 ancestors of remote main and preserve any automatically deleted deployed refs.
+
+GitHub CI surfaced an additional integration gate before merge:
+- Its Cloud Run, documentation, dependency, release-policy and contract-drift
+  jobs passed. The Worker job stopped at the CI contract/migration guard.
+- The socket permission negative fixture now uses synchronous filesystem chmod;
+  the subprocess-based mutation was ineffective. All 43 CI harness tests pass.
+  The 0700 admission checks remain unchanged and fail closed.
+- The numbering guard now covers the newly integrated staging-edge stand-in's
+  migration directory, with the same unique/contiguous checks as every other
+  owned migration directory.
+- Main's `0013_performance_ultrafast.sql` collides with the GCP line's guarded
+  `0013_v12_quarantine_admission.sql`. The GCP plan explicitly requires whichever
+  reaches production D1 first to retain 0013. This is a D1 naming collision;
+  no PostgreSQL migration or deployed schema has changed. Production ledger
+  read approval was requested to identify applied filenames/checksums before
+  renumbering only unapplied files. Both PRs remain unmerged pending this gate.
