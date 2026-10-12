@@ -10,6 +10,8 @@ import {
   inspectWebReleaseScope,
   WEB_RELEASE_OUTPUT_DIRECTORY,
   writeWebReleaseReceipt,
+  readInstallerOnlyWebProof,
+  preflightInstallerOnlyWebProof,
 } from "./web-release-lane.js";
 
 const REPOSITORY_ROOT = fileURLToPath(new URL("../", import.meta.url));
@@ -21,6 +23,7 @@ function usage() {
     "    [--receipt /absolute/receipt.json] [--replace-receipt] -- \\",
     "    --output /absolute/repository/.release-build/public-release-site --replace \\",
     "    <product:release-site arguments>",
+    "    Installer-only: add --installer-only-proof ABSOLUTE_JSON --installer-only-proof-sha256 SHA256 before --.",
   ].join("\n");
 }
 
@@ -38,7 +41,7 @@ export function parsePrepareWebReleaseArgs(argv) {
       parsed.replaceReceipt = true;
       continue;
     }
-    if (arg !== "--base" && arg !== "--receipt") {
+    if (!["--base", "--receipt", "--installer-only-proof", "--installer-only-proof-sha256"].includes(arg)) {
       throw new TypeError(`Unknown web-release argument: ${arg}\n${usage()}`);
     }
     const value = control[index + 1];
@@ -47,10 +50,15 @@ export function parsePrepareWebReleaseArgs(argv) {
     }
     index += 1;
     if (arg === "--base") parsed.baseCommit = value;
-    else parsed.receipt = value;
+    else if (arg === "--receipt") parsed.receipt = value;
+    else if (arg === "--installer-only-proof") parsed.installerOnlyProofPath = value;
+    else parsed.installerOnlyProofSha256 = value;
   }
   if (!parsed.baseCommit || build.length === 0) {
     throw new TypeError(`A base commit and site-build arguments are required\n${usage()}`);
+  }
+  if (Boolean(parsed.installerOnlyProofPath) !== Boolean(parsed.installerOnlyProofSha256)) {
+    throw new TypeError("Installer-only proof requires its exact SHA-256.");
   }
   if (build.includes("--source") || build.includes("--source-commit")) {
     throw new TypeError(
@@ -88,16 +96,29 @@ export async function prepareWebRelease({
   rawBuildArgs,
   receiptPath = null,
   replaceReceipt = false,
+  installerOnlyProof = null,
   build = buildPublicReleaseSite,
   git,
 }) {
   const repository = resolve(repositoryRoot);
+  if (installerOnlyProof !== null && build !== buildPublicReleaseSite) {
+    throw new TypeError("Installer-only preparation requires the maintained builder and its HTTPS installer verification.");
+  }
   const scope = inspectWebReleaseScope({
     repositoryRoot: repository,
     baseCommit,
+    installerOnly: installerOnlyProof !== null,
     git,
   });
   assertPreparedBuildArguments(repository, rawBuildArgs);
+  if (installerOnlyProof !== null && (rawBuildArgs.electronPublicationPlan
+      || rawBuildArgs.electronPublishedManifest !== installerOnlyProof.candidateInstallerManifest?.path
+      || rawBuildArgs.electronPublishedManifestSha256 !== installerOnlyProof.candidateInstallerManifest?.sha256)) {
+    throw new TypeError("Installer-only build must select its pinned candidate canonical installer manifest.");
+  }
+  if (installerOnlyProof !== null) {
+    await preflightInstallerOnlyWebProof({ repositoryRoot: repository, scope, proof: installerOnlyProof, ...(git ? { git } : {}) });
+  }
   const result = await build(rawBuildArgs);
   const receipt = await writeWebReleaseReceipt({
     repositoryRoot: repository,
@@ -105,6 +126,7 @@ export async function prepareWebRelease({
     ...(receiptPath ? { receiptPath: resolve(receiptPath) } : {}),
     ...(git ? { git } : {}),
     replace: replaceReceipt,
+    installerOnlyProof,
   });
   return Object.freeze({ ...result, scope, receipt });
 }
@@ -113,9 +135,12 @@ async function main() {
   try {
     const parsed = parsePrepareWebReleaseArgs(process.argv.slice(2));
     const rawBuildArgs = parseReleaseSiteArgs(parsed.build);
+    const installerOnlyProof = parsed.installerOnlyProofPath
+      ? await readInstallerOnlyWebProof(parsed.installerOnlyProofPath, parsed.installerOnlyProofSha256) : null;
     const result = await prepareWebRelease({
       baseCommit: parsed.baseCommit,
       rawBuildArgs,
+      installerOnlyProof,
       ...(parsed.receipt ? { receiptPath: resolve(parsed.receipt) } : {}),
       replaceReceipt: parsed.replaceReceipt,
     });

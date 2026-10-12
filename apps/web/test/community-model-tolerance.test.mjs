@@ -24,6 +24,11 @@ function withTuples(payload, tuples) {
   return payload;
 }
 const withMetadata = (payload, entries) => {
+  payload.allowanceBreakdowns.schemaVersion = "community-allowance-breakdowns-v1.3";
+  for (const [index, day] of payload.allowanceBreakdowns.days.entries()) {
+    const { centralUsd, participantCount, fitCount, band80Usd } = payload.days[index].payload.allowance;
+    day.combined = { centralUsd, participantCount, fitCount, band80Usd };
+  }
   payload.allowanceBreakdowns.modelConfig = entries;
   return payload;
 };
@@ -393,7 +398,7 @@ test("the stored-copy counters are closed and bounded, and only a stored copy ma
   assert.equal(read(copy => { copy.participant_id = "PRIVATE_CANARY"; }), null);
 });
 
-test("a model the catalog knows but the page's preferred order does not list is drawn with its catalog label", () => {
+test("known historical models retain their evidence and need published metadata to enter the selected comparison", () => {
   const known = [["gpt-5.4", 700, 2], ["gpt-4.1", 300, 1], ["o3", 250, 1]];
   const payload = withTuples(publicAllowanceFixture(NOW), known);
   const normalized = normalizeCommunityDailySeries(payload, { nowMs: NOW });
@@ -401,15 +406,22 @@ test("a model the catalog knows but the page's preferred order does not list is 
   const chart = buildCommunityAllowanceChartModel(normalized, { view: "models" });
   const byKey = new Map(chart.legendSeries.map(series => [series.key, series]));
   for (const [id, label] of [["gpt-5.4", "GPT-5.4"], ["gpt-4.1", "GPT-4.1"], ["o3", "o3"]]) {
-    assert.equal(byKey.get(id)?.label, label, id);
-    assert.ok(chart.dots.some(dot => dot.seriesKey === id), `${id} is drawn`);
+    assert.equal(byKey.has(id), false, `${label} is outside the selected comparison`);
+    assert.ok(normalized.breakdowns.days.some(day => day.models.some(tuple => tuple[0] === id)),
+      `${id} is retained as known evidence`);
   }
-  // Page-preferred models keep their places; the rest follow in catalog order.
   assert.deepEqual(chart.legendSeries.map(series => series.key),
-    ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.5", "gpt-4.1", "gpt-5.4", "o3"]);
-  assert.equal(byKey.get("gpt-5.4").theme, null);
-  assert.match(byKey.get("gpt-5.4").className, /^allowance-series-\d$/u);
-  assert.ok(render(withTuples(publicAllowanceFixture(), known), "models").text.includes("GPT-5.4"));
+    ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol"]);
+  const block = [["gpt-5.4", "GPT-5.4"], ["gpt-4.1", "GPT-4.1"], ["o3", "o3"]]
+    .map(([id, label], order) => ({ id, label, family: "generic", order }));
+  const declared = withMetadata(payload, block);
+  const declaredChart = modelsChart(declared);
+  assert.deepEqual(declaredChart.legendSeries.slice(0, 3).map(series => series.key), known.map(tuple => tuple[0]));
+  const declaredModel = declaredChart.legendSeries.find(series => series.key === "gpt-5.4");
+  assert.equal(declaredModel.label, "GPT-5.4");
+  assert.equal(declaredModel.theme, null);
+  assert.match(declaredModel.className, /^allowance-series-\d$/u);
+  assert.ok(render(declared, "models").text.includes("GPT-5.4"));
 });
 
 test("breakdown normalization is a pure function of its inputs", () => {

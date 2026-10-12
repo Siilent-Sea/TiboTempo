@@ -26,3 +26,18 @@ Acceptance:
 - Merge reviewable PRs through normal repository policy and verify both deployed
   commits are reachable from remote main. Restore any automatically deleted
   deployed branch references so the released sources remain easy to recover.
+
+Integration decisions:
+- Retain the deployed Pro 20x v0.5/v1.5 producer and its Pro Max 25x cohort;
+  read older Pro 10x and three-plan publications under their own exact contracts.
+  Browser fixtures now select their schema and normalization explicitly. Known
+  historical model evidence stays retained while the served roster controls the
+  selected public comparison.
+- Main already ships the September 29 catalog. Reuse its 43-model configuration
+  once and retain September 23 history without inferring GPT-6.1 Sol coverage.
+- Preserve both telemetry activation migration guards and main's Electron,
+  updater, ultrafast performance and desktop quota-package export.
+- The combined closure is kernel 17, sha256
+  `89ee4ba5ceb5ef9d9b754a438b1b943160fce6e8210dfb98542d00525a6d7d03`.
+  Kernel 16 and every older entry are immutable. The vendor, prices and B'
+  allowance projection are unchanged; no combined-source image is deployed.

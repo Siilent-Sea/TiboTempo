@@ -23,6 +23,22 @@ const LEDGER_OBJECTS = [
   { type: 'table', name: 'd1_storage_migrations', tbl_name: 'd1_storage_migrations', sql: LEDGER_SCHEMA_SQL },
 ];
 export const STORAGE_SCHEMA_QUERY = `SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' AND tbl_name <> 'd1_storage_migrations' ORDER BY type,name LIMIT 4097`;
+// Wrangler's own migration ledger. A storage-ledger database never carries it
+// (production's typed D1s have none), so a stray one is reported by name and
+// row count only, and a staging plan may retire it only while it is empty and
+// is the database's only application object.
+export const WRANGLER_LEDGER_TABLE = 'd1_migrations';
+const WRANGLER_LEDGER_GUARD = 'tibotattle_wrangler_ledger_retirement';
+const APPLICATION_OBJECTS_QUERY = `SELECT type,name FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' AND name NOT IN ('_cf_KV','_cf_METADATA') ORDER BY type,name LIMIT 4097`;
+// One import: the guard rows fail their CHECK, and the import stops before
+// either DROP, unless the ledger is empty and is the only application object.
+export const WRANGLER_LEDGER_RETIREMENT_SQL = `CREATE TABLE ${WRANGLER_LEDGER_GUARD} (ok INTEGER NOT NULL CHECK (ok = 1));
+INSERT INTO ${WRANGLER_LEDGER_GUARD} SELECT (SELECT COUNT(*) FROM ${WRANGLER_LEDGER_TABLE}) = 0;
+INSERT INTO ${WRANGLER_LEDGER_GUARD} SELECT (SELECT COUNT(*) FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' AND name NOT IN ('_cf_KV','_cf_METADATA','${WRANGLER_LEDGER_GUARD}')) = 1;
+INSERT INTO ${WRANGLER_LEDGER_GUARD} SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = '${WRANGLER_LEDGER_TABLE}');
+DROP TABLE ${WRANGLER_LEDGER_GUARD};
+DROP TABLE ${WRANGLER_LEDGER_TABLE};
+`;
 
 /** Private, one-account configs prevent environment fallback or binding-name
  * discovery. This adapter deliberately exposes no arbitrary query API. */
@@ -168,21 +184,36 @@ export async function createStorageWranglerAdapter({ plan, qualifications, direc
     })) throw storageError('LEDGER_SCHEMA_MISMATCH');
     return true;
   };
+  const wranglerLedger = async (target) => {
+    const objects = await query(target, APPLICATION_OBJECTS_QUERY);
+    if (objects.length !== 1 || objects[0].results.length > 4096 || objects[0].results.some((row) =>
+      Object.keys(row).sort().join() !== 'name,type' || typeof row.type !== 'string' || typeof row.name !== 'string')) throw storageError('SCHEMA_RESULT_INVALID');
+    const rows = objects[0].results;
+    const present = rows.some((row) => row.type === 'table' && row.name === WRANGLER_LEDGER_TABLE);
+    let count = null;
+    if (present) {
+      const result = await query(target, `SELECT COUNT(*) AS n FROM ${WRANGLER_LEDGER_TABLE}`);
+      count = result.length === 1 && result[0].results.length === 1 ? result[0].results[0].n : null;
+      if (!Number.isSafeInteger(count) || count < 0) throw storageError('SCHEMA_RESULT_INVALID');
+    }
+    return { present, rows: count, otherObjects: rows.length - (present ? 1 : 0) };
+  };
+  const inventory = async (target) => {
+    assertTarget(target);
+    const list = json(await command(['list', '--json']));
+    if (!Array.isArray(list) || list.length > 4096) throw storageError('INVENTORY_LIMIT');
+    const matches = list.filter((entry) => entry.name === target.name);
+    if (matches.length !== 1) return matches.length === 0 ? [] : [null, null];
+    if (target.databaseId !== null && matches[0].uuid !== target.databaseId) throw storageError('RESOURCE_IDENTITY_OR_CAPACITY_MISMATCH');
+    // Info is addressed by the exact server-returned UUID; the account is
+    // pinned in the private config. Never infer an ID from a name fragment.
+    const info = json(await command(['info', matches[0].uuid, '--json']));
+    if (info.uuid !== matches[0].uuid || info.name !== target.name) throw storageError('RESOURCE_IDENTITY_OR_CAPACITY_MISMATCH');
+    return [{ id: info.uuid, name: info.name, bytes: info.database_size ?? info.file_size }];
+  };
   return {
     proof: { wranglerVersion: '4.114.0', cliSha256: cli.digest },
-    async inventory(target) {
-      assertTarget(target);
-      const list = json(await command(['list', '--json']));
-      if (!Array.isArray(list) || list.length > 4096) throw storageError('INVENTORY_LIMIT');
-      const matches = list.filter((entry) => entry.name === target.name);
-      if (matches.length !== 1) return matches.length === 0 ? [] : [null, null];
-      if (target.databaseId !== null && matches[0].uuid !== target.databaseId) throw storageError('RESOURCE_IDENTITY_OR_CAPACITY_MISMATCH');
-      // Info is addressed by the exact server-returned UUID; the account is
-      // pinned in the private config. Never infer an ID from a name fragment.
-      const info = json(await command(['info', matches[0].uuid, '--json']));
-      if (info.uuid !== matches[0].uuid || info.name !== target.name) throw storageError('RESOURCE_IDENTITY_OR_CAPACITY_MISMATCH');
-      return [{ id: info.uuid, name: info.name, bytes: info.database_size ?? info.file_size }];
-    },
+    inventory,
     async create(target) {
       assertTarget(target);
       assertStorageMutationApproval(plan, approval.extensions);
@@ -216,6 +247,34 @@ export async function createStorageWranglerAdapter({ plan, qualifications, direc
       await inspectLedger(target);
       assertStorageMutationApproval(plan, approval.extensions);
       await importFile(target, `${LEDGER}\n${migration.sql}\nINSERT INTO d1_storage_migrations(name,sha256) VALUES('${migration.name}','${migration.sha256}');`);
+    },
+    /** Read-only and content-free: whether Wrangler's ledger exists, its row
+     * count, and how many other application objects the database holds. */
+    async wranglerLedger(target) {
+      assertTarget(target);
+      return wranglerLedger(target);
+    },
+    /** Staging only: drop Wrangler's ledger while it is empty and the only
+     * application object, so a storage-ledger staging database mirrors
+     * production's absence of it. Absent is a no-op; anything else refuses. */
+    async retireEmptyWranglerLedger(target) {
+      assertTarget(target);
+      if (plan.environment !== 'staging' || plan.phase !== 'migrate' || target.databaseId === null) throw storageError('WRANGLER_LEDGER_RETIREMENT_REFUSED');
+      assertStorageMutationApproval(plan, approval.extensions);
+      // As the runner does before any write, establish identity from the
+      // server's own list and info before a query or import addresses the ID:
+      // exactly one database by the plan's name, carrying the plan's ID.
+      const identity = await inventory(target);
+      if (!Array.isArray(identity) || identity.length !== 1 || identity[0]?.id !== target.databaseId
+          || identity[0]?.name !== target.name) throw storageError('RESOURCE_IDENTITY_OR_CAPACITY_MISMATCH');
+      const before = await wranglerLedger(target);
+      if (!before.present) return { status: 'absent', ...before };
+      if (before.rows !== 0 || before.otherObjects !== 0) throw storageError('WRANGLER_LEDGER_NOT_EMPTY');
+      assertStorageMutationApproval(plan, approval.extensions);
+      try { await importFile(target, WRANGLER_LEDGER_RETIREMENT_SQL); } catch { throw storageError('WRANGLER_LEDGER_RETIREMENT_UNCERTAIN'); }
+      const after = await wranglerLedger(target);
+      if (after.present || after.otherObjects !== 0) throw storageError('WRANGLER_LEDGER_RETIREMENT_UNCERTAIN');
+      return { status: 'retired', ...after };
     },
   };
 }

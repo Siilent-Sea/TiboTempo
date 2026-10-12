@@ -280,16 +280,14 @@ export function communityDailyWindow(nowMs = Date.now()) {
 // The allowance block is additive on community-daily-aggregate-v1.0. Only the
 // exact merged methodology is interpreted: supported personal-plan fits are
 // normalized into their declared reference summary before the median and range
-// are calculated. Only the exact Pro 20x and Pro 10x claims below are accepted;
-// their values retain their original basis, including in stored copies.
+// are calculated. Only the exact Pro 20x, Pro 10x and Pro 20x-with-Pro-Max
+// claims below are accepted; their values retain their original basis,
+// including in stored copies.
 export const COMMUNITY_ALLOWANCE_BASIS =
-  "seven_day_codex_pro10x_equivalent_personal_plans_trailing_30d_promax25";
+  "seven_day_codex_pro20x_equivalent_personal_plans_trailing_30d";
 export const COMMUNITY_ALLOWANCE_REFERENCE_PLAN_TYPE = "pro";
 export const COMMUNITY_ALLOWANCE_NORMALIZATION =
-  "pro_x1_prolite_x2_promax_x0_4_plus_x10";
-const LEGACY_COMMUNITY_ALLOWANCE_BASIS =
-  "seven_day_codex_pro20x_equivalent_personal_plans_trailing_30d";
-const LEGACY_COMMUNITY_ALLOWANCE_NORMALIZATION = "pro_x1_prolite_x4_plus_x20";
+  "pro_x1_prolite_x4_plus_x20";
 
 // Inverse of the validated reference-plan display basis, not a pricing model
 // or a new allowance fit. Convert the unrounded estimate before formatting.
@@ -297,25 +295,97 @@ export const COMMUNITY_ALLOWANCE_PRO10_BASIS =
   "seven_day_codex_pro10x_equivalent_personal_plans_trailing_30d_promax25";
 export const COMMUNITY_ALLOWANCE_PRO10_NORMALIZATION =
   "pro_x1_prolite_x2_promax_x0_4_plus_x10";
+// Owner option B (2026-10-10): every plan in units of the Pro 20x week,
+// including Pro Max 25x at x0.8. A new identity: never the three-plan
+// v1.0-v1.3 claim and never the v1.4 Pro 10x one.
+export const COMMUNITY_ALLOWANCE_PRO20_PROMAX_BASIS =
+  "seven_day_codex_pro20x_equivalent_personal_plans_trailing_30d_promax25";
+export const COMMUNITY_ALLOWANCE_PRO20_PROMAX_NORMALIZATION =
+  "pro_x1_prolite_x4_promax_x0_8_plus_x20";
 const PLAN_REFERENCE_MULTIPLIERS = Object.freeze({ pro: 1, prolite: 4, plus: 20 });
 const PRO10_PLAN_REFERENCE_MULTIPLIERS = Object.freeze({ pro: 1, prolite: 2, promax: 0.4, plus: 10 });
+const PRO20_PROMAX_PLAN_REFERENCE_MULTIPLIERS = Object.freeze({ pro: 1, prolite: 4, promax: 0.8, plus: 20 });
+const PLAN_REFERENCE_MULTIPLIERS_BY_NORMALIZATION = new Map([
+  [COMMUNITY_ALLOWANCE_NORMALIZATION, PLAN_REFERENCE_MULTIPLIERS],
+  [COMMUNITY_ALLOWANCE_PRO10_NORMALIZATION, PRO10_PLAN_REFERENCE_MULTIPLIERS],
+  [COMMUNITY_ALLOWANCE_PRO20_PROMAX_NORMALIZATION, PRO20_PROMAX_PLAN_REFERENCE_MULTIPLIERS],
+]);
 export function planWeeklyApiEquivalentUsd(referenceUsd, planType, normalization = COMMUNITY_ALLOWANCE_NORMALIZATION) {
-  const multipliers = normalization === COMMUNITY_ALLOWANCE_NORMALIZATION ? PLAN_REFERENCE_MULTIPLIERS
-    : normalization === COMMUNITY_ALLOWANCE_PRO10_NORMALIZATION ? PRO10_PLAN_REFERENCE_MULTIPLIERS : null;
+  const multipliers = PLAN_REFERENCE_MULTIPLIERS_BY_NORMALIZATION.get(normalization) ?? null;
   if (typeof referenceUsd !== "number" || !Number.isFinite(referenceUsd) || referenceUsd < 0
       || typeof planType !== "string"
       || (multipliers === null || !Object.prototype.hasOwnProperty.call(multipliers, planType))) return null;
   return referenceUsd / multipliers[planType];
 }
 
-// Every primary Codex model this build's reviewed catalog can name is drawable
-// when the server publishes an estimate for it. The catalog, not a hand roster,
-// decides which models exist; model-visuals.js only decides how a model looks.
-export const PUBLIC_ALLOWANCE_MODEL_CONFIG = Object.freeze(REVIEWED_MODEL_CATALOG
-  .filter(model => model.provider === "openai_codex" && model.allowanceTrack === "primary")
-  .map(model => Object.freeze({ modelId: model.id, label: model.label })));
+// The page's own selected roster, in display order: the models it leads with.
+// Roster models keep a card while they have no estimate, except the ones in
+// PUBLIC_ALLOWANCE_ROSTER_UNTIL_PUBLISHED below.
+const PUBLIC_ALLOWANCE_ROSTER = Object.freeze([
+  ["gpt-6-astra", "GPT-6 Astra"],
+  ["gpt-6.1-sol", "GPT-6.1 Sol"],
+  ["gpt-6-sol", "GPT-6 Sol"],
+  ["gpt-6-luna", "GPT-6 Luna"],
+  ["gpt-5.6-terra", "GPT-5.6 Terra"],
+  ["gpt-5.6-sol", "GPT-5.6 Sol"],
+  ["gpt-5.6-luna", "GPT-5.6 Luna"],
+]);
+const PUBLIC_ALLOWANCE_ROSTER_IDS = new Set(PUBLIC_ALLOWANCE_ROSTER.map(([modelId]) => modelId));
+// Roster models with no card until a served publication carries an estimate
+// for them (owner rounds 5 and 11). GPT-6.1 Sol is on the OpenAI release-line
+// catalog only, and the page must not name it before the served catalog adds
+// it. On v1.3 the `modelConfig` block is the served catalog's public roster and
+// the only authority that can name it (owner round 12, W-WEB-HIDE2): unless a
+// valid block names it, its tuples are skipped and counted like a newer model's,
+// and a rejected block names nothing. A block that names it places it at the
+// block's order. v1.0 and v1.1 cannot carry a block, so there it keeps its
+// roster slot (second) and stays known: a producer publishes tuples only for
+// models in its own reviewed catalog.
+const PUBLIC_ALLOWANCE_ROSTER_UNTIL_PUBLISHED = new Set(["gpt-6.1-sol"]);
+// The owner chose a selected comparison, not the whole historical vocabulary
+// (2d6cfbc8, "six requested public allowance models"): older generations stay
+// off the page. That choice is this explicit list, taken from the OpenAI
+// release-line catalog reviewed-model-catalog-2026-09-29.1. It covers every
+// primary id in the catalog this tree ships (reviewed-model-catalog-2026-09-23.1),
+// so with that catalog the charted list is exactly the roster. Unlike d43c8f92,
+// which charts only its hand-picked roster, a primary model that a later catalog
+// adds and that is not on this list is charted as soon as the server publishes
+// an estimate for it, with no page edit (owner round 5: shown once the catalog
+// adds it). Add it here to keep it off. A published metadata block charts a
+// model named here too.
+const PUBLIC_ALLOWANCE_HIDDEN_IDS = Object.freeze([
+  "codex-auto-review", "gpt-4-turbo-2024-04-09", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano",
+  "gpt-4o", "gpt-4o-2024-05-13", "gpt-4o-mini", "gpt-5", "gpt-5-codex", "gpt-5-mini",
+  "gpt-5-nano", "gpt-5-pro", "gpt-5.1", "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5.2",
+  "gpt-5.2-codex", "gpt-5.2-pro", "gpt-5.3-codex", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano",
+  "gpt-5.4-pro", "gpt-5.5", "gpt-5.5-codex", "gpt-5.5-pro", "gpt-5.6-sol-wm", "o1", "o1-pro",
+  "o3", "o3-mini", "o3-pro", "o4-mini", "gpt-6.1-astra",
+]);
+
+/**
+ * The models a build can name for the public comparison, from a reviewed catalog.
+ * `charted` is the roster (pinned, except a model awaiting publication), then
+ * every other primary Codex model that is not on the hide list, in catalog
+ * order, with its catalog label. `known` also
+ * holds the hidden ones: their tuples are valid on the wire and kept, only not
+ * charted, so a page update cannot make previously published days disappear.
+ */
+export function publicAllowanceModels(catalog = REVIEWED_MODEL_CATALOG) {
+  const primary = catalog.filter(model => model.provider === "openai_codex"
+    && model.allowanceTrack === "primary");
+  const hidden = new Set(PUBLIC_ALLOWANCE_HIDDEN_IDS);
+  const charted = Object.freeze([
+    ...PUBLIC_ALLOWANCE_ROSTER.map(([modelId, label]) => Object.freeze({
+      modelId, label, pinned: !PUBLIC_ALLOWANCE_ROSTER_UNTIL_PUBLISHED.has(modelId) })),
+    ...primary.filter(model => !PUBLIC_ALLOWANCE_ROSTER_IDS.has(model.id) && !hidden.has(model.id))
+      .map(model => Object.freeze({ modelId: model.id, label: model.label })),
+  ]);
+  return { charted, known: new Set([...charted.map(model => model.modelId), ...primary.map(model => model.id)]) };
+}
+const PUBLIC_ALLOWANCE_MODELS = publicAllowanceModels();
+export const PUBLIC_ALLOWANCE_MODEL_CONFIG = PUBLIC_ALLOWANCE_MODELS.charted;
 const PUBLIC_ALLOWANCE_PLAN_IDS = Object.freeze(["pro", "prolite", "plus"]);
-const PUBLIC_ALLOWANCE_PRO10_PLAN_IDS = Object.freeze(["pro", "prolite", "promax", "plus"]);
+const PUBLIC_ALLOWANCE_FOUR_PLAN_IDS = Object.freeze(["pro", "prolite", "promax", "plus"]);
 
 // An allowance-breakdown day carries one tuple per identified model. A server
 // that knows a newer model than this page does is expected, so the tuple count
@@ -392,15 +462,17 @@ function publicModelMetadata(value) {
 }
 
 /**
- * The drawable models for one publication: this build's reviewed catalog in
- * catalog order, then any metadata-only models in published order. Metadata
- * replaces the catalog's label and adds a family and order; it never removes a
- * catalog model. Without metadata this is exactly the catalog roster.
+ * The charted models for one publication: this build's own list (its roster,
+ * then the rest of the catalog that is not hidden), then any metadata-only
+ * models in published order. Metadata replaces a model's label and adds a family
+ * and order, and charts a hidden model it names; it never removes a model.
+ * Without metadata this is exactly this build's own list. `published` is a list
+ * of validated `{ modelId, label, family, order }` entries.
  */
-function publicModelConfig(metadata) {
+export function chartedModelsWith(published = []) {
   const config = new Map(PUBLIC_ALLOWANCE_MODEL_CONFIG.map(model => [model.modelId, model]));
-  for (const [modelId, { label, family, order }] of metadata ?? []) {
-    config.set(modelId, Object.freeze({ modelId, label, family, order }));
+  for (const { modelId, label, family, order } of published) {
+    config.set(modelId, Object.freeze({ ...config.get(modelId), modelId, label, family, order }));
   }
   return [...config.values()];
 }
@@ -410,8 +482,9 @@ function publicModelConfig(metadata) {
 // rebuild the exact wire shape it accepted, and a second spelling of a claim
 // is a second thing that can drift.
 //
-// v1.3 retains this baseline's Pro 20x meaning and metadata compatibility.
-// v1.4 uses the genuine four-plan Pro 10x basis with required metadata.
+// v1.3 retains v1.1's Pro 20x meaning and adds a required model-metadata
+// wrapper. v1.4 uses the genuine four-plan Pro 10x basis with that same wrapper.
+// v1.5 uses the four-plan Pro 20x basis (Pro Max 25x at x0.8), same wrapper.
 // Version, basis, normalization and plan set are dispatched together; crossed
 // claims are refused rather than rescaling published estimates.
 export const COMMUNITY_ALLOWANCE_BREAKDOWN_SCHEMA_VERSIONS = Object.freeze([
@@ -419,20 +492,34 @@ export const COMMUNITY_ALLOWANCE_BREAKDOWN_SCHEMA_VERSIONS = Object.freeze([
   "community-allowance-breakdowns-v1.1",
   "community-allowance-breakdowns-v1.3",
   "community-allowance-breakdowns-v1.4",
+  "community-allowance-breakdowns-v1.5",
 ]);
 const COMMUNITY_ALLOWANCE_BREAKDOWN_COMBINED_VERSION =
   "community-allowance-breakdowns-v1.1";
 const COMMUNITY_ALLOWANCE_BREAKDOWN_MODEL_METADATA_VERSION =
   "community-allowance-breakdowns-v1.3";
 const COMMUNITY_ALLOWANCE_MODEL_BASIS =
-  "seven_day_codex_pro10x_equivalent_per_model_composition";
-const LEGACY_COMMUNITY_ALLOWANCE_MODEL_BASIS =
   "seven_day_codex_pro20x_equivalent_per_model_composition";
 const COMMUNITY_ALLOWANCE_PRO10_MODEL_BASIS =
   "seven_day_codex_pro10x_equivalent_per_model_composition";
 const COMMUNITY_ALLOWANCE_PRO10_METADATA_VERSION = "community-allowance-breakdowns-v1.4";
+const COMMUNITY_ALLOWANCE_PRO20_PROMAX_MODEL_BASIS =
+  "seven_day_codex_pro20x_equivalent_per_model_composition_promax25";
+const COMMUNITY_ALLOWANCE_PRO20_PROMAX_METADATA_VERSION = "community-allowance-breakdowns-v1.5";
 const COMMUNITY_ALLOWANCE_MODEL_GATE =
   "shared_composition_kernel_identification";
+// Declared four-plan contracts. Version, basis, normalization, model basis and
+// plan set are one closed claim; the reader carries them on its result and the
+// cache rebuilds the same version from them. v1.0-v1.3 keep the bare historical
+// Pro 20x shape and are not in this table.
+const DECLARED_BREAKDOWN_CONTRACTS = new Map([
+  [COMMUNITY_ALLOWANCE_PRO10_METADATA_VERSION, Object.freeze({
+    basis: COMMUNITY_ALLOWANCE_PRO10_BASIS, normalization: COMMUNITY_ALLOWANCE_PRO10_NORMALIZATION,
+    modelBasis: COMMUNITY_ALLOWANCE_PRO10_MODEL_BASIS, planIds: PUBLIC_ALLOWANCE_FOUR_PLAN_IDS })],
+  [COMMUNITY_ALLOWANCE_PRO20_PROMAX_METADATA_VERSION, Object.freeze({
+    basis: COMMUNITY_ALLOWANCE_PRO20_PROMAX_BASIS, normalization: COMMUNITY_ALLOWANCE_PRO20_PROMAX_NORMALIZATION,
+    modelBasis: COMMUNITY_ALLOWANCE_PRO20_PROMAX_MODEL_BASIS, planIds: PUBLIC_ALLOWANCE_FOUR_PLAN_IDS })],
+]);
 
 const PUBLIC_BREAKDOWN_ENVELOPE_KEYS = Object.freeze(["schemaVersion", "basis",
   "referencePlanType", "normalization", "modelBasis", "modelGate", "generatedAt", "days"]);
@@ -462,7 +549,10 @@ function retainedUnrecognizedCounts(value) {
  * kept off the primary comparison (a separate allowance track, or another
  * provider) are producer faults that refuse the block, exactly as for a known
  * id. The tuple's numbers must still be valid, the id is never retained or
- * rendered, and every other part of the contract stays closed.
+ * rendered, and every other part of the contract stays closed. On v1.3/v1.4, a
+ * roster model held back until publication is known only if a valid block
+ * names it; otherwise, a rejected block included, its tuple is skipped and
+ * counted the same way.
  *
  * `retained` is true only for a payload this browser stored itself. Its
  * projection leaves the skipped tuples out and records how many as
@@ -470,14 +560,15 @@ function retainedUnrecognizedCounts(value) {
  * payload carrying that key is not on the wire contract and is refused. */
 export function normalizePublicAllowanceBreakdowns(value, publishedDays, nowMs = Date.now(), { retained = false } = {}) {
   const isRecord = value !== null && typeof value === "object" && !Array.isArray(value);
-  const isPro10 = isRecord && value.schemaVersion === COMMUNITY_ALLOWANCE_PRO10_METADATA_VERSION;
-  const isMetadataVersion = isRecord && (isPro10
+  const declared = isRecord ? DECLARED_BREAKDOWN_CONTRACTS.get(value.schemaVersion) ?? null : null;
+  const isMetadataVersion = isRecord && (declared !== null
     || value.schemaVersion === COMMUNITY_ALLOWANCE_BREAKDOWN_MODEL_METADATA_VERSION);
-  const basis = isPro10 ? COMMUNITY_ALLOWANCE_PRO10_BASIS : COMMUNITY_ALLOWANCE_BASIS;
-  const normalization = isPro10 ? COMMUNITY_ALLOWANCE_PRO10_NORMALIZATION : COMMUNITY_ALLOWANCE_NORMALIZATION;
-  const modelBasis = isPro10 ? COMMUNITY_ALLOWANCE_PRO10_MODEL_BASIS : COMMUNITY_ALLOWANCE_MODEL_BASIS;
-  const planIds = isPro10 ? PUBLIC_ALLOWANCE_PRO10_PLAN_IDS : PUBLIC_ALLOWANCE_PLAN_IDS;
-  const hasMetadataBlock = isRecord && Object.prototype.hasOwnProperty.call(value, "modelConfig");
+  const basis = declared?.basis ?? COMMUNITY_ALLOWANCE_BASIS;
+  const normalization = declared?.normalization ?? COMMUNITY_ALLOWANCE_NORMALIZATION;
+  const modelBasis = declared?.modelBasis ?? COMMUNITY_ALLOWANCE_MODEL_BASIS;
+  const planIds = declared?.planIds ?? PUBLIC_ALLOWANCE_PLAN_IDS;
+  const hasMetadataBlock = isMetadataVersion
+    && Object.prototype.hasOwnProperty.call(value, "modelConfig");
   const hasRetainedCounts = retained && isRecord
     && Object.prototype.hasOwnProperty.call(value, "retainedUnrecognizedModels");
   const carried = hasRetainedCounts ? retainedUnrecognizedCounts(value.retainedUnrecognizedModels) : null;
@@ -488,7 +579,7 @@ export function normalizePublicAllowanceBreakdowns(value, publishedDays, nowMs =
     ...(hasRetainedCounts ? ["retainedUnrecognizedModels"] : []),
   ])
       || !COMMUNITY_ALLOWANCE_BREAKDOWN_SCHEMA_VERSIONS.includes(value.schemaVersion)
-      || (isPro10 && !hasMetadataBlock)
+      || isMetadataVersion !== hasMetadataBlock
       || value.basis !== basis || value.referencePlanType !== "pro"
       || value.normalization !== normalization
       || value.modelBasis !== modelBasis
@@ -509,11 +600,21 @@ export function normalizePublicAllowanceBreakdowns(value, publishedDays, nowMs =
   const hasCombined = value.schemaVersion === COMMUNITY_ALLOWANCE_BREAKDOWN_COMBINED_VERSION
     || isMetadataVersion;
   // A malformed block is ignored whole and reported, never partly trusted: the
-  // page then draws exactly what it would have drawn without one.
+  // page then draws only this build's own list, minus any held-back model.
   const metadata = hasMetadataBlock ? publicModelMetadata(value.modelConfig) : null;
   const modelMetadata = !hasMetadataBlock ? "absent" : metadata === null ? "rejected" : "applied";
-  const modelConfig = publicModelConfig(metadata);
-  const knownModelIds = new Set(modelConfig.map(model => model.modelId));
+  const modelConfig = chartedModelsWith([...(metadata ?? [])].map(
+    ([modelId, entry]) => ({ modelId, ...entry })));
+  const knownModelIds = new Set([...PUBLIC_ALLOWANCE_MODELS.known, ...modelConfig.map(model => model.modelId)]);
+  // On v1.3-v1.5 the block is the served catalog's public roster, and the only
+  // authority that can name a held-back roster model. A model a valid block
+  // does not name is one the served catalog has not added, and a rejected block
+  // names nothing, so in both cases its tuples are not this page's to draw.
+  if (hasMetadataBlock) {
+    for (const modelId of PUBLIC_ALLOWANCE_ROSTER_UNTIL_PUBLISHED) {
+      if (!metadata?.has(modelId)) knownModelIds.delete(modelId);
+    }
+  }
   let unrecognizedModelTuples = 0;
   const unrecognizedModelIds = new Set();
   for (const row of value.days) {
@@ -560,7 +661,7 @@ export function normalizePublicAllowanceBreakdowns(value, publishedDays, nowMs =
   if (carried !== null && unrecognizedModelTuples > 0) return null;
   return {
     generatedAt: value.generatedAt, hasCombined, modelConfig, days,
-    ...(isPro10 ? { basis, normalization, planIds, modelBasis } : {}),
+    ...(declared !== null ? { basis, normalization, planIds, modelBasis } : {}),
     // Counts only. An unrecognized id is dropped before it reaches this value.
     unrecognizedModelTuples: unrecognizedModelTuples + (carried?.tuples ?? 0),
     unrecognizedModelCount: unrecognizedModelIds.size + (carried?.models ?? 0),
@@ -574,13 +675,15 @@ function normalizedDailyAllowance(candidate) {
   }
   const legacy = candidate.basis === COMMUNITY_ALLOWANCE_BASIS
     && candidate.normalization === COMMUNITY_ALLOWANCE_NORMALIZATION;
-  const pro10 = candidate.basis === COMMUNITY_ALLOWANCE_PRO10_BASIS
-    && candidate.normalization === COMMUNITY_ALLOWANCE_PRO10_NORMALIZATION;
-  if ((!legacy && !pro10)
+  // A declared four-plan basis is accepted only with its own normalization,
+  // and the pair is carried so the day is never read under another basis.
+  const declared = [...DECLARED_BREAKDOWN_CONTRACTS.values()].some(contract =>
+    candidate.basis === contract.basis && candidate.normalization === contract.normalization);
+  if ((!legacy && !declared)
       || candidate.referencePlanType !== COMMUNITY_ALLOWANCE_REFERENCE_PLAN_TYPE) {
     return null;
   }
-  const declaredBasis = pro10 ? { basis: candidate.basis, normalization: candidate.normalization } : {};
+  const declaredBasis = declared ? { basis: candidate.basis, normalization: candidate.normalization } : {};
   const fitCount = finite(candidate.fitCount, null);
   const participantCount = finite(candidate.participantCount, null);
   if (!Number.isSafeInteger(fitCount)
@@ -879,7 +982,6 @@ export function normalizeCommunityDailySeries(payload, { nowMs = Date.now(), ret
     return { state: "unsupported_schema", days: [] };
   }
   const days = [];
-  const allowanceBases = new Set();
   for (const candidate of payload.days) {
     const normalized = normalizedDailyDay(candidate);
     if (normalized === null
@@ -888,22 +990,13 @@ export function normalizeCommunityDailySeries(payload, { nowMs = Date.now(), ret
         || (days.length > 0 && normalized.day <= days[days.length - 1].day)) {
       return { state: "unsupported_schema", days: [] };
     }
-    if (normalized.allowance !== null) allowanceBases.add(candidate.payload.allowance.basis);
     days.push(normalized);
   }
-  // A response spanning the basis cutover cannot connect old and new
-  // allowance estimates into one line. Activity remains independently valid.
-  if (allowanceBases.size > 1) {
-    for (const day of days) day.allowance = null;
-  }
-  const allowanceIsCurrent = allowanceBases.size === 1
-    && allowanceBases.has(COMMUNITY_ALLOWANCE_BASIS);
   return {
     state: days.length === 0 ? "none_published" : "published",
     from,
     to,
     allowanceState: payload.allowanceState,
-    allowanceIsCurrent,
     breakdowns: payload.allowanceState === "ready"
       ? normalizePublicAllowanceBreakdowns(payload.allowanceBreakdowns, days.map(day => day.day), nowMs, { retained }) : null,
     // Community-wide, not per-day: the lane measures gaps between consecutive
@@ -926,11 +1019,13 @@ export const COMMUNITY_DAILY_CACHE_SCHEMA_IDENTITY = [
   COMMUNITY_ALLOWANCE_NORMALIZATION,
   COMMUNITY_ALLOWANCE_PRO10_BASIS,
   COMMUNITY_ALLOWANCE_PRO10_NORMALIZATION,
+  COMMUNITY_ALLOWANCE_PRO20_PROMAX_BASIS,
+  COMMUNITY_ALLOWANCE_PRO20_PROMAX_NORMALIZATION,
   COMMUNITY_DAILY_SPEND_BASIS,
   ...COMMUNITY_ALLOWANCE_BREAKDOWN_SCHEMA_VERSIONS,
 ].join("|");
 
-function cachedAllowanceBlock(allowance, isCurrent) {
+function cachedAllowanceBlock(allowance) {
   if (allowance === null) return null;
   return {
     basis: allowance.basis ?? COMMUNITY_ALLOWANCE_BASIS,
@@ -946,16 +1041,22 @@ function cachedAllowanceBlock(allowance, isCurrent) {
 }
 
 function cachedBreakdowns(breakdowns) {
-  const pro10 = breakdowns.normalization === COMMUNITY_ALLOWANCE_PRO10_NORMALIZATION;
+  // A declared contract (v1.4 Pro 10x, v1.5 Pro 20x with Pro Max) is rebuilt
+  // under its own version, even when its metadata was rejected. Historical
+  // Pro 20x copies keep the prior projection: applied metadata uses v1.3;
+  // rejected metadata uses v1.1 with omitted tuples counted.
+  const [declaredVersion, declared] = [...DECLARED_BREAKDOWN_CONTRACTS]
+    .find(([, contract]) => contract.normalization === breakdowns.normalization) ?? [null, null];
   return {
-    // Preserve v1.4's declared basis; retain this baseline's legacy cache projection.
-    schemaVersion: pro10 ? COMMUNITY_ALLOWANCE_PRO10_METADATA_VERSION : breakdowns.hasCombined
-      ? COMMUNITY_ALLOWANCE_BREAKDOWN_COMBINED_VERSION
-      : COMMUNITY_ALLOWANCE_BREAKDOWN_SCHEMA_VERSIONS[0],
-    basis: pro10 ? COMMUNITY_ALLOWANCE_PRO10_BASIS : COMMUNITY_ALLOWANCE_BASIS,
+    schemaVersion: declaredVersion ?? (breakdowns.modelMetadata === "applied"
+      ? COMMUNITY_ALLOWANCE_BREAKDOWN_MODEL_METADATA_VERSION
+      : breakdowns.hasCombined
+        ? COMMUNITY_ALLOWANCE_BREAKDOWN_COMBINED_VERSION
+        : COMMUNITY_ALLOWANCE_BREAKDOWN_SCHEMA_VERSIONS[0]),
+    basis: declared?.basis ?? COMMUNITY_ALLOWANCE_BASIS,
     referencePlanType: COMMUNITY_ALLOWANCE_REFERENCE_PLAN_TYPE,
-    normalization: pro10 ? COMMUNITY_ALLOWANCE_PRO10_NORMALIZATION : COMMUNITY_ALLOWANCE_NORMALIZATION,
-    modelBasis: pro10 ? COMMUNITY_ALLOWANCE_PRO10_MODEL_BASIS : COMMUNITY_ALLOWANCE_MODEL_BASIS,
+    normalization: declared?.normalization ?? COMMUNITY_ALLOWANCE_NORMALIZATION,
+    modelBasis: declared?.modelBasis ?? COMMUNITY_ALLOWANCE_MODEL_BASIS,
     modelGate: COMMUNITY_ALLOWANCE_MODEL_GATE,
     generatedAt: breakdowns.generatedAt,
     // This build's reviewed catalog is not published data, so it is never
@@ -963,9 +1064,9 @@ function cachedBreakdowns(breakdowns) {
     // metadata block IS data the stored tuples depend on (a model only it
     // names would otherwise be dropped on the way back in), so exactly the
     // entries it supplied are rebuilt, in the closed wire shape.
-    // v1.4 cannot be relabelled as the Pro 20x v1.1 cache shape. A rejected
+    // v1.4/v1.5 cannot be relabelled as the Pro 20x v1.1 cache shape. A rejected
     // metadata block remains explicitly rejected under its original contract.
-    ...(pro10 && breakdowns.modelMetadata !== "applied" ? { modelConfig: null } : {}),
+    ...(declared !== null && breakdowns.modelMetadata !== "applied" ? { modelConfig: null } : {}),
     ...(breakdowns.modelMetadata === "applied" ? {
       modelConfig: breakdowns.modelConfig.filter(model => model.order !== undefined)
         .map(model => ({ id: model.modelId, label: model.label, family: model.family, order: model.order })),
@@ -987,7 +1088,7 @@ function cachedBreakdowns(breakdowns) {
   };
 }
 
-function cachedDay(day, allowanceIsCurrent) {
+function cachedDay(day) {
   return {
     day: day.day,
     revision: day.revision,
@@ -1000,7 +1101,7 @@ function cachedDay(day, allowanceIsCurrent) {
       day: day.day,
       revision: day.revision,
       totals: day.totals,
-      allowance: cachedAllowanceBlock(day.allowance, allowanceIsCurrent),
+      allowance: cachedAllowanceBlock(day.allowance),
       ...(day.apiEquivalentSpend === null
         ? {}
         : { apiEquivalentSpend: day.apiEquivalentSpend }),
@@ -1049,7 +1150,7 @@ export function projectCommunityDailyPayloadForCache(payload, { nowMs = Date.now
     ...(series.breakdowns === null
       ? {}
       : { allowanceBreakdowns: cachedBreakdowns(series.breakdowns) }),
-    days: series.days.map(day => cachedDay(day, series.allowanceIsCurrent)),
+    days: series.days.map(cachedDay),
   };
 }
 
