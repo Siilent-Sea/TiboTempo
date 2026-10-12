@@ -276,56 +276,27 @@ test("web-only prepare parsing reserves source selection for the guarded command
   );
 });
 
-test("web-only deployment delegates the receipt-pinned SHA to the production guard", async () => {
-  const repositoryRoot = "/tmp/web-release-candidate";
-  const sourceCommit = "a".repeat(40);
-  const baseCommit = "b".repeat(40);
+test("web-only deployment refuses the untyped form before reading the receipt", async () => {
+  // Untyped, the guard would render the checked-in env.production: the JSON
+  // layout without the edge entry, over typed production or a live edge.
   const receiptPath = "/tmp/web-release-candidate/.release-build/web-release-receipt.json";
-  const calls = [];
-  const result = await deployWebRelease({
-    repositoryRoot,
-    receiptPath,
-    confirmation: "DEPLOY_PRODUCTION",
-    verifyReceipt: async (value) => {
-      assert.deepEqual(value, { repositoryRoot, receiptPath });
-      return {
-        receipt: { sourceCommit },
-        scope: { sourceCommit, baseCommit },
-      };
-    },
-    runProduction: async (value) => {
-      calls.push(value);
-      return { ok: true, code: "PRODUCTION_DEPLOYED" };
-    },
-  });
-
-  assert.equal(result.sourceCommit, sourceCommit);
-  assert.deepEqual(calls, [{
-    confirmation: "DEPLOY_PRODUCTION",
-    confirmedMigrations: null,
-    expectedSourceCommit: sourceCommit,
-    expectedPreviousSourceCommit: baseCommit,
-    workerDirectory: "/tmp/web-release-candidate/apps/worker",
-    wrangler: "/tmp/web-release-candidate/apps/worker/node_modules/.bin/wrangler",
-  }]);
-  assert.deepEqual(
-    parseDeployWebReleaseArgs([
-      "--receipt",
+  for (const typedProduction of [undefined, null, false]) {
+    await assert.rejects(deployWebRelease({
+      repositoryRoot: "/tmp/web-release-candidate",
       receiptPath,
-      "--confirm",
-      "DEPLOY_PRODUCTION",
-    ]),
-    {
       confirmation: "DEPLOY_PRODUCTION",
-      confirmedMigrations: null,
-      receiptPath,
-      operationDirectory: null,
-      inventoryPath: null,
-      inventorySha256: null,
-      retainedPublicSourceCommit: null,
-      expectedLiveManifestSha256: null,
-    },
-  );
+      ...(typedProduction === undefined ? {} : { typedProduction }),
+      verifyReceipt: async () => assert.fail("an untyped deploy never reads the receipt"),
+      runProduction: async () => assert.fail("an untyped deploy never reaches the production guard"),
+    }), { code: "PRODUCTION_UNTYPED_DEPLOY_REFUSED" });
+  }
+  for (const argv of [
+    ["--receipt", receiptPath, "--confirm", "DEPLOY_PRODUCTION"],
+    ["--receipt", receiptPath, "--confirm", "DEPLOY_PRODUCTION", "--confirm-migrations", "USAGE_MONITOR_DB:0001_schema.sql"],
+    ["--receipt", receiptPath, "--confirm", "DEPLOY_PRODUCTION", "--operation", "/tmp/web-release-candidate/fresh"],
+  ]) {
+    assert.throws(() => parseDeployWebReleaseArgs(argv), { code: "PRODUCTION_UNTYPED_DEPLOY_REFUSED" }, argv.join(" "));
+  }
   assert.throws(
     () => parseDeployWebReleaseArgs(["--receipt", receiptPath]),
     /receipt and explicit confirmation/u,
@@ -363,6 +334,10 @@ test("web-only typed deployment pins the candidate manifest from the verified re
   assert.equal(passed.candidatePublicManifestSha256, candidateManifest);
   assert.equal(passed.expectedSourceCommit, sourceCommit);
   assert.equal(passed.expectedPreviousSourceCommit, baseCommit);
+  assert.equal(passed.confirmation, "DEPLOY_PRODUCTION");
+  assert.equal(passed.confirmedMigrations, null);
+  assert.equal(passed.workerDirectory, "/tmp/web-release-candidate/apps/worker");
+  assert.equal(passed.wrangler, "/tmp/web-release-candidate/apps/worker/node_modules/.bin/wrangler");
 
   assert.deepEqual(parseDeployWebReleaseArgs([
     "--receipt", "/tmp/receipt.json",
@@ -1054,4 +1029,158 @@ test("web-only release refuses a candidate whose model vocabulary is itself inco
     verifyWebReleaseModelCatalogProof({ repositoryRoot: value.root, scope }),
     /candidate model vocabulary is incomplete: .*is listed more than once/u,
   );
+});
+
+test("installer-only scope preserves the ordinary nonempty gate and refuses public source changes", async t => {
+  const fixture = await candidateFixture(); t.after(() => rm(fixture.root, { recursive: true, force: true }));
+  assert.throws(() => inspectWebReleaseScope({ repositoryRoot: fixture.root, baseCommit: fixture.baseCommit,
+    installerOnly: true }), /outside its release controls/u);
+  assert.throws(() => inspectWebReleaseScope({ repositoryRoot: fixture.root, baseCommit: fixture.sourceCommit }), /no committed changes/u);
+  const scope = inspectWebReleaseScope({ repositoryRoot: fixture.root, baseCommit: fixture.sourceCommit, installerOnly: true });
+  assert.deepEqual(scope.changes, []);
+  assert.throws(() => parsePrepareWebReleaseArgs(["--base", fixture.sourceCommit,
+    "--installer-only-proof", "/tmp/proof.json", "--", "--output", fixture.output]), /exact SHA-256/u);
+  await assert.rejects(prepareWebRelease({ repositoryRoot: fixture.root, baseCommit: fixture.sourceCommit,
+    installerOnlyProof: {}, rawBuildArgs: {}, build: async () => {} }), /maintained builder/u);
+});
+
+test("installer-only receipts regenerate complete bundles and repeat all publication and predecessor pins", async t => {
+  const { createHash } = await import("node:crypto");
+  const { pathToFileURL } = await import("node:url");
+  const repository = fileURLToPath(new URL("../", import.meta.url));
+  const root = await mkdtemp(join(tmpdir(), "installer-web-proof-test-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const checkout = join(root, "checkout");
+  execFileSync("/usr/bin/git", ["clone", "--quiet", "--no-hardlinks", repository, checkout]);
+  git(checkout, ["config", "user.email", "test@example.invalid"]);
+  git(checkout, ["config", "user.name", "Installer proof test"]);
+  // The receipt predecessor is a synthetic web-only change. The repository's
+  // current HEAD may be an integration, desktop or backend commit and must not
+  // decide whether this isolated installer-only proof fixture is admissible.
+  const predecessorPage = join(checkout, "apps/web/public/community.html");
+  await writeFile(predecessorPage, `${await readFile(predecessorPage, "utf8")}\n<!-- synthetic predecessor -->\n`);
+  git(checkout, ["add", "apps/web/public/community.html"]);
+  git(checkout, ["commit", "--quiet", "-m", "Synthetic web-only predecessor"]);
+  const baseCommit = git(checkout, ["rev-parse", "HEAD"]);
+  const controls = ["scripts/web-release-lane.js", "scripts/prepare-web-release.js", "test/web-release-lane.test.js",
+    "docs/runbooks/2026-08-17-web-only-release.md"];
+  for (const path of controls) await copyFile(join(repository, path), join(checkout, path));
+  git(checkout, ["add", ...controls]);
+  // The test may run after the controls have already been committed.
+  if (git(checkout, ["diff", "--cached", "--name-only"])) git(checkout, ["commit", "--quiet", "-m", "installer release controls"]);
+  await mkdir(join(checkout, "node_modules"));
+  for (const entry of await readdir(join(repository, "node_modules"))) {
+    await symlink(join(repository, "node_modules", entry), join(checkout, "node_modules", entry));
+  }
+  const lane = await import(pathToFileURL(join(checkout, "scripts/web-release-lane.js")));
+  const { buildPublicReleaseSite } = await import(pathToFileURL(join(checkout, "scripts/build-public-release-site.js")));
+  const hash = value => createHash("sha256").update(value).digest("hex");
+  async function canonical(version) {
+    const commit = "1".repeat(40), repository = "https://github.com/adamallcock/tibotattle", tag = `v${version}`;
+    const source = { version, tag, commit, repository };
+    const specs = [["macos", "arm64", "dmg", "mac-arm64.dmg"], ["macos", "x64", "dmg", "mac-x64.dmg"],
+      ["windows", "x64", "exe", "Windows-x64.exe"], ["linux", "x64", "appimage", "linux-x86_64.AppImage"]];
+    const artifacts = specs.sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1])).map(([platform, architecture, format, suffix]) => {
+      const fileName = `TiboTattle-${version}-${suffix}`, bytes = Buffer.byteLength(fileName), sha256 = hash(fileName);
+      return { platform, architecture, format, fileName, bytes, sha256, version, source,
+        channel: "direct", distribution: "github-release", downloadUrl: `${repository}/releases/download/${tag}/${fileName}`,
+        store: null, sbom: null, provenance: null,
+        build: { sourceManifestSha256: "2".repeat(64), unsignedPayloadSha256: "3".repeat(64) },
+        nativeTrust: platform === "macos" ? { signerIdentity: "Test", teamId: "ABCDE12345" }
+          : platform === "windows" ? { publisher: "Test", certificateSha256: "4".repeat(64) } : { scheme: "none" },
+        assurances: platform === "macos" ? { cleanInstallSmokePassed: true, developerIdSigned: true,
+          gatekeeperAssessmentPassed: true, hardenedRuntime: true, notarizationAccepted: true, ticketStapled: true }
+          : platform === "windows" ? { authenticodeSigned: true, cleanInstallSmokePassed: true, timestamped: true }
+            : { artifactIntegrityVerified: true, cleanInstallSmokePassed: true },
+        updater: { enabled: false, mechanism: "none", metadata: null } };
+    });
+    const bytes = Buffer.from(JSON.stringify({ schemaVersion: "usage-monitor-release-evidence-v1",
+      product: { name: "TiboTattle" }, version, tag, commit, repository, artifacts }));
+    const path = join(root, `release-${version}.json`); await writeFile(path, bytes);
+    return { path, sha256: hash(bytes) };
+  }
+  const previousInstallerManifest = await canonical("0.1.26"), candidateInstallerManifest = await canonical("0.1.28");
+  const social = join(root, "social.png"); await copyFile(join(checkout, "apps/web/public/tibotattle-icon.png"), social);
+  async function generated(output, spec, buildNumber) {
+    await buildPublicReleaseSite({ output, siteUrl: "https://tibotattle.com/", releaseNotesUrl: "https://tibotattle.com/docs.html",
+      privacyUrl: "https://tibotattle.com/privacy.html", securityUrl: "https://tibotattle.com/docs.html", supportUrl: "https://tibotattle.com/docs.html",
+      socialImage: social, electronPublishedManifest: spec.path, electronPublishedManifestSha256: spec.sha256,
+      electronPublishedBuildNumber: buildNumber }, { verifyPublishedInstaller: async v => ({ bytes: v.expectedBytes, sha256: v.expectedSha256 }) });
+    const path = join(output, "release-site-manifest.json"), bytes = await readFile(path);
+    return { manifest: JSON.parse(bytes), manifestPath: path, manifestSha256: hash(bytes) };
+  }
+  const previous = await generated(join(root, "previous"), previousInstallerManifest, "2026092701");
+  const current = await generated(join(checkout, WEB_RELEASE_OUTPUT_DIRECTORY), candidateInstallerManifest, "2026100901");
+  const priorBase = git(checkout, ["rev-parse", `${baseCommit}^`]);
+  const priorScope = lane.inspectWebReleaseScope({ repositoryRoot: checkout, baseCommit: priorBase, sourceCommit: baseCommit });
+  const prior = { schemaVersion: "usage-monitor-web-release-receipt-v0.1", kind: "web-only", baseCommit: priorBase,
+    sourceCommit: baseCommit, sourceDiff: { changes: priorScope.changes, sha256: priorScope.sha256 },
+    site: { manifestPath: ".release-build/public-release-site/release-site-manifest.json",
+      manifestSha256: previous.manifestSha256, source: previous.manifest.source } };
+  const priorPath = join(root, "previous-receipt.json"); await writeFile(priorPath, JSON.stringify(prior));
+  const proof = { previousReceipt: { path: priorPath, sha256: hash(await readFile(priorPath)) },
+    previousSiteManifest: { path: previous.manifestPath, sha256: previous.manifestSha256 }, previousInstallerManifest, candidateInstallerManifest };
+  const scope = lane.inspectWebReleaseScope({ repositoryRoot: checkout, baseCommit, installerOnly: true });
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  let fetchCalls = 0;
+  globalThis.fetch = async () => { fetchCalls += 1; return new Response("unpublished", { status: 404 }); };
+  // Exact exported-API bypass: injected offline regeneration must not mint a
+  // production receipt, even when its generated manifest asserts publication.
+  await assert.rejects(lane.writeWebReleaseReceipt({ repositoryRoot: checkout, scope, installerOnlyProof: proof }), /HTTP 404/u);
+  assert.equal(fetchCalls, 1);
+  await assert.rejects(readFile(join(checkout, ".release-build/web-release-receipt.json")), { code: "ENOENT" });
+  fetchCalls = 0;
+  globalThis.fetch = async url => {
+    fetchCalls += 1;
+    const bytes = Buffer.from(new URL(url).pathname.split("/").at(-1));
+    return new Response(bytes, { status: 200, headers: { "content-length": String(bytes.length) } });
+  };
+  const verified = await lane.verifyInstallerOnlyWebProof({ repositoryRoot: checkout, scope, proof, site: current });
+  assert.match(verified.generatorInputsSha256, /^[a-f0-9]{64}$/u);
+  const written = await lane.writeWebReleaseReceipt({ repositoryRoot: checkout, scope, installerOnlyProof: proof });
+  assert.equal(written.receipt.kind, "installer-only");
+  assert.equal(fetchCalls, 8);
+  assert.equal((await lane.verifyWebReleaseReceipt({ repositoryRoot: checkout })).receipt.kind, "installer-only");
+  assert.equal(fetchCalls, 12);
+  globalThis.fetch = async () => new Response("wrong", { status: 200 });
+  await assert.rejects(lane.verifyWebReleaseReceipt({ repositoryRoot: checkout }), /signed byte length|digest/u);
+  globalThis.fetch = async url => new Response(Buffer.from(new URL(url).pathname.split("/").at(-1)));
+  await assert.rejects(lane.verifyInstallerOnlyWebProof({ repositoryRoot: checkout,
+    scope: { ...scope, sha256: "0".repeat(64) }, proof, site: current }), /committed candidate/u);
+  for (const [label, alteredProof, alteredSite, pattern] of [
+    ["input digest", { ...proof, candidateInstallerManifest: { ...candidateInstallerManifest, sha256: "0".repeat(64) } }, current, /pinned bytes/u],
+    ["input closure", { ...verified, generatorInputsSha256: "0".repeat(64) }, current, /input pin/u],
+    ["unknown proof field", { ...proof, extra: true }, current, /unsupported fields/u],
+    ["missing publication", proof, { ...current, manifest: { ...current.manifest, electronRelease: { ...current.manifest.electronRelease, publishedInstallersVerified: false } } }, /verified published/u],
+    ["downgrade", proof, { ...current, manifest: { ...current.manifest, electronRelease: { ...current.manifest.electronRelease, version: "0.1.25" } } }, /newer version/u],
+    ["old build", proof, { ...current, manifest: { ...current.manifest, electronRelease: { ...current.manifest.electronRelease, buildNumber: "2026092701" } } }, /newer version/u],
+    ["social metadata", proof, { ...current, manifest: { ...current.manifest, site: { ...current.manifest.site, socialPreview: { ...current.manifest.site.socialPreview, sha256: "0".repeat(64) } } } }, /social metadata/u],
+    ["unrelated source", proof, { ...current, manifest: { ...current.manifest, source: { ...current.manifest.source, sha256: "0".repeat(64) } } }, /source, site/u],
+  ]) await t.test(label, async () => assert.rejects(lane.verifyInstallerOnlyWebProof({ repositoryRoot: checkout, scope,
+    proof: alteredProof, site: alteredSite }), pattern));
+  await writeFile(join(dirname(current.manifestPath), "unexpected.txt"), "extra");
+  await assert.rejects(lane.verifyWebReleaseReceipt({ repositoryRoot: checkout }), /unexpected file set/u);
+  await rm(join(dirname(current.manifestPath), "unexpected.txt"));
+  await writeFile(join(dirname(current.manifestPath), "community-view.js"), "unrelated source");
+  await assert.rejects(lane.verifyWebReleaseReceipt({ repositoryRoot: checkout }), /pinned bytes/u);
+  // Restore the exact generated asset; a mutated predecessor remains blocked.
+  await copyFile(join(dirname(previous.manifestPath), "community-view.js"), join(dirname(current.manifestPath), "community-view.js"));
+  // Rehashing an altered asset and manifest cannot turn it into a maintained
+  // generator substitution. Full counterfactual byte equality rejects it.
+  const originalManifestBytes = await readFile(current.manifestPath);
+  const changedManifest = JSON.parse(originalManifestBytes);
+  const indexPath = join(dirname(current.manifestPath), "index.html");
+  const originalIndex = await readFile(indexPath);
+  const changedIndex = Buffer.concat([originalIndex, Buffer.from("<!-- unrelated copy -->")]);
+  await writeFile(indexPath, changedIndex);
+  Object.assign(changedManifest.files.find(file => file.path === "index.html"), { bytes: changedIndex.length, sha256: hash(changedIndex) });
+  await writeFile(current.manifestPath, `${JSON.stringify(changedManifest, null, 2)}\n`);
+  await assert.rejects(lane.verifyInstallerOnlyWebProof({ repositoryRoot: checkout, scope, proof,
+    site: { ...current, manifest: changedManifest } }), /candidate manifest differs from exact regeneration/u);
+  await writeFile(indexPath, originalIndex); await writeFile(current.manifestPath, originalManifestBytes);
+  prior.sourceCommit = "0".repeat(40); await writeFile(priorPath, JSON.stringify(prior));
+  await assert.rejects(lane.verifyWebReleaseReceipt({ repositoryRoot: checkout }), /pinned bytes/u);
+  const badPriorProof = { ...proof, previousReceipt: { path: priorPath, sha256: hash(await readFile(priorPath)) } };
+  await assert.rejects(lane.verifyInstallerOnlyWebProof({ repositoryRoot: checkout, scope, proof: badPriorProof, site: current }), /predecessor receipt/u);
 });

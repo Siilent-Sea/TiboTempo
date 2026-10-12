@@ -334,7 +334,7 @@ test("the community projection stores only what this reader validated, and re-no
     "allowanceBreakdowns", "allowanceReadState", "allowanceState", "days", "from", "schemaVersion", "to",
   ]);
   assert.equal(projected.allowanceReadState, "confirmed");
-  assert.equal(projected.allowanceBreakdowns.schemaVersion, "community-allowance-breakdowns-v1.2");
+  assert.equal(projected.allowanceBreakdowns.schemaVersion, "community-allowance-breakdowns-v1.0");
 
   // Re-reading days later only ever gets stricter, so a retained payload can
   // never be promoted into acceptance by the passage of time.

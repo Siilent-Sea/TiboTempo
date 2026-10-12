@@ -35,7 +35,7 @@ export function exampleModelSpeeds(period='all', speedMode='standard') {
   if (!['standard','fast','ultrafast'].includes(speedMode)) throw new RangeError('Unsupported speed mode');
   return {schemaVersion:5,method:5,speedMode,excludedUnknownTurns:0,status:'ready',collecting:false,stale:false,updatedAt:new Date(end+86400000-1).toISOString(),period,interval:'day',start,end,historyProgress:null,
     models:speedMode!=='standard'?[]:[
-      ['gpt-6-astra','Astra'],['gpt-6.1-sol','GPT-6.1 Sol'],['gpt-6-sol','GPT-6 Sol'],['gpt-6-luna','GPT-6 Luna'],
+      ['gpt-6-astra','Astra'],['gpt-6-sol','GPT-6 Sol'],['gpt-6-luna','GPT-6 Luna'],
       ['gpt-5.6-terra','Terra'],['gpt-5.6-sol','Sol'],['gpt-5.6-luna','Luna'],
     ].map(([id,label],index)=>{
       const history=activity.map((count,i)=>{

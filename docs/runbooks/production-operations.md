@@ -25,6 +25,13 @@ For release-site coordination with GitHub, architecture feeds and Homebrew, use
 [publication reconciliation](./release-publication-reconciliation.md); it delegates
 website writes to this runbook's existing guarded deployment path.
 
+The production Worker's thin edge has its own runbook,
+[production edge modes](./production-edge-modes.md). It covers typed
+`--edge-mode` deploys, reconciliation and recovery, the release-guard D1, the
+edge secrets, the writer fence and the brake. That runbook is not operational
+until P1, the first typed worker-mode edge deploy. Until then this runbook
+governs every Cloudflare operation.
+
 
 ## Temporary migration liveness
 
@@ -240,6 +247,11 @@ The **Database health** section independently calls owner-only
 parameters). It performs one constant `SELECT 1` per API-bound D1 role: primary
 service/telemetry, deletion ledger, and the separate analytics database in typed
 storage mode. JSON mode explicitly marks separate analytics as not applicable.
+The console also reads the Google Cloud origin's `admin-database-health-v0.2`,
+whose removed deletion ledger is always not applicable and shows as "Removed
+(append-only)", and its `admin-overview-v0.6`, whose historical publication may
+be the closed `{"status":"unavailable"}` and shows as unavailable on this host,
+never as a count. The Worker keeps serving v0.1 and v0.5 until the switch.
 Other Workers' databases, including the catchup control journal, are outside this
 probe's coverage. The page is explicit that this is not an account-wide database
 inventory; retained recovery copies, staging databases, R2 and Durable Objects
@@ -376,10 +388,17 @@ production dry bundle is `npm run production:deploy:dry`; it does not mutate
 production and does not authorize a later deploy. Resolve every unexplained
 failure before proceeding.
 
-The production deploy wrapper itself rechecks endpoint configuration, workspace
-package copies, generated assets, release preflight, source cleanliness,
-dependency-tree integrity, public surface, pre-deploy health, post-deploy health,
-and exact source identity. Do not replace it with raw `wrangler deploy`.
+Several Worker operator scripts and their checks import TypeScript sources
+directly. Run these gates with a Node.js release that strips types by default:
+24.14.0 and 26.2.0 were verified, and Node.js documents the default from
+22.18.0. On Node.js 22.16.0, `npm run scripts:check` fails with
+`ERR_UNKNOWN_FILE_EXTENSION`.
+
+The production deploy wrapper itself rechecks endpoint configuration (including
+the edge public surface: apex and `www` public route hosts and a separate admin
+host), workspace package copies, generated assets, release preflight, source
+cleanliness, dependency-tree integrity, public surface, pre-deploy health,
+post-deploy health, and exact source identity. Do not replace it with raw `wrangler deploy`.
 
 ### Disposable local HTTP acceptance
 
@@ -487,6 +506,108 @@ Time Travel receipt are re-read under the shared production lock before the
 first D1 write and before every later write. The plan's `inventorySha256` is
 the canonical digest of the embedded inventory object, so execution also
 detects an edited or internally inconsistent plan.
+
+This operator intentionally stops at `0009`. The later ingestion-isolation
+migrations are separate forward steps in the ordered D1 stream.
+`0010_accountless_v12_renewal.sql`, `0011_v12_public_eligibility.sql` and
+`0012_v12_empty_day_manifests.sql` have their own owner-authorized
+application, described in the
+[v1.2 public eligibility plan](../plans/2026-09-25-v12-public-eligibility.md).
+`0012` drops and re-creates the v1.2 manifest, domain, domain-day and head
+tables, so every later file that attaches a trigger to them must run after it.
+`ingestion-isolation-migrations/0014_v12_quarantine_admission.sql` adds a
+v1.2 chunk-admission fence against objects already claimed for orphan deletion.
+It is outside that authorization and needs its own authorization, reviewed and
+rehearsed forward application after `0010`–`0013`, and post-migration
+receipt. Do not extend the historical operator's pinned source sequence or
+assume that a Worker deploy applies any of these migrations. The guarded typed
+deploy derives its expected primary schema from every source migration, so a
+source tree that contains `0014` cannot deploy until `0014` is applied. The
+protected usage activation gate requires that exact migration and trigger; its
+ordered D1 prefix also requires `0009` through `0013` to have been applied
+first.
+`ingestion-isolation-migrations/0015_accountless_history_transfer_v12.sql`
+re-creates the retained-history transfer view from baseline migration `0063`
+with a separate v1.2 lineage and adds the matching v1.2 invalidation triggers,
+six of them on the domain and head tables that `0012` re-creates.
+Without it, one v1.2-only opt-out marker (allowed by `0011`) makes every
+transfer capture refuse. It changes no row, needs the baseline `0063` view
+and the `0008` v1.2 tables, and follows `0014` in the ordered stream; applied
+before `0063`, its `DROP VIEW` fails and nothing changes. It needs
+the same separate authorization, rehearsal and receipt, and the same deploy
+gating applies: a source tree that contains `0015` cannot deploy until `0015`
+is applied.
+
+The GCP line's quarantine and history files are now `0014` and `0015`, after
+main's `0013_performance_ultrafast.sql`. The owner-authorized 2026-10-12
+production ledger readback found neither GCP file under its old name, nor the
+performance file, in any production D1 migration ledger. The nine applied
+ingestion-isolation rows from `0004` through `0012` matched their source SHA-256
+checksums. Only the two unapplied GCP files were renamed, byte-identically;
+no migration was applied. The D1 ledgers record bare file names. Before applying
+`0014` or `0015` anywhere, read back which of
+`d1_storage_migrations` and `d1_migrations` exist, and only the migration
+names and stored checksums in each, for every Cloudflare D1 database in every
+environment and role. The production-only readback does not qualify staging.
+Confirm that none is one of the retired names listed as
+`RETIRED_ISOLATION_NAMES` in
+`apps/worker/scripts/ingestion-isolation-sequence.check.mjs`. If one is
+present, stop and re-plan: never relabel or re-apply an applied migration.
+That check also pins every isolation file's bytes and name, and models the
+ledger rows from the storage operator's own submission. Its model applies
+baseline files through Wrangler's `d1_migrations`, a fresh chain; it does not
+model the restore-era production ingestion ledger described next.
+
+`0015` also needs baseline `0063_accountless_history_transfer_source.sql`
+applied first. The 2026-10-12 production ingestion ledger ends at baseline
+`0062` and lacks `0063`, which the current source includes. Apply `0063` into the
+ledger that already records the role's later baseline files, never into a
+second ledger:
+
+- Production ingestion is a restore-era D1. The 2026-10-02 read-only ledger
+  readback recorded `d1_storage_migrations` with 13 rows and named no other
+  ledger table. The rows are the generated `0001_restore_base.sql` (the base
+  folded baseline `0001` to `0060` and the early files of the other five
+  ingestion directories) and every file applied after it, baseline `0061` and
+  `0062` included ([restore-base receipt](../receipts/2026-10-02-gcp-int-c-seal-restore-base.md)).
+  There, `0063` is a bare-name `d1_storage_migrations` row submitted through
+  the reviewed storage-migration path, like `0061` and `0062`. Do not apply it
+  through Wrangler: that creates a `d1_migrations` table, and the cutover
+  seal's restore-base layout refuses a ledger it does not expect
+  (`CUTOVER_LEDGER_MISMATCH`; [GCP cutover H.3](./gcp-cutover-window.md#h3-seal)).
+  If a readback shows a `d1_migrations` table on production ingestion, stop:
+  the restore-base layout no longer describes it, and the seal inventory needs
+  an owner decision before it is written.
+- A role whose readback records its baseline files in Wrangler's
+  `d1_migrations` keeps that baseline path, with its
+  [admission and rehearsal](./release-migration-rehearsal.md).
+
+Either way `0063` needs its own authorization, rehearsal and receipt. If the
+readback does not show `0063` and it is not applied first, do not apply
+`0014`; record the owner's decision to defer it, which also defers every
+deploy of a tree that contains it.
+
+Applying any of these files also decides which source tree can deploy. The
+guarded typed deploy refuses any object that is extra to, or missing from, the
+schema derived from the deploying tree. Once `0063`, `0013` or `0014` is
+applied, a tree without them (GitHub `main` today) is refused with
+`TYPED_PREFLIGHT_SCHEMA_MISMATCH`; a tree that contains all three is refused
+with `TYPED_PREFLIGHT_SCHEMA_OBJECT_MISSING` until all three are applied. No
+guarded Worker deploy passes between the first application and the last.
+Choose one order before applying anything:
+
+- Deploy every pending `main`-line Worker change first, then apply the files
+  in one window. Every later production deploy, a `main` hotfix included, must
+  come from a tree that carries all three files byte-identically under these
+  names.
+- Or first land `0063`, `0013` and `0014` byte-identically, under the same
+  names, on GitHub `main`. `main` then cannot deploy until they are applied.
+
+Then apply `0063` when the readback lacks it, into the ledger chosen above,
+then `0013`, then `0014`, each storage file with its bare-name
+`d1_storage_migrations` row in the same submission through the reviewed
+storage-migration path. Afterwards, read back which ledger tables exist and
+their bare names.
 
 Run the local populated rehearsal from the repository root. It uses
 synthetic content-free rows, enables foreign-key checks, verifies every mapped
@@ -759,11 +880,15 @@ its fixed slice.
 
 ### Guarded deployment wrapper
 
-Without inventory flags, the routine wrapper below uses the checked-in JSON
-database layout. For typed storage, a different primary database, or a separate
-`ANALYTICS_DB`, use the pinned typed path below. It reconstructs the live
-configuration inside a disposable source snapshot and qualifies each database
-role. A migration confirmation cannot repair a binding mismatch.
+On this line every production deploy uses the pinned typed path below. It
+reconstructs the live configuration inside a disposable source snapshot and
+qualifies each database role. Without inventory flags the wrapper would render
+the checked-in `env.production`: the JSON database layout without the edge
+entry, which would replace typed production and, from P1 on, the live edge.
+So `production:deploy` without `--inventory` is refused before anything runs
+(`PRODUCTION_UNTYPED_DEPLOY_REFUSED`), and so is `product:web-release:deploy`
+without its typed pins. A migration confirmation cannot repair a binding
+mismatch.
 
 The read-only reconciliation command accepts an owner-private Cloudflare
 inventory containing account/Worker identity, active version, settings,
@@ -804,6 +929,12 @@ npm run production:deploy -- --confirm DEPLOY_PRODUCTION \
   --expected-live-manifest-sha256 <reviewed-live-manifest-sha256>
 ```
 
+A typed deployment that changes the public site instead pins a candidate
+manifest proven by its web-release receipt, never the retained pair; see
+[Changing the public site](production-edge-modes.md#changing-the-public-site).
+Once the live Worker runs the edge entry, every typed deployment names its
+`--edge-mode` (`EDGE_MODE_REQUIRED_FOR_EDGE_LIVE` otherwise).
+
 The typed path preserves the live bindings, settings and ingress, and rechecks
 all three database contracts at the deployment boundary. It refuses migration
 confirmations and never applies database migrations. Schema differences require
@@ -815,22 +946,12 @@ restore metadata group; arbitrary SQL normalization is not accepted.
 `production-trigger-repair-rehearsal.mjs` locally exercises migration-order guard
 preservation; it is not a remote repair command.
 
-Only after explicit authorization and green preflight, use the wrapper from
-`apps/worker`:
-
-```bash
-npm run production:deploy -- --confirm DEPLOY_PRODUCTION \
-  --expected-previous-source <reviewed-full-deployed-source-sha>
-```
-
-If and only if the wrapper reports a reviewed pending set and the separate
-migration operation has been handled, append its exact comma-separated tokens:
-
-```bash
-npm run production:deploy -- --confirm DEPLOY_PRODUCTION \
-  --expected-previous-source <reviewed-full-deployed-source-sha> \
-  --confirm-migrations BINDING:0000_name.sql
-```
+Only after explicit authorization and green preflight, use the typed command
+above from `apps/worker`. `--expected-previous-source` without the inventory,
+alone or with `--confirm-migrations`, is the untyped form and is refused
+(`PRODUCTION_UNTYPED_DEPLOY_REFUSED`). The typed path never applies or confirms
+a database migration; apply a reviewed migration through its own procedure
+first.
 
 Capture the structured result. Success means the wrapper observed its named
 pre/post conditions; it is not a release, appcast publication, identity-flow,
@@ -878,6 +999,10 @@ lock only after every check passes and a final active-version read still matches
 A refusal preserves the lock for investigation; do not retry the deploy or use
 raw Wrangler to work around it. The `--executor-stopped` flag is an operator
 assertion, not a way to interrupt a running deploy.
+An operation pinned to an edge mode uses the same command. Its mode is pinned,
+so it takes no `--edge-mode`. A gcp operation adds
+`--edge-plan <the pinned private gcp plan>`. See
+[typed deploys per mode](./production-edge-modes.md#2-typed-deploys-per-mode).
 A proven pre-mutation failure with no retained lock can be retried using a new
 `--operation <fresh-private-directory>`, preserving the old evidence. Cleanup
 warnings do not erase a verified deployment outcome. These are cooperative
