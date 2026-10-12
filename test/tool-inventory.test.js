@@ -342,6 +342,7 @@ test("the checked-in inventory classifies every retained tool entry point and np
   // cleanup; the final host owns the same-profile installed lifecycle handoff.
   assert.equal(result.records, 173);
   assert.equal(result.candidates.length, 174);
+  // Integration also retains the reviewed GCP operation tools.
   assert.ok(result.aliases >= 25);
 });
 

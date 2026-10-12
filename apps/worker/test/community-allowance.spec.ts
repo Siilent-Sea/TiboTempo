@@ -493,10 +493,10 @@ describe("summarizeCommunityAllowanceDay", () => {
     expect(summary.fitCount).toBe(2);
     expect(summary.centralUsd).toBe(20);
     expect(summary.basis).toBe(
-      "seven_day_codex_pro10x_equivalent_personal_plans_trailing_30d_promax25",
+      "seven_day_codex_pro20x_equivalent_personal_plans_trailing_30d_promax25",
     );
     expect(summary.referencePlanType).toBe("pro");
-    expect(summary.normalization).toBe("pro_x1_prolite_x2_promax_x0_4_plus_x10");
+    expect(summary.normalization).toBe("pro_x1_prolite_x4_promax_x0_8_plus_x20");
     expect(summary).not.toHaveProperty("planType");
     expect(summary).not.toHaveProperty("planVariant");
     expect(summary.trailingDays).toBe(30);
@@ -550,14 +550,15 @@ describe("summarizeCommunityAllowanceDay", () => {
     ], "2026-07-25");
     expect(summary.fitCount).toBe(3);
     expect(summary.participantCount).toBe(2);
-    expect(summary.centralUsd).toBe(50);
-    expect(summary.band80Usd).toEqual({ lowerUsd: 50, upperUsd: 90 });
+    // Pro 20x x1, Pro 5x x4 and Plus x20 put all three fits on $100.
+    expect(summary.centralUsd).toBe(100);
+    expect(summary.band80Usd).toEqual({ lowerUsd: 100, upperUsd: 100 });
   });
 
-  it("converts a Pro Max 25x fit to the Pro 10x reference without changing its observed capacity", () => {
+  it("converts a Pro Max 25x fit to the Pro 20x reference at x0.8 without changing its observed capacity", () => {
     const promax = fit({ participantId: "p25", planType: "promax", capacityNanousd: 250e9 });
     const summary = summarizeCommunityAllowanceDay([promax], "2026-07-25");
-    expect(summary).toMatchObject({ fitCount: 1, participantCount: 1, centralUsd: 100 });
+    expect(summary).toMatchObject({ fitCount: 1, participantCount: 1, centralUsd: 200 });
     expect(summarizeCommunityCapacityByPlanType([promax], "2026-07-25").promax)
       .toMatchObject({ medianCapacityNanousd: 250e9, participantCount: 1, fitCount: 1 });
   });
@@ -665,9 +666,9 @@ describe("community allowance in the daily aggregate", () => {
       .toBe("community-daily-aggregate-v1.0");
     expect(contributionPayload.allowance).toMatchObject({
       basis:
-        "seven_day_codex_pro10x_equivalent_personal_plans_trailing_30d_promax25",
+        "seven_day_codex_pro20x_equivalent_personal_plans_trailing_30d_promax25",
       referencePlanType: "pro",
-      normalization: "pro_x1_prolite_x2_promax_x0_4_plus_x10",
+      normalization: "pro_x1_prolite_x4_promax_x0_8_plus_x20",
       qualification: "shared_reset_fit_gates_25pp_span_floor",
       spanFloorPp: 25,
       fitCount: 1,

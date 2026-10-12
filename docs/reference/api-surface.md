@@ -112,13 +112,74 @@ personal-plan summaries and reviewed model tuples `[modelId, usd, accountCount]`
 Combined and plan summaries contain only median dollars, account/fit counts and an optional
 middle-80%-of-fits band. Model estimates have no band or reset-fit count.
 
-The underlying combined and model estimates use a Pro 10x-equivalent weekly
-basis: Pro ×1, Pro 5x ×2, Pro Max 25x ×0.4, Plus ×10. The public By
-plan chart displays each plan's own week on its own scale by dividing the
-reference estimate by that plan's factor; each card also shows the reference
-estimate. The Pro Max 25x factor assumes a common Plus baseline and is pending
-provider confirmation. Unknown plans and separate-track Spark estimates are
-excluded. Model values require the existing composition identification gate;
+The GCP origin serves `community-allowance-breakdowns-v1.3` instead (owner
+decision 2026-10-02, round 7): the same v1.1 block, with the same values and
+key order, relabelled, and with one trailing `modelConfig` array of
+`{ id, label, family, order }`, at most 128 entries. A tolerant reader charts
+every model the array names, so the array names only models the public page
+charts. For the catalog baseline (manifest version 1) that is exactly the six
+models the d43c8f92 page charts: GPT-6 Astra, GPT-6 Sol, GPT-6 Luna,
+GPT-5.6 Terra, GPT-5.6 Sol and GPT-5.6 Luna, at orders 0 to 5 in that card
+order, each with its page theme as family. The other 35 primary Codex models,
+GPT-5.5 among them, are the owner's selected comparison's hidden models
+(2026-09-28) and are never named. Each id and label is the manifest's. A model
+tuple keeps its place in `days` whether or not it is named: a reader that knows
+the id keeps it uncharted, and one that does not leaves it out and says so. The
+parity check treats the relabel and the block as the one unconditional
+declared difference from the d43c8f92 oracle. Two more apply only under
+production state the parity corpora do not hold: an owner with an active
+community aggregate exclusion is left out of the daily figures and allowance
+preview of each day the exclusion covers (round 5), and an eligible
+participant with typed evidence but no active owner link withholds only the
+days its active exclusions do not cover, where d43c8f92 withholds every day
+(round 19). The frozen interim export, served before GCP's first
+publication, keeps the breakdown version Cloudflare published.
+
+The current GCP projection serves `community-allowance-breakdowns-v1.5` from
+a newly computed `admin-community-allowance-preview-v0.5` (owner option B',
+2026-10-10). It reports every personal plan in Pro 20x-week units. Its exact
+basis is
+`seven_day_codex_pro20x_equivalent_personal_plans_trailing_30d_promax25`,
+normalization is `pro_x1_prolite_x4_promax_x0_8_plus_x20`, and model basis is
+`seven_day_codex_pro20x_equivalent_per_model_composition_promax25`; the preview
+basis is the public basis with a `_preview` suffix. Its four reviewed plans, in
+this order, normalize raw fits and model capacities as Pro 20x ×1, Pro 5x ×4,
+Pro Max 25x ×0.8 and Plus ×20 before cohort summaries are computed; the
+reference plan stays `pro` and the model gate is unchanged. Every account whose
+plan type is `pro` counts at ×1 against the Pro 20x week; accounts on the newer
+10× Pro allowance are not separated.
+The Pro Max multiplier is a normalization assumption against the common
+personal plan baseline, not a provider-authoritative entitlement claim. Pro Max
+is always present in `byPlanType`, with an explicit empty summary when it has
+no fit. The v1.5 base envelope is never served without its closed `modelConfig`
+block, which is the same block v1.4 carries. With the same factors, the Pro,
+Pro 5x and Plus values and, without Pro Max fits, the combined value equal
+the retained v1.3 values exactly; against v1.4 a plan's own-week value can
+differ only by rounding below one cent. In the per-model view, Pro Max
+participants now enter at ×0.8, where v1.3 counted them unstable and v1.4
+used ×0.4.
+
+Stored previews keep their own contract and meaning. Retained v0.4 previews
+validate against the frozen Pro 10x contract and project as v1.4 with
+unchanged bytes: basis
+`seven_day_codex_pro10x_equivalent_personal_plans_trailing_30d_promax25`,
+normalization `pro_x1_prolite_x2_promax_x0_4_plus_x10`, model basis
+`seven_day_codex_pro10x_equivalent_per_model_composition`, and plans Pro 10x
+×1, Pro 5x ×2, Pro Max 25x ×0.4 and Plus ×10 over a v1.2 canonical base (v1.2
+remains reserved for the separate, never-deployed main release). Retained v0.3
+previews continue to validate against their frozen contract and project as
+v1.3, with the original Pro 20x ×1, Pro 5x ×4 and Plus ×20 values. The three
+validators are mutually exclusive by schema version. Neither schema
+relabelling nor dividing an old combined median converts a stored preview to
+another meaning. Raw `pro` fits and history remain continuous; normalization
+joins the derived projection identity, while the raw fit identity is
+unchanged. Analytics kernel 16 and a completed preview recomputation are
+required before v1.5 values can be served; the public reader and admin client
+must accept v1.5 and v0.5 first, then the origin, then the Jobs. This source
+contract does not claim a production rollout.
+Unknown plans and separate-track Spark estimates remain excluded. Model values require the existing composition identification gate;
+The public By plan chart divides a reference estimate by that plan's declared
+factor to display its own week; cards also retain the named reference value.
 historical values are never carried backward from today's fit.
 
 The raw `pro` identity and retained evidence continue through the Pro 10x
@@ -142,6 +203,36 @@ policy changes and unknown mutations hard-invalidate it. Missing/invalidated/inv
 cache or an unavailable optional cache schema omits the breakdown, preserving
 the independent daily activity response. No public request invokes analysis,
 writes state, accepts cohort filters or exposes the private admin response.
+
+Model identity is tolerant on the public reader in one way: a model tuple whose
+id the page has never heard of is skipped and counted. Its dollars and account
+count must still be valid, its id must be shaped like a model id (at most 128
+characters from `A-Za-z0-9._:/+-`, starting with a letter or digit), and an id
+appears at most once per day, known or not; nothing of it is retained, stored or
+rendered, but it no longer invalidates every breakdown. An id the catalog
+reviewed and kept off the primary comparison (a separate allowance track or
+another provider's model) is not newer than the page: it is a producer fault and
+refuses the block, as does any id that fails the grammar or repeats. The model
+view states that estimates for newer models are left out, and the browser's
+retained copy of the answer keeps that statement as two content-free integers
+(`retainedUnrecognizedModels: { tuples, models }`, accepted only from the
+browser's own store, never from the wire), so a cached render says what the live
+one said. `allowanceBreakdowns` may also
+carry an optional `modelConfig` array of `{ id, label, family, order }` that
+names and orders models the page's catalog does not know: at most 128 entries;
+an id of at most 128 characters from `A-Za-z0-9._:/+-`; a label of at most 80
+letters, digits, spaces and `.+_()×·/:-`; a lowercase family token of at most 24
+characters; an integer order from 0 to 9999. The block is all-or-nothing, a
+malformed one is ignored whole, and it cannot promote a separate-track or other
+provider's model onto the primary comparison. A model the page's catalog does not
+know is drawn only once the block names it; an id neither names stays unrendered.
+
+The public reader accepts `community-allowance-breakdowns-v1.3` as well as
+v1.0 and v1.1. v1.3 is v1.1's meaning (the Pro 20x basis, `combined`, and the
+three personal plans `pro`, `prolite` and `plus`) with the `modelConfig` block
+appended, so it is read on v1.1's basis. Any other version, v1.4 included, is
+refused whole until the reader is changed to understand it, and the page then
+shows breakdowns as unavailable while the daily activity still renders.
 
 All three graph views use the same published snapshot; immutable daily rows
 are not rewritten or relabelled to achieve this. Generation/evidence dates are
@@ -180,6 +271,34 @@ return no account IDs or raw evidence. The owner UI uses independent,
 non-overlapping reads with a 15-second timeout; automatic polling respects the
 existing user-selected cadence and pauses while hidden/offline. A slow graph
 read cannot conceal progress. Access loss clears private state.
+
+Typed Cloudflare storage returns version 3 with the incremental graph census
+and an optional `pipeline` block (null when that block's read failed). The GCP
+origin returns the closed full-refresh version 4: journal head, bounded v1.2
+source counts and unconsumed activation authorizations; refresh cursor and
+pending journal changes; distinct queued days; daily publication heads and
+preview presence; and the last recorded run's start, finish, kernel and
+aggregate owner/owner-day counts. Both allowed query shapes return v4 on GCP.
+The PostgreSQL reader uses one REPEATABLE READ READ ONLY snapshot, 2-second
+statement and 500-millisecond lock timeouts, at most 100,001 pending journal
+events and 10,001 queued days. Counts exceeding their limits are unavailable,
+never truncated totals; an absent, unsafe or ahead-of-journal cursor leaves
+delivery and queue counts unknown. Queued days follow the overview's journal
+semantics, including replaced source days and terminal events adding no day.
+
+GCP has no incremental lanes, checkpoints or per-owner progress source, so v4
+marks graph/history counters and incremental delivery position unavailable.
+`analytics_v2_runs` becomes visible with the full refresh commit; active runs
+and failures that leave no row remain unobservable. A complete last recorded
+run is never rendered as idle, caught up or currently running. The next nominal
+03:00 UTC slot follows the owner-declared cadence; scheduler enablement remains
+unavailable and the slot is not an ETA. Responses contain no owner, event or
+run identifiers and remain `no-store` behind the existing owner chokepoint.
+
+The admin UI is served by the edge Worker's `admin-ui.ts` from generated,
+embedded assets even in GCP mode. Version 4 therefore needs a separate edge
+client deploy before the origin rollout. Regenerating the assets or rebuilding
+the Cloud Run bundle does not publish either surface.
 
 The owner explicitly approved dollar estimates and sample counts even when
 based on one account. This can reveal that contributor's estimated capacity;
