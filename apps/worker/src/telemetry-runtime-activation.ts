@@ -104,7 +104,7 @@ export const EXPECTED_PRIMARY_MIGRATIONS = Object.freeze([
     sha256: "88ac498493c869009e322e029ccff805236afd8d08ef299c39a3befda72d4aad",
   }),
   Object.freeze({
-    name: "0013_v12_quarantine_admission.sql",
+    name: "0014_v12_quarantine_admission.sql",
     sha256: "01f7b2f75dcbe9de8d42fb194702504db39f7ea8dbc475e28d09604230152344",
   }),
 ] as const);

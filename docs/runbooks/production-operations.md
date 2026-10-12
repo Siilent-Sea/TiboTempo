@@ -515,34 +515,40 @@ application, described in the
 [v1.2 public eligibility plan](../plans/2026-09-25-v12-public-eligibility.md).
 `0012` drops and re-creates the v1.2 manifest, domain, domain-day and head
 tables, so every later file that attaches a trigger to them must run after it.
-`ingestion-isolation-migrations/0013_v12_quarantine_admission.sql` adds a
+`ingestion-isolation-migrations/0014_v12_quarantine_admission.sql` adds a
 v1.2 chunk-admission fence against objects already claimed for orphan deletion.
 It is outside that authorization and needs its own authorization, reviewed and
-rehearsed forward application after `0010`–`0012`, and post-migration
+rehearsed forward application after `0010`–`0013`, and post-migration
 receipt. Do not extend the historical operator's pinned source sequence or
 assume that a Worker deploy applies any of these migrations. The guarded typed
 deploy derives its expected primary schema from every source migration, so a
-source tree that contains `0013` cannot deploy until `0013` is applied. The
+source tree that contains `0014` cannot deploy until `0014` is applied. The
 protected usage activation gate requires that exact migration and trigger; its
-ordered D1 prefix also requires `0009` through `0012` to have been applied
+ordered D1 prefix also requires `0009` through `0013` to have been applied
 first.
-`ingestion-isolation-migrations/0014_accountless_history_transfer_v12.sql`
+`ingestion-isolation-migrations/0015_accountless_history_transfer_v12.sql`
 re-creates the retained-history transfer view from baseline migration `0063`
 with a separate v1.2 lineage and adds the matching v1.2 invalidation triggers,
 six of them on the domain and head tables that `0012` re-creates.
 Without it, one v1.2-only opt-out marker (allowed by `0011`) makes every
 transfer capture refuse. It changes no row, needs the baseline `0063` view
-and the `0008` v1.2 tables, and follows `0013` in the ordered stream; applied
+and the `0008` v1.2 tables, and follows `0014` in the ordered stream; applied
 before `0063`, its `DROP VIEW` fails and nothing changes. It needs
 the same separate authorization, rehearsal and receipt, and the same deploy
-gating applies: a source tree that contains `0014` cannot deploy until `0014`
+gating applies: a source tree that contains `0015` cannot deploy until `0015`
 is applied.
 
-The GCP line carried `0013` and `0014` under earlier numbers until they were
-renamed, byte-identically, to follow `0012`. The D1 ledgers record bare file
-names. Before applying `0013` or `0014` anywhere, read back which of
+The GCP line's quarantine and history files are now `0014` and `0015`, after
+main's `0013_performance_ultrafast.sql`. The owner-authorized 2026-10-12
+production ledger readback found neither GCP file under its old name, nor the
+performance file, in any production D1 migration ledger. The nine applied
+ingestion-isolation rows from `0004` through `0012` matched their source SHA-256
+checksums. Only the two unapplied GCP files were renamed, byte-identically;
+no migration was applied. The D1 ledgers record bare file names. Before applying
+`0014` or `0015` anywhere, read back which of
 `d1_storage_migrations` and `d1_migrations` exist, and only the migration
-names in each, for every Cloudflare D1 database in every environment and role.
+names and stored checksums in each, for every Cloudflare D1 database in every
+environment and role. The production-only readback does not qualify staging.
 Confirm that none is one of the retired names listed as
 `RETIRED_ISOLATION_NAMES` in
 `apps/worker/scripts/ingestion-isolation-sequence.check.mjs`. If one is
@@ -552,9 +558,9 @@ ledger rows from the storage operator's own submission. Its model applies
 baseline files through Wrangler's `d1_migrations`, a fresh chain; it does not
 model the restore-era production ingestion ledger described next.
 
-`0014` also needs baseline `0063_accountless_history_transfer_source.sql`
-applied first. GitHub `main`'s baseline ends at `0062`, so the production
-ingestion D1 lacks it unless it was applied separately. Apply `0063` into the
+`0015` also needs baseline `0063_accountless_history_transfer_source.sql`
+applied first. The 2026-10-12 production ingestion ledger ends at baseline
+`0062` and lacks `0063`, which the current source includes. Apply `0063` into the
 ledger that already records the role's later baseline files, never into a
 second ledger:
 

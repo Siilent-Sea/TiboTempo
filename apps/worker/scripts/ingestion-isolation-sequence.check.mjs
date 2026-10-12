@@ -5,9 +5,9 @@
 // SQL it never ran. This check pins the applied and authorized sequence, models
 // the ledger rows by rendering the operator's own submission template, and
 // proves on the synthetic canonical D1 that main's empty-day rebuild (0012) runs
-// before the GCP-line quarantine fence (0013) and v1.2 retained-history
-// transfer (0014), whose triggers must survive it, and that participant erasure
-// still cascades. 0014 also needs baseline 0063, which GitHub main lacks.
+// before the GCP-line quarantine fence (0014) and v1.2 retained-history
+// transfer (0015), whose triggers must survive it, and that participant erasure
+// still cascades. 0015 also needs baseline 0063, which GitHub main lacks.
 import assert from "node:assert/strict";
 import { cp, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
@@ -29,10 +29,12 @@ const OPERATOR_NAME_GUARD = String.raw`!/^\d{4}_[a-z0-9_-]+\.sql$/.test(migratio
 const OPERATOR_LEDGER_LINE = "const LEDGER = `${LEDGER_SCHEMA_SQL.replace('CREATE TABLE ', 'CREATE TABLE IF NOT EXISTS ')};`;";
 const OPERATOR_INTERPOLATIONS = Object.freeze(["LEDGER", "migration.sql", "migration.name", "migration.sha256"]);
 
-// 0001-0012 are GitHub main's files (0012 is the production empty-day hotfix,
-// 906dea97); 0013 and 0014 are the GCP line's quarantine fence and v1.2
-// retained-history transfer, renamed byte-identically from 0012/0013 after it.
-// Later files may follow, contiguously, but these bytes and names never move.
+// 0001-0013 are GitHub main's files (0012 is the production empty-day hotfix,
+// 906dea97); 0014 and 0015 are the GCP line's quarantine fence and v1.2
+// retained-history transfer. The owner-authorized 2026-10-12 production ledger
+// readback proved the two GCP files unapplied before their byte-identical rename.
+// Later files may follow contiguously. Applied names and all pinned bytes remain
+// immutable; renaming an unapplied file requires an owner-reviewed readback.
 export const PINNED_ISOLATION_SEQUENCE = Object.freeze([
   ["0001_separate_analytics_work.sql", "963fb96dafc03c9f93b911d7b676c9bc752d2763d53032b3a54b843fd725b4e0"],
   ["0002_v11_append_classification.sql", "fe52746cc0536f31641dcb62780a0e34d45044292f18478df082b534692ba436"],
@@ -46,8 +48,9 @@ export const PINNED_ISOLATION_SEQUENCE = Object.freeze([
   ["0010_accountless_v12_renewal.sql", "1400953fc3a0fbb26229b4d21c9f693133572c678ad6956c89bab85ec2534d56"],
   ["0011_v12_public_eligibility.sql", "580019549ec44faf23b6ea7112f4d3a4e8420284063a8dc7ed3a06ae52840d01"],
   ["0012_v12_empty_day_manifests.sql", "92298adaaa32c7a9c6630b641a188ad552efe545da5ca44e9ee349e9ba13c8ad"],
-  ["0013_v12_quarantine_admission.sql", "01f7b2f75dcbe9de8d42fb194702504db39f7ea8dbc475e28d09604230152344"],
-  ["0014_accountless_history_transfer_v12.sql", "73662adb122ff7abf9665d8778565056465a07d52e5234c8b0230fe740b62ef7"],
+  ["0013_performance_ultrafast.sql", "88ac498493c869009e322e029ccff805236afd8d08ef299c39a3befda72d4aad"],
+  ["0014_v12_quarantine_admission.sql", "01f7b2f75dcbe9de8d42fb194702504db39f7ea8dbc475e28d09604230152344"],
+  ["0015_accountless_history_transfer_v12.sql", "73662adb122ff7abf9665d8778565056465a07d52e5234c8b0230fe740b62ef7"],
 ].map(([name, sha256]) => Object.freeze({ name, sha256 })));
 
 // Names the GCP line used before a renumber. No file or ledger row may carry
@@ -60,14 +63,16 @@ export const RETIRED_ISOLATION_NAMES = Object.freeze([
   ["0011", "accountless_v12_renewal"],
   ["0012", "v12_quarantine_admission"],
   ["0013", "accountless_history_transfer_v12"],
+  ["0013", "v12_quarantine_admission"],
+  ["0014", "accountless_history_transfer_v12"],
 ].map(([number, stem]) => `${number}_${stem}.sql`));
 
-// Isolation files that need a baseline (Wrangler d1_migrations) file first.
-// 0014 re-creates the retained-history transfer view that baseline 0063
-// creates, and GitHub main's baseline ends at 0062, so the production ledger's
-// d1_migrations must be read back for 0063 before 0014 is applied.
+// Isolation files that need a baseline migration in its existing ledger first.
+// 0015 re-creates the retained-history transfer view that baseline 0063
+// creates. The 2026-10-12 production readback lacked 0063; read back the role's
+// existing baseline ledger for 0063 before 0015 is applied.
 export const ISOLATION_BASELINE_PREREQUISITES = Object.freeze({
-  "0014_accountless_history_transfer_v12.sql": Object.freeze(["0063_accountless_history_transfer_source.sql"]),
+  "0015_accountless_history_transfer_v12.sql": Object.freeze(["0063_accountless_history_transfer_source.sql"]),
 });
 
 const QUARANTINE_TRIGGER = Object.freeze({ table: "telemetry_v12_chunks", name: "telemetry_v12_chunk_quarantine_admission" });
@@ -234,8 +239,8 @@ function triggersOn(database, tables) {
 /**
  * Every trigger a primary migration creates and no later file explicitly drops
  * must exist. A table rebuild drops its triggers silently, so this is what
- * catches a file ordered before main's 0012 rebuild. The isolation 0013 fence
- * and 0014 transfer triggers are also named, so a missing CREATE fails too.
+ * catches a file ordered before main's 0012 rebuild. The isolation 0014 fence
+ * and 0015 transfer triggers are also named, so a missing CREATE fails too.
  */
 export function assertIsolationTriggersPresent(database, rows) {
   const expected = new Map();
@@ -247,8 +252,8 @@ export function assertIsolationTriggersPresent(database, rows) {
   }
   const present = new Map(database.prepare("SELECT name, tbl_name FROM sqlite_schema WHERE type = 'trigger'").all()
     .map((row) => [row.name, row.tbl_name]));
-  assert.equal(present.get(QUARANTINE_TRIGGER.name), QUARANTINE_TRIGGER.table, "the isolation 0013 quarantine fence is missing");
-  for (const name of TRANSFER_TRIGGERS) assert.ok(present.has(name), `isolation 0014 trigger ${name} is missing`);
+  assert.equal(present.get(QUARANTINE_TRIGGER.name), QUARANTINE_TRIGGER.table, "the isolation 0014 quarantine fence is missing");
+  for (const name of TRANSFER_TRIGGERS) assert.ok(present.has(name), `isolation 0015 trigger ${name} is missing`);
   for (const [name, origin] of expected) assert.ok(present.has(name), `trigger ${name} from ${origin} is missing`);
   assert.equal(present.size, expected.size, "a trigger exists that no primary migration creates");
 }
@@ -269,10 +274,11 @@ async function withDoctoredCopy(t, doctor) {
 test("the isolation stream is contiguous, byte-pinned and free of retired names", async () => {
   const rows = await assertIngestionIsolationSequence();
   const isolation = rows.filter((row) => row.directory === ISOLATION).map((row) => row.name);
-  assert.deepEqual(isolation.slice(11, 14), [
+  assert.deepEqual(isolation.slice(11, 15), [
     "0012_v12_empty_day_manifests.sql",
-    "0013_v12_quarantine_admission.sql",
-    "0014_accountless_history_transfer_v12.sql",
+    "0013_performance_ultrafast.sql",
+    "0014_v12_quarantine_admission.sql",
+    "0015_accountless_history_transfer_v12.sql",
   ]);
 });
 
@@ -282,9 +288,10 @@ test("bare-name ledger rows resolve every activation and forward-operator pin", 
   const ordered = await assertLedgerPinsResolve(database);
   const hotfix = ordered.indexOf("0012_v12_empty_day_manifests.sql");
   assert.equal(ordered.indexOf("0011_v12_public_eligibility.sql"), hotfix - 1);
-  assert.equal(ordered.indexOf("0013_v12_quarantine_admission.sql"), hotfix + 1);
-  assert.equal(ordered.indexOf("0014_accountless_history_transfer_v12.sql"), hotfix + 2);
-  assert.ok((await readActivationPrimaryPins()).some((pin) => pin.name === "0013_v12_quarantine_admission.sql"));
+  assert.equal(ordered.indexOf("0013_performance_ultrafast.sql"), hotfix + 1);
+  assert.equal(ordered.indexOf("0014_v12_quarantine_admission.sql"), hotfix + 2);
+  assert.equal(ordered.indexOf("0015_accountless_history_transfer_v12.sql"), hotfix + 3);
+  assert.ok((await readActivationPrimaryPins()).some((pin) => pin.name === "0014_v12_quarantine_admission.sql"));
   assert.ok(ordered.every((name) => STORAGE_MIGRATION_NAME.test(name)), "a d1_storage_migrations row is not a bare name");
   assertIsolationTriggersPresent(database, await readPrimaryLedgerRows());
   assert.deepEqual(database.prepare("PRAGMA foreign_key_check").all(), []);
@@ -308,10 +315,10 @@ test("the ledger model follows the operator's submission, not a copy of it", asy
   await assert.rejects(assertLedgerPinsResolve(database, prefixed), /activation pin \S+ does not match its ledger row/u);
 });
 
-test("0014 needs baseline 0063, which GitHub main's baseline (0001-0062) lacks", async (t) => {
+test("0015 needs baseline 0063, which GitHub main's baseline (0001-0062) lacks", async (t) => {
   const [[name, [baseline]]] = Object.entries(ISOLATION_BASELINE_PREREQUISITES);
   const mainBaseline = await withDoctoredCopy(t, (copy) => rm(join(copy, "migrations", baseline)));
-  // Every earlier file, 0013 included, applies on main's baseline; 0014's first
+  // Every earlier file, 0014 included, applies on main's baseline; 0015's first
   // statement is refused, so its submission changes nothing.
   await assert.rejects(buildBareNameLedgerModel(mainBaseline),
     new RegExp(`^Error: ${ISOLATION}/${name.replace(".", "\\.")} was refused: no such view: accountless_history_transfer_candidates`, "u"));
@@ -322,7 +329,7 @@ test("0014 needs baseline 0063, which GitHub main's baseline (0001-0062) lacks",
     new RegExp(`ledger row ${name.replace(".", "\\.")} is present without its baseline prerequisite`, "u"));
 });
 
-test("the synthetic canonical D1 runs 0012, 0013, 0014 in order and keeps every trigger", async (t) => {
+test("the synthetic canonical D1 runs 0012 through 0015 in order and keeps every trigger", async (t) => {
   const database = await createSyntheticCanonicalD1();
   t.after(() => database.close());
   const applied = database.prepare(`SELECT name FROM d1_storage_migrations
@@ -378,10 +385,21 @@ test("the cascade proof detects a rebuild that creates the head table before its
 
 test("a doctored copy with the pre-renumber layout fails", async (t) => {
   const root = await withDoctoredCopy(t, async (copy) => {
-    await rename(join(copy, ISOLATION, "0013_v12_quarantine_admission.sql"), join(copy, ISOLATION, RETIRED_ISOLATION_NAMES[2]));
-    await rename(join(copy, ISOLATION, "0014_accountless_history_transfer_v12.sql"), join(copy, ISOLATION, RETIRED_ISOLATION_NAMES[3]));
+    await rename(join(copy, ISOLATION, "0014_v12_quarantine_admission.sql"), join(copy, ISOLATION, RETIRED_ISOLATION_NAMES[2]));
+    await rename(join(copy, ISOLATION, "0015_accountless_history_transfer_v12.sql"), join(copy, ISOLATION, RETIRED_ISOLATION_NAMES[3]));
   });
   await assert.rejects(assertIngestionIsolationSequence(root), /retired isolation name/u);
+});
+
+test("the two filenames retired after the production readback remain refused", async (t) => {
+  for (const [current, retired] of [
+    ["0014_v12_quarantine_admission.sql", RETIRED_ISOLATION_NAMES[4]],
+    ["0015_accountless_history_transfer_v12.sql", RETIRED_ISOLATION_NAMES[5]],
+  ]) {
+    const root = await withDoctoredCopy(t, (copy) =>
+      rename(join(copy, ISOLATION, current), join(copy, ISOLATION, retired)));
+    await assert.rejects(assertIngestionIsolationSequence(root), /retired isolation name/u);
+  }
 });
 
 test("a doctored copy with an edited hotfix byte fails", async (t) => {
@@ -394,7 +412,7 @@ test("a doctored copy with an edited hotfix byte fails", async (t) => {
 
 test("a doctored copy with a numbering gap fails", async (t) => {
   const root = await withDoctoredCopy(t, async (copy) => {
-    await rename(join(copy, ISOLATION, "0014_accountless_history_transfer_v12.sql"), join(copy, ISOLATION, "0015_accountless_history_transfer_v12.sql"));
+    await rename(join(copy, ISOLATION, "0015_accountless_history_transfer_v12.sql"), join(copy, ISOLATION, "0016_accountless_history_transfer_v12.sql"));
   });
   await assert.rejects(assertIngestionIsolationSequence(root), /numbered contiguously/u);
 });
@@ -410,8 +428,8 @@ test("a doctored copy whose activation pin keeps the old fence name fails", asyn
   const root = await withDoctoredCopy(t, async (copy) => {
     const file = join(copy, "src/telemetry-runtime-activation.ts");
     const source = await readFile(file, "utf8");
-    assert.ok(source.includes('name: "0013_v12_quarantine_admission.sql"'));
-    await writeFile(file, source.replace('name: "0013_v12_quarantine_admission.sql"', `name: "${RETIRED_ISOLATION_NAMES[2]}"`));
+    assert.ok(source.includes('name: "0014_v12_quarantine_admission.sql"'));
+    await writeFile(file, source.replace('name: "0014_v12_quarantine_admission.sql"', `name: "${RETIRED_ISOLATION_NAMES[2]}"`));
   });
   const database = await buildBareNameLedgerModel(root);
   t.after(() => database.close());
@@ -419,11 +437,11 @@ test("a doctored copy whose activation pin keeps the old fence name fails", asyn
     new RegExp(`activation pin ${RETIRED_ISOLATION_NAMES[2].replace(".", "\\.")} does not match its ledger row`, "u"));
 });
 
-test("a doctored copy that applies the GCP files before the hotfix loses the 0014 triggers", async (t) => {
+test("a doctored copy that applies the GCP files before the hotfix loses the 0015 triggers", async (t) => {
   const root = await withDoctoredCopy(t, async (copy) => {
     // Model an application order where main's rebuild runs last: it drops the
     // tables that carry the transfer triggers, so they must be re-created.
-    await rename(join(copy, ISOLATION, "0012_v12_empty_day_manifests.sql"), join(copy, ISOLATION, "0015_v12_empty_day_manifests.sql"));
+    await rename(join(copy, ISOLATION, "0012_v12_empty_day_manifests.sql"), join(copy, ISOLATION, "0016_v12_empty_day_manifests.sql"));
   });
   await assert.rejects(assertIngestionIsolationSequence(root), /numbered contiguously/u);
   const rows = await readPrimaryLedgerRows(root);
@@ -431,5 +449,5 @@ test("a doctored copy that applies the GCP files before the hotfix loses the 001
   t.after(() => database.close());
   for (const row of rows) database.exec(row.sql);
   assert.throws(() => assertIsolationTriggersPresent(database, rows),
-    /isolation 0014 trigger accountless_history_transfer_v12_head_insert is missing/u);
+    /isolation 0015 trigger accountless_history_transfer_v12_head_insert is missing/u);
 });

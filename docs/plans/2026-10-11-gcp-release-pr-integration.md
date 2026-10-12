@@ -86,5 +86,29 @@ GitHub CI surfaced an additional integration gate before merge:
   `0013_v12_quarantine_admission.sql`. The GCP plan explicitly requires whichever
   reaches production D1 first to retain 0013. This is a D1 naming collision;
   no PostgreSQL migration or deployed schema has changed. Production ledger
-  read approval was requested to identify applied filenames/checksums before
-  renumbering only unapplied files. Both PRs remain unmerged pending this gate.
+  readback and renumbering were authorized by the owner on 2026-10-12.
+
+Migration collision resolution (2026-10-12):
+- Read-only production queries inspected only the two migration-ledger table
+  names, migration filenames and stored SHA-256 checksums across the four
+  production D1 roles. Ingestion has 13 storage-ledger rows, analytics has 32,
+  deletion has three Wrangler rows and legacy primary has 60 Wrangler rows.
+  Wrangler's ledger does not store SQL checksums. No payload rows were read.
+- None of the performance, quarantine or v1.2 history tail files is applied.
+  All nine applied ingestion-isolation rows, `0004` through `0012`, match
+  their source checksums and retain their exact names and bytes.
+- Keep main's `0013_performance_ultrafast.sql`. Rename only the unapplied GCP
+  quarantine and history files to `0014_v12_quarantine_admission.sql` and
+  `0015_accountless_history_transfer_v12.sql`. Their SHA-256 values remain
+  `01f7b2f75dcbe9de8d42fb194702504db39f7ea8dbc475e28d09604230152344`
+  and `73662adb122ff7abf9665d8778565056465a07d52e5234c8b0230fe740b62ef7`.
+  Activation pins, synthetic fixtures, sequence guards and current runbooks
+  follow the new names. Retired names stay refused. Historical receipts remain
+  point-in-time evidence.
+- No D1 or PostgreSQL migration was applied, no deployment ran and no secret
+  was created or changed. The production readback does not qualify staging.
+- Final rename checks: 142 synthetic migration, schema, source-seal and CI
+  harness cases passed with no skips; all 58 affected Worker activation,
+  performance and v1.2 cases passed. Worker TypeScript and final documentation
+  preflight passed. The analytics closure and every migration SQL checksum are
+  unchanged. Rebuild Cloud Run before the final hosted checks and normal merges.

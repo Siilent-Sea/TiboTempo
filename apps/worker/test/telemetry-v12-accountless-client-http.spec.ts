@@ -69,7 +69,7 @@ beforeAll(async () => {
   privateText = JSON.stringify({ ...await crypto.subtle.exportKey("jwk", pair.privateKey), kid: keyId });
 });
 
-const TRANSFER_V12_MIGRATION = "0014_accountless_history_transfer_v12.sql";
+const TRANSFER_V12_MIGRATION = "0015_accountless_history_transfer_v12.sql";
 
 async function prepare(options: { withoutTransferV12?: boolean } = {}): Promise<void> {
   await reset();

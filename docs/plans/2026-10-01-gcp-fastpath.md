@@ -873,6 +873,12 @@ GCP work separate from the Cloudflare rollout still stands.
   `apps/worker/src/telemetry-runtime-activation.ts:102-105`. Whichever file
   reaches production D1 first keeps 0013. This line already renumbered these
   files once, in `a0fc9e39` on 2026-09-26 (OAI-9, OD-OAI-2).
+  Resolved in the 2026-10-12 PR integration: the owner-authorized production
+  migration-ledger readback proved all three tail files unapplied. Keep main's
+  performance file at `0013`; rename only the two GCP files, byte-identically,
+  to `0014_v12_quarantine_admission.sql` and
+  `0015_accountless_history_transfer_v12.sql`. Applied rows remain unchanged
+  ([integration record](./2026-10-11-gcp-release-pr-integration.md)).
 - **GCP-only package change.** This line's
   `packages/quota-analysis/src/quota-tracks.js` and `quota-calibration.js`
   differ from production (`c88c0a9cd`, a cumulative-cost cursor). OAI-4 keeps
