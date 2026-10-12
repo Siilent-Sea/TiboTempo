@@ -281,7 +281,7 @@ async function enqueueCommunityAllowanceDriftRebuilds(
     reconcileToDay,
     new Date(nowMs).toISOString(),
     reconcileEpoch,
-    COMMUNITY_ATTRIBUTION_METHOD_VERSION,
+    COMMUNITY_ALLOWANCE_PROJECTION_METHOD_VERSION,
     ...capturedValues,
   ).run();
   for (const day of drifted) {
@@ -865,7 +865,7 @@ export function isCurrentCommunityAllowancePublication(
 ): boolean {
   return Number.isFinite(nowMs) && state?.publication_state === "ready"
     && state.expected_basis === COMMUNITY_ALLOWANCE_BASIS
-    && state.attribution_method_version === COMMUNITY_ATTRIBUTION_METHOD_VERSION
+    && state.attribution_method_version === COMMUNITY_ALLOWANCE_PROJECTION_METHOD_VERSION
     && state.safe_from_day === driftReconcileFromDay(nowMs)
     && state.safe_to_day === driftReconcileToDay(nowMs);
 }

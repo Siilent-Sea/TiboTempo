@@ -33,12 +33,12 @@ the schema digest, so exact provider-owned metadata is excluded while a shadow
 object remains visible as drift.
 
 Usage activation requires the common primary forward rows through
-`0008_telemetry_v12.sql`, the exact `0013_v12_quarantine_admission.sql` ledger
+`0008_telemetry_v12.sql`, the exact `0014_v12_quarantine_admission.sql` ledger
 row and trigger, and the final typed v1/v1.1 and successor usage objects. In
-the ordered D1 migration stream `0013` follows `0009_performance_reports.sql`,
-`0010_accountless_v12_renewal.sql`, `0011_v12_public_eligibility.sql` and
-`0012_v12_empty_day_manifests.sql`, so applying `0013` also requires applying
-those four first. Usage activation
+the ordered D1 migration stream `0014` follows `0009_performance_reports.sql`,
+`0010_accountless_v12_renewal.sql`, `0011_v12_public_eligibility.sql`,
+`0012_v12_empty_day_manifests.sql` and `0013_performance_ultrafast.sql`, so
+applying `0014` also requires applying those five first. Usage activation
 does not inspect the independent performance tables or histogram bucket
 contract, and the performance runtime may remain staged. Performance
 activation additionally requires the `0009` ledger row, every pinned
@@ -46,11 +46,29 @@ performance object, and the exact report bucket and measurement checks. Both
 targets require typed storage, the same valid source namespace for v1 and v1.1,
 and enabled upload registration and processing controls. The historical
 existing-role operator described in the production runbook is source-pinned
-through `0009`; it applies none of `0010`–`0014`. `0010`, `0011` and `0012`
+through `0009`; it applies none of `0010`–`0015`. `0010`, `0011` and `0012`
 have their own owner-authorized forward steps (see the
 [v1.2 public eligibility plan](../plans/2026-09-25-v12-public-eligibility.md)).
-`0013` needs its own reviewed, rehearsed forward application and receipt;
+`0014` needs its own reviewed, rehearsed forward application and receipt;
 complete that step separately before attempting activation.
+The quarantine file was renamed byte-identically from the GCP line's earlier
+name after the owner-authorized 2026-10-12 production ledger readback proved it
+unapplied. Applied filenames and checksum requirements remain unchanged.
+Performance activation also requires the exact `0013_performance_ultrafast.sql`
+ledger pin (`88ac498493c869009e322e029ccff805236afd8d08ef299c39a3befda72d4aad`)
+and `telemetry_performance_cohort_dictionary_insert` and
+`telemetry_performance_cohort_dictionary_update`. Missing evidence refuses
+performance activation while independent usage activation stays available.
+
+Migration `0013` preserves the runtime state and advances its existing
+`policy_revision` by one. A fresh staged fixture advances from 1 to 2 before
+activation, then activation advances 2 to 3; these are synthetic fixture values,
+not revisions to assume for an existing environment. Already-active rows remain
+active. Historical September 21 reports and grants remain retained, while new September 29
+dictionary writes require matching new authorization. The historical forward
+operator retains its closed pins through `0009`; applying `0013` therefore needs
+a reviewed environment-specific migration plan and rehearsal before using this
+activation sequence. Do not broaden those operator pins as an implicit upgrade.
 
 The runtime row must still be `staged`. Record its current `policy_revision`
 from a read-only post-deploy check and use that value as `expectedRevision`.

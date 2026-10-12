@@ -17,7 +17,7 @@ const COMPONENT_NAMES = Object.freeze([
   "output_text_tokens",
   "output_reasoning_tokens",
 ]);
-const SPEED_MODES = Object.freeze(["standard", "fast", "unknown", "other"]);
+const SPEED_MODES = Object.freeze(["standard", "fast", "ultrafast", "unknown", "other"]);
 const TOOL_CLASSES = Object.freeze([
   "web_search",
   "file_search",
@@ -39,7 +39,7 @@ const SURFACES = new Set([
   "local_interactive_unclassified",
   "local_rollout_unclassified",
 ]);
-const THREAD_SOURCES = new Set(["user", "subagent", "automation", "unknown"]);
+const THREAD_SOURCES = new Set(["user", "subagent", "automation", "unknown", "auto_review"]);
 const AGENT_SCOPES = new Set(["root", "subagent", "automation", "unknown"]);
 const LINEAGE_DISPOSITIONS = new Set(["standalone", "forked", "parent_linked"]);
 

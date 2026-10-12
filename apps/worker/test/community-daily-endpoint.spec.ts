@@ -185,7 +185,7 @@ async function seedReadyAllowanceState(nowMs: number): Promise<void> {
     (singleton, publication_state, expected_basis, safe_from_day, safe_to_day,
      changed_at, attribution_method_version) VALUES (1,'ready',?,?,?,?,?)`)
     .bind(COMMUNITY_ALLOWANCE_BASIS, utcDay(nowMs, 1 - COMMUNITY_ALLOWANCE_RECONSTRUCTABLE_DAYS),
-      utcDay(nowMs), new Date(nowMs).toISOString(), COMMUNITY_ATTRIBUTION_METHOD_VERSION).run();
+      utcDay(nowMs), new Date(nowMs).toISOString(), COMMUNITY_ALLOWANCE_PROJECTION_METHOD_VERSION).run();
 }
 
 async function seedBreakdownCache(nowMs: number, options: {

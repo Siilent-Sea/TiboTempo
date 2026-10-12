@@ -247,6 +247,7 @@ async function* usageBatches(database, includeWorkUsage = false) {
            t.codex_speed_mode AS codex_speed_mode,
            t.api_service_tier AS api_service_tier,
            s.surface AS surface,
+           s.thread_source AS thread_source,
            s.agent_scope AS agent_scope,
            s.lineage_disposition AS lineage_disposition,
            a.status AS scope_status,
@@ -290,9 +291,9 @@ function recordShape(row) {
   return {
     observedAt: new Date(Number(row.observed_at_ms)).toISOString(),
     model: row.model_id,
-    // Match the unified accounting adapter's legacy_zero compatibility:
-    // retain observed context, but never re-infer a NULL from component sums.
-    totalInputContextTokens: row.total_input_context ?? 0,
+    // Missing source context remains unavailable; an explicit zero remains an
+    // observed value. Only the pricing owner may infer a complete input sum.
+    totalInputContextTokens: nullableTokenCount(row.total_input_context),
     components: {
       input_uncached_tokens: nullableTokenCount(row.tokens_in_uncached),
       input_cache_read_tokens: nullableTokenCount(row.tokens_in_cache_read),
@@ -307,6 +308,7 @@ function recordShape(row) {
     },
     surfaceClassification: {
       surface: row.surface,
+      threadSource: row.thread_source,
       agentScope: row.agent_scope,
       lineageDisposition: row.lineage_disposition,
     },
@@ -572,11 +574,13 @@ export async function readLocalUnifiedCompanionProjection({
             addUsageToPeriod(period.summary, projection);
           }
         }
-        addTimelineUsage(
-          projection.isSpark ? sparkTimelineBuckets : timelineBuckets,
-          observedMs,
-          projection,
-        );
+        if (!projection.isSeparateAllowance || projection.isSpark) {
+          addTimelineUsage(
+            projection.isSpark ? sparkTimelineBuckets : timelineBuckets,
+            observedMs,
+            projection,
+          );
+        }
       }
     }
     if (workCollector) {

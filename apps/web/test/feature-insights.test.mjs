@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { cacheImpactFromHostedCurve, cacheImpactFromHostedWindow, exampleCacheImpact, exampleModelSpeeds, hostedCacheWindow } from '../public/feature-insights.js';
 import { cacheReuseMatrixBuckets } from '../public/cache-reuse-matrix.js';
 import { normalizeModelPerformance } from '../public/model-performance.js';
+import { PUBLIC_ALLOWANCE_MODEL_CONFIG } from '../public/community-data.js';
 test('synthetic cohorts satisfy the real cache matrix contract and preserve volumes',()=>{
  const impact=exampleCacheImpact(); const rows=cacheReuseMatrixBuckets(impact);
  // Ten buckets, each rendered as measured. The previous vocabulary ended in
@@ -23,7 +24,13 @@ test('synthetic cohorts satisfy the real cache matrix contract and preserve volu
  for(const model of impact.byModel)assert.equal(cacheReuseMatrixBuckets(model).length,10);
 });
 test('all example speed periods satisfy the actual closed app contract',()=>{
- for(const period of ['7','30','all']) for(const speedMode of ['standard','fast']) {const payload=exampleModelSpeeds(period,speedMode);assert.equal(normalizeModelPerformance(payload),payload);assert.equal(payload.speedMode,speedMode);if(speedMode==='fast')assert.deepEqual(payload.models,[]);}
+ for(const period of ['7','30','all']) for(const speedMode of ['standard','fast','ultrafast']) {const payload=exampleModelSpeeds(period,speedMode);assert.equal(normalizeModelPerformance(payload),payload);assert.equal(payload.speedMode,speedMode);if(speedMode!=='standard')assert.deepEqual(payload.models,[]);}
+ // The public demo shows the comparison the public page pins, and never names
+ // a roster model held back until the served catalog adds it.
+ assert.deepEqual(exampleModelSpeeds('all').models.map(model=>model.id),
+  PUBLIC_ALLOWANCE_MODEL_CONFIG.filter(model=>model.pinned).map(model=>model.modelId));
+ assert.ok(!JSON.stringify(exampleModelSpeeds('all')).includes('gpt-6.1-sol'));
+ assert.ok(!JSON.stringify(exampleModelSpeeds('all')).includes('GPT-6.1 Sol'));
 });
 test('changing period preserves the same daily observations and varying sample sizes',()=>{
  const week=exampleModelSpeeds('7'),month=exampleModelSpeeds('30');

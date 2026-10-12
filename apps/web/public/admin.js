@@ -14,7 +14,8 @@ import {
   V11_ADOPTION_OUTCOMES,
 } from "./admin-client.js";
 import { formatNumber, formatReportingTime } from "./ui-format.js";
-import { COMMUNITY_ALLOWANCE_PRO10_NORMALIZATION, planWeeklyApiEquivalentUsd } from "./community-data.js";
+import { COMMUNITY_ALLOWANCE_NORMALIZATION, COMMUNITY_ALLOWANCE_PRO10_NORMALIZATION,
+  planWeeklyApiEquivalentUsd } from "./community-data.js";
 import { allowanceModelPresentation, modelThemeIcon } from "./community-view.js";
 
 const state = {
@@ -1220,7 +1221,7 @@ function growthPlanCohortCard(snapshots) {
     const item = document.createElement("li");
     const name = document.createElement("span");
     name.className = "admin-plan-name";
-    name.textContent = row.plan;
+    name.textContent = ADMIN_ALLOWANCE_PLAN_STYLES[row.plan]?.label ?? row.plan;
     const stat = document.createElement("span");
     stat.className = "admin-plan-stat";
     const people = `${count(row.people)} on plan`;
@@ -2567,9 +2568,26 @@ const ADMIN_ALLOWANCE_PLAN_STYLES = Object.freeze({
   promax: Object.freeze({ className: "allowance-series-3" }),
 });
 
+// The public v1.5 normalization, spelled here rather than imported: this module
+// ships in the Worker's admin bundle while community-data.js is a separately
+// deployed public asset. A community-data.js that predates v1.5 then only
+// omits the Pro 20x-with-Pro-Max own-week line; the module still links.
+const ADMIN_ALLOWANCE_PRO20_PROMAX_NORMALIZATION = "pro_x1_prolite_x4_promax_x0_8_plus_x20";
+
+// Each validated preview basis names its reference unit and the public
+// normalization whose inverse gives a plan's own week. Exhaustive over the
+// bases projectAdminAllowancePreview accepts.
+const ADMIN_ALLOWANCE_REFERENCES = new Map([
+  ["seven_day_codex_pro20x_equivalent_personal_plans_trailing_30d_preview",
+    Object.freeze({ label: "Pro 20×", normalization: COMMUNITY_ALLOWANCE_NORMALIZATION })],
+  ["seven_day_codex_pro10x_equivalent_personal_plans_trailing_30d_promax25_preview",
+    Object.freeze({ label: "Pro 10×", normalization: COMMUNITY_ALLOWANCE_PRO10_NORMALIZATION })],
+  ["seven_day_codex_pro20x_equivalent_personal_plans_trailing_30d_promax25_preview",
+    Object.freeze({ label: "Pro 20×", normalization: ADMIN_ALLOWANCE_PRO20_PROMAX_NORMALIZATION })],
+]);
+
 function adminAllowanceReference(preview) {
-  return preview.basis === "seven_day_codex_pro10x_equivalent_personal_plans_trailing_30d_promax25_preview"
-    ? "Pro 10×" : "Pro 20×";
+  return ADMIN_ALLOWANCE_REFERENCES.get(preview.basis)?.label ?? "Pro 20×";
 }
 
 function adminAllowancePlanLabel(plan) {
@@ -3160,7 +3178,7 @@ function appendPlanAllowanceSummaries(container, preview) {
       : "Middle 80% unavailable";
     item.append(label, value);
     const planUsd = planWeeklyApiEquivalentUsd(latest?.summary.centralUsd, plan.planType,
-      adminAllowanceReference(preview) === "Pro 10×" ? COMMUNITY_ALLOWANCE_PRO10_NORMALIZATION : undefined);
+      ADMIN_ALLOWANCE_REFERENCES.get(preview.basis)?.normalization ?? null);
     if (planUsd !== null) {
       const actual = document.createElement("p");
       actual.className = "allowance-plan-value";

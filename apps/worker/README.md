@@ -229,7 +229,7 @@ routes have been retired. Hosted export, security reset, and selected-device
 management remain exact Worker session surfaces but are not granted through
 the loopback participant relay.
 
-Confirmed **Disconnect this Mac** uses the existing device-disconnect path;
+Legacy confirmed **Disconnect this Mac** uses the existing device-disconnect path;
 it preserves hosted and local history. Private owner erasure instead uses
 `POST /api/v1/admin/action` with `action: "run_maintenance"` and an explicit
 `participantErasure` object containing the exact `participant:<UUID>` target
@@ -283,6 +283,27 @@ Deploying Worker code does not apply D1 migrations. Applying D1 migrations does
 not deploy code. For schema-dependent changes, locally prove both pre-migration
 refusal and post-migration behavior, then follow the
 [production operations runbook](../../docs/runbooks/production-operations.md).
+
+The thin edge (`src/edge-entry.ts`) deploys only through the typed path with
+`--edge-mode worker|fenced|gcp`. The checked-in `wrangler.jsonc` still names
+`src/index.ts`. The edge's release-guard D1 has its own
+`release-guard-migrations/` directory, which no deploy applies.
+`npm run edge:scripts-check` runs the edge script checks, then
+`npm run edge:modes:dry-run`, the credential-free bundle of each mode, and then
+`npm run staging-edge:scripts-check`. That last script checks the typed
+staging-edge driver (`npm run staging-edge`, STG-DRV) and runs its offline
+rehearsal dry run. Every staging-edge subcommand is a dry run unless given
+`--execute`. Render and deploy take the same production isolation inputs,
+including the production EP-8 fence plan, and refuse any production Worker,
+hostname, D1, bucket, rate-limit namespace or origin value. The staging
+analytics D1 takes production's `d1_storage_migrations` ledger through the
+`storage-*` subcommands (the d1-storage runner); render never gives it a
+Wrangler migration config. The committed template, example inputs and stand-in
+cron Worker live in `ops/staging-edge/`. These scripts need a Node.js release
+that strips TypeScript types by default. The
+[production edge modes runbook](../../docs/runbooks/production-edge-modes.md)
+governs these operations. It is not operational until the first typed
+worker-mode edge deploy.
 
 R2 update publication, contribution quarantine/reconciliation, D1 mutation,
 collection controls, enrollment grants, key rotation, and remote migration are

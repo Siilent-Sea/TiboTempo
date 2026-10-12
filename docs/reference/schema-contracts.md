@@ -25,8 +25,8 @@ versioning, and retirement rules.
 | Telemetry browser mirror | Telemetry contract package/source | Browser-consumable generated mirror | `npm run telemetry:browser:check` |
 | Public model identity mirror | `packages/telemetry-contract/src/model-catalog.js` only | `apps/web/public/model-catalog.generated.js`; excludes telemetry and admin-history contracts | `npm run telemetry:browser:check` and browser parity/public-asset isolation tests |
 | Reviewed model identities and admin history | `packages/telemetry-contract/src/model-catalog.js` and `admin-model-history.js` | Public package exports and the telemetry browser mirror; closed export/upload model enums checked against the catalog | Catalog tests, `npm run telemetry:check`, browser and upload mirror checks |
-| Export set v0.1/v0.2 | `schemas/export-set-v0.1/` and `schemas/export-set-v0.2/` | None; controllers/verifiers consume the schemas. | Export schema/controller tests |
-| Export deletion v0.1 | `schemas/export-deletion-v0.1/` | Journal, preflight, commit marker, and receipt are one transaction family. | Export deletion tests |
+| Export set v0.1/v0.2/v0.3 | `schemas/export-set-v0.1/`, `schemas/export-set-v0.2/` and `schemas/export-set-v0.3/` | None; controllers/verifiers consume the schemas. | Export schema/controller tests |
+| Export deletion | `schemas/export-deletion-v0.1/` and `schemas/export-deletion-v0.2/journal.schema.json` | v0.2 journal admits the current manifest; retained preflight, commit marker and receipt stay v0.1. | Export deletion tests |
 | Workspace discard v0.1 | `schemas/export-workspace-discard-v0.1/` | Journal, preflight, commit marker, and receipt are one transaction family. | Workspace discard tests |
 | Product synthetic v0.1 | `schemas/product-synthetic-v0.1/` | Contribution and encrypted envelope schemas. | Worker/local acceptance tests |
 | Provider accounting snapshot | `schemas/provider-accounting-snapshot-v0.1.schema.json` | None. | Accounting/export tests |
@@ -51,9 +51,9 @@ The root schema families are grouped as follows:
 | `telemetry-contribution-v1.1/` | 8 | Generated attribution, usage, quota, session, chunk, envelope, day-manifest and complete-domain-manifest contracts. |
 | `telemetry-contribution-v1.2/` | 8 | Independently authorized successor with nullable continuity and non-additive cache-write TTL detail; hosted runtime starts staged. |
 | `telemetry-performance-v1/` | 2 | Independent staged daily measurement and histogram contracts; not a v1.2 usage stream. |
-| `export-deletion-v0.1/` | 4 | Recoverable deletion preflight/journal/commit/receipt. |
+| `export-deletion-v0.1/`, `export-deletion-v0.2/` | 5 | Recoverable deletion preflight/commit/receipt and both immutable journal versions. |
 | `export-workspace-discard-v0.1/` | 4 | Recoverable workspace-discard preflight/journal/commit/receipt. |
-| `export-set-v0.1/`, `export-set-v0.2/` | 2 | Versioned export-set manifests. |
+| `export-set-v0.1/`, `export-set-v0.2/`, `export-set-v0.3/` | 3 | Versioned export-set manifests. |
 | `product-synthetic-v0.1/` | 2 | Synthetic contribution and encrypted envelope. |
 | Claude, provider accounting, release manifest, R7 release, R7 resource | 5 | One schema per listed family. |
 
@@ -107,7 +107,7 @@ allowance. Unknown labels are withheld or fingerprinted at the existing export
 boundary, never copied into admin labels. Legacy telemetry enum positions remain
 stable; newly reviewed values append.
 
-The export registry advances to `telemetry-v0.1-registry-2026-09-03.1` with its
+The export registry advances to `telemetry-v0.1-registry-2026-09-29.1` with its
 closed schema and generated compatibility dictionary. Disabled legacy upload
 contracts remain disabled; this vocabulary change does not enable contribution
 or alter consent. Reparse retained source before claiming to recover a model that
@@ -115,12 +115,55 @@ an older extractor normalized to unknown. Admin model history has an independent
 versioned compact projection; historical absence is not zero observations for a
 newly added model.
 
+### Performance speed vocabulary and retained authorization
+
+The performance dictionary advances to `telemetry-performance-registry-2026-09-29.1`
+for the appended GPT-6.1 Sol identity and separate Ultrafast cohort. Existing
+enum positions stay stable. Worker isolation migration
+`0013_performance_ultrafast.sql` admits the new dictionary without rewriting
+historical migration `0009`. Historical reports and their Sep21 authorizations
+retain their original dictionary; they remain readable and erasable, rather
+than authorizing the expanded contract. New writes require the Sep29
+dictionary and matching current authorization. Local SQL tests cover historical
+preservation, refusal before migration, old-consent refusal, new admission,
+rollback, retry and erasure. Remote application remains a separate gate: the
+existing historical forward operator has closed pins through `0009`, so `0013`
+needs an environment-specific reviewed migration plan and rehearsal.
+The independent performance activation predicate requires the exact `0009` and
+`0013` ledger hashes and both current cohort dictionary triggers. Usage
+activation does not acquire those performance requirements. Migration `0013`
+preserves runtime state while incrementing the existing policy revision; an
+activation request must use the reconciled current revision rather than an
+assumed initial value.
+
 ## Compatibility and versioning
 
 Use a new contract version when a consumer could assign a different meaning to
 the same valid bytes. Additive fields are not automatically compatible when
 objects are closed; producer, consumer, consent, storage, relay, public
 projection, and deletion/export paths must declare the same transition.
+
+Local API valuation methodology is `provider-neutral-api-price-equivalent-v0.3`
+and replay materialization is `local-replay-safe-accounting-v0.19`. Current
+companion readers and writers require `source_native` context behavior: absent
+context remains unavailable rather than becoming observed zero. An inferred
+input total is usable only when its component observations are complete; known
+explicit context, including observed zero, remains authoritative. The memoized
+pricer derives context thresholds from the reviewed public cards and falls back
+to the full ledger for incomplete evidence. Old materialization is withheld for
+rebuild; an explicitly requested `legacy_zero` compatibility adapter retains its
+original meaning rather than becoming the current default. This does not
+rewrite stored source observations or alter retained price-card evidence.
+
+The v0.19 materialization separates explicitly classified auto-review events
+from the primary allowance beginning at the inclusive UTC policy boundary
+`2026-10-06T00:00:00.000Z`. Its local archive accounting projection is
+`local-archive-accounting-projection-v3`. Earlier materializations are not
+current results; an existing explicitly stale projection may remain visible
+until a complete replacement is published. Tokens, components, exact API-price
+evidence and source provenance are preserved. Spark retains its distinct
+usage/quota series. This local policy does not widen the hosted telemetry
+vocabulary or change the provider-neutral API valuation methodology.
 
 A version change includes:
 
@@ -136,6 +179,28 @@ A version change includes:
 
 Do not weaken a schema or test to accept an already-invalid payload. Fix the
 producer or introduce an explicit reviewed version transition.
+
+### Local export manifest v0.3
+
+New local sets use `usage-export-set-manifest-v0.3`, with its own schema digest,
+contract and manifest receipt version. Its source-file ceiling is 100,000,
+matching the existing runtime policy across the combined Codex and supplemental
+source plans. The v0.1/v0.2 schema bytes and 5,000-file ceiling remain unchanged;
+an oversized old-version manifest remains invalid. All byte, record, chunk,
+workspace, time and memory limits are unchanged. Packing, gzip representation,
+chunk identities and telemetry compatibility tuples are unchanged.
+
+Current readers still validate and verify both retained versions under their
+existing compatibility checks. A completed v0.2 set can be retried without
+rewriting it only when its manifest and receipt validate and every field other
+than the version-specific manifest header exactly matches the recomputed set.
+Incomplete compressed output resumes to v0.3; plain v0.1 rematerialization still
+fails closed rather than mixing representations. New deletion plans use journal
+v0.2, which explicitly admits the three supported manifest versions. Committed
+v0.1 deletion journals retain their original validator and canonical hash checks,
+so recovery does not restamp or reinterpret their bytes. Unknown versions fail
+closed. This local-only transition does not change hosted contribution contracts
+or qualify the protected R7 release evidence.
 
 ### Staged account/plan attribution contract
 
@@ -164,6 +229,21 @@ is required, not permission to delete it to make an upgrade succeed.
 The v1.1 wire format does not carry a complete quantity-interval proof. Hosted
 allowance remains explicitly conditional even when a record has an account
 pseudonym. This is not a provider-authoritative account billing contract.
+
+The source- and binary-verified `promax` identifier is accepted by local v0.1
+export and staged v1.1/v1.2 schemas. The frozen v0.2
+contribution schema retains its original vocabulary: its local projection
+writes `unknown` for this value, while v1.1/v1.2 can retain the exact identifier.
+On 2026-10-04 UTC, reviewed ChatGPT-bundled and PATH `codex-cli 0.160.0` each
+generated `promax` among 18 `PlanType` values. The
+[Codex 0.160.0 source](https://github.com/openai/codex/blob/a956835d020762cb2b570053af06f643a11c0ecc/codex-rs/protocol/src/auth.rs)
+also confirms its raw value and display name. The ledger marks the identifier
+active, records path-free binary provenance, and passes the required-binary
+contract check. Product expectations name `pro` Pro 10x and `promax` Pro Max
+25x, without changing the existing `pro` identity or discarding its history.
+These ratios are product expectations; provider-authoritative allowance and
+window semantics remain unverified. Enum verification does not establish those
+capacities or qualify a TiboTattle release artifact.
 
 ## Staged continuity successor v1.2
 
@@ -257,11 +337,11 @@ capability and authorization routes, encrypted report delivery, typed cohort and
 bucket storage, idempotent per-device report revisions, and owner-erasure/restore
 coverage. Usage consent cannot authorize performance. Local timing source and
 scheduler integration are qualified separately from hosted chart publication.
-Timing SQLite schemas advance from 2/3 to 4/5 while parser methods remain 2/3.
-Older writers refuse the upgraded stores. Old rows retain existing TPS/TTFT
+Timing SQLite schemas advance to primary 6 and supplement 7 while parser methods remain 2/3. Source parser version 18 recognizes GPT-6.1 Sol and Ultrafast. Still-present, verified sources replay through bounded staging; completed old rows remain readable through cancellation and restart until the final verified chunk atomically replaces them. Missing or rewritten sources retain their last good rows and prior parser provenance. Older writers refuse the upgraded stores.
+Old rows retain existing TPS/TTFT
 with unavailable new fields. Receipt timing
 wins when qualified; tool-free timing is a single-sample fallback, never a
-second speed sample for the same turn. The field dictionary is `telemetry-performance-registry-2026-09-21.1`.
+second speed sample for the same turn. The field dictionary is `telemetry-performance-registry-2026-09-29.1`.
 The [performance specification](../design/2026-09-20-performance-telemetry-contract.md)
 records the measurement, overlap, policy, delivery, erasure, restore and UI requirements.
 Those gates must not delay continuity collection or alter cache calculations.

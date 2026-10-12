@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { chmodSync } from "node:fs";
 import {
   chmod,
   cp,
@@ -1305,7 +1306,7 @@ test("an entrypoint that loosens the socket directory fails CI_SOCKET_DIR_MODE_C
   await withPrivateTmp(async (paths) => {
     const docker = fakeDocker({
       onRun: () => {
-        spawnSync("chmod", ["3775", join(paths.workDirectory, "socket")]);
+        chmodSync(join(paths.workDirectory, "socket"), 0o3775);
       },
     });
     await assert.rejects(startCiPostgres({

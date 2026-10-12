@@ -73,3 +73,42 @@ reserves `0.1.24` → `1031` for both Mac architectures, preserving every earlie
 allocation. The independently selected provenance build remains separate.
 This allocation permits candidate preparation and does not establish signing,
 installed qualification, update delivery, or publication.
+
+## 2026-09-26 amendment: published 0.1.24 allocation
+
+The `1031` candidate above was superseded before publication after its
+native-upgrade qualification exposed startup diagnostics occupying the migration
+target. The released 0.1.24 allocation is `1032` for both Mac architectures, as
+recorded in `config/macos-bundle-version-plan.cjs`. A successor stable version
+requires a new reviewed allocation; neither `1031` nor an inferred next number
+is available for it. Allocation alone remains separate from signed-artifact and
+installed-update evidence.
+
+## 2026-09-26 amendment: 0.1.25 candidate allocation
+
+For the 0.1.25 successor, allocate stable Mac bundle version `1033` to both
+architectures. This follows the released 0.1.24 allocation `1032`; the
+superseded unpublished `1031` candidate is not reused. The provenance build
+number remains independent. This allocation enables candidate packaging and
+does not claim signing, notarization, installed qualification, or publication.
+
+## 2026-09-27 amendment: 0.1.26 successor allocation
+
+The owner selected 0.1.26 after holding the signed but unpublished 0.1.25
+candidate. Allocate stable Mac bundle version `1034` to both architectures,
+following 0.1.25's `1033` without reusing or altering its tag or artifacts.
+The independently selected provenance build number still binds each new
+artifact. This allocation does not claim a signed build, installed credential
+qualification, updater delivery, or publication.
+
+## 2026-10-03 amendment: 0.1.27 successor allocation
+
+For the successor to the published 0.1.26 release, allocate stable Mac bundle
+version `1035` to both architectures. This follows `1034` and preserves every
+earlier allocation. Read-only GitHub checks on 2026-10-03 found no `v0.1.27`
+tag or release, and the source allocation plan contained no `1035` reservation.
+The independently selected provenance build number is `2026100301`, based on
+the 2026-10-03 client date in America/New_York. It identifies the exact candidate
+and its receipts; it must not substitute for the Apple bundle version.
+Allocation enables candidate preparation and does not establish a signed or
+notarized artifact, installed qualification, updater delivery, or publication.

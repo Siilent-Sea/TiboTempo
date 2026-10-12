@@ -78,7 +78,7 @@ async function prepare(options: { withoutEmptyDayMigration?: boolean } = {}): Pr
   await initializeTypedV11Admission(db(), namespace);
   await initializeTypedV1Admission(db(), namespace);
   const isolation = b.TEST_INGESTION_ISOLATION_MIGRATIONS;
-  for (const name of [EMPTY_DAY_MIGRATION, "0013_v12_quarantine_admission.sql", "0014_accountless_history_transfer_v12.sql"]) {
+  for (const name of [EMPTY_DAY_MIGRATION, "0014_v12_quarantine_admission.sql", "0015_accountless_history_transfer_v12.sql"]) {
     if (!isolation.some((migration) => migration.name === name)) throw new Error(`missing isolation migration ${name}`);
   }
   await applyD1Migrations(db(), isolation.filter((migration) =>

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { planWeeklyApiEquivalentUsd } from "../public/community-data.js";
+import { planWeeklyApiEquivalentUsd, COMMUNITY_ALLOWANCE_PRO10_NORMALIZATION } from "../public/community-data.js";
 import { allowanceModelPresentation } from "../public/community-view.js";
 
 const DAY_MILLISECONDS = 24 * 60 * 60 * 1_000;
@@ -101,9 +101,9 @@ function allowancePreview() {
   const fromMs = Date.parse("2026-06-15T00:00:00.000Z");
   return {
     plans: [
-      { planType: "pro", label: "Pro 20x", multiplier: 1 },
-      { planType: "prolite", label: "Pro 5x", multiplier: 4 },
-      { planType: "plus", label: "Plus", multiplier: 20 },
+      { planType: "pro", label: "Pro 10x", multiplier: 1 },
+      { planType: "prolite", label: "Pro 5x", multiplier: 2 },
+      { planType: "plus", label: "Plus", multiplier: 10 },
     ],
     days: Array.from({ length: 70 }, (_, index) => {
       const day = new Date(fromMs + index * DAY_MILLISECONDS)
@@ -132,7 +132,7 @@ function allowancePreviewWithModels() {
       { modelId: "gpt-5.6-luna", label: "Luna" },
       { modelId: "gpt-5.5", label: "GPT-5.5" },
     ],
-    basis: "seven_day_codex_pro20x_equivalent_per_model_composition",
+    basis: "seven_day_codex_pro10x_equivalent_per_model_composition",
     gate: "shared_composition_kernel_identification",
     days: lastDays.map((day, index) => ({
       day,
@@ -293,7 +293,7 @@ test("allowance preview switches series without changing its numerical axes", as
   assert.equal(combined.bandSegments[0].length, 30);
 
   assert.deepEqual(plans.series.map((series) => series.label), [
-    "Pro 20×",
+    "Pro 10×",
     "Pro 5×",
     "Plus",
   ]);
@@ -355,17 +355,18 @@ test("allowance preview exposes the complete honest 70-day range", async () => {
 });
 
 test("actual-plan weekly dollars invert the canonical basis before rounding and preserve zero", () => {
-  assert.equal(planWeeklyApiEquivalentUsd(2_050.75, "pro"), 2_050.75);
-  assert.equal(planWeeklyApiEquivalentUsd(1_917.9, "prolite"), 479.475);
-  assert.equal(planWeeklyApiEquivalentUsd(1_900, "plus"), 95);
-  for (const plan of ["pro", "prolite", "plus"]) {
-    assert.equal(planWeeklyApiEquivalentUsd(0, plan), 0);
+  assert.equal(planWeeklyApiEquivalentUsd(2_050.75, "pro", COMMUNITY_ALLOWANCE_PRO10_NORMALIZATION), 2_050.75);
+  assert.equal(planWeeklyApiEquivalentUsd(1_917.9, "prolite", COMMUNITY_ALLOWANCE_PRO10_NORMALIZATION), 958.95);
+  assert.equal(planWeeklyApiEquivalentUsd(1_000, "promax", COMMUNITY_ALLOWANCE_PRO10_NORMALIZATION), 2_500);
+  assert.equal(planWeeklyApiEquivalentUsd(1_900, "plus", COMMUNITY_ALLOWANCE_PRO10_NORMALIZATION), 190);
+  for (const plan of ["pro", "prolite", "promax", "plus"]) {
+    assert.equal(planWeeklyApiEquivalentUsd(0, plan, COMMUNITY_ALLOWANCE_PRO10_NORMALIZATION), 0);
   }
   for (const value of [null, undefined, "1917.9", NaN, Infinity, -Infinity, -1]) {
-    assert.equal(planWeeklyApiEquivalentUsd(value, "prolite"), null);
+    assert.equal(planWeeklyApiEquivalentUsd(value, "prolite", COMMUNITY_ALLOWANCE_PRO10_NORMALIZATION), null);
   }
   for (const plan of [null, undefined, "unknown", "team", "__proto__", "constructor"]) {
-    assert.equal(planWeeklyApiEquivalentUsd(1_900, plan), null);
+    assert.equal(planWeeklyApiEquivalentUsd(1_900, plan, COMMUNITY_ALLOWANCE_PRO10_NORMALIZATION), null);
   }
 });
 

@@ -19,7 +19,7 @@ export function exampleCacheImpact() {
     for(const row of Object.values(byOutcomeBucket)) for(const key of ['comparableReturns','reusedMoreThanHalfReturns','reusedHalfOrLessReturns','matchedOrExceededReturns','reusedBetweenHalfAndPreviousReturns','cacheReadDrops','lostCacheTokens','pricedDrops','unpricedDrops','estimatedPremiumUsd']) total[key]=(total[key]??0)+row[key];
     return total;
   };
-  const models=[cohort('gpt-5.5',.6),cohort('gpt-5.4',.4)];
+  const models=[cohort('gpt-6-astra',.6),cohort('gpt-6-sol',.4)];
   const all=cohort('',0);
   for(const id of ids)for(const key of Object.keys(models[0].byOutcomeBucket[id]))if(!['startSeconds','endSeconds','coverageStatus'].includes(key))all.byOutcomeBucket[id][key]=models.reduce((sum,m)=>sum+m.byOutcomeBucket[id][key],0);
   for(const key of Object.keys(models[0]))if(typeof models[0][key]==='number')all[key]=models.reduce((sum,m)=>sum+m[key],0);
@@ -32,9 +32,12 @@ export function exampleModelSpeeds(period='all', speedMode='standard') {
   const activity=[42,67,31,85,56,12,7,49,104,73,38,61,19,9,54,88,126,46,72,14,5,65,97,43,112,58,21,8,76,51];
   const speeds=[62,58,71,47,53,79,66,60,39,51,68,57,74,82,63,48,44,59,70,76,64,55,41,67,50,61,78,69,56,65];
   const latency=[1.4,2.1,1.1,3.8,1.7,.9,1.6,2.3,4.9,2.6,1.3,1.8,1.2,.8,2.7,1.9,3.4,1.5,2.2,1.1,1.8,3.1,2.4,1.2,4.2,1.7,.9,1.4,2.8,1.6];
-  if (!['standard','fast'].includes(speedMode)) throw new RangeError('Unsupported speed mode');
+  if (!['standard','fast','ultrafast'].includes(speedMode)) throw new RangeError('Unsupported speed mode');
   return {schemaVersion:5,method:5,speedMode,excludedUnknownTurns:0,status:'ready',collecting:false,stale:false,updatedAt:new Date(end+86400000-1).toISOString(),period,interval:'day',start,end,historyProgress:null,
-    models:speedMode==='fast'?[]:[['gpt-5.5','GPT-5.5'],['gpt-5.4','GPT-5.4']].map(([id,label],index)=>{
+    models:speedMode!=='standard'?[]:[
+      ['gpt-6-astra','Astra'],['gpt-6-sol','GPT-6 Sol'],['gpt-6-luna','GPT-6 Luna'],
+      ['gpt-5.6-terra','Terra'],['gpt-5.6-sol','Sol'],['gpt-5.6-luna','Luna'],
+    ].map(([id,label],index)=>{
       const history=activity.map((count,i)=>{
         const j=(i+index*9)%30, n=Math.max(3,Math.round(count*(index ? .62 : 1)));
         const at=end-(29-i)*86400000, median=speeds[j]+index*8;
@@ -104,22 +107,6 @@ export function mountExampleInsights(doc,t,loadHostedCurve) {
       });
       chooser.append(group,note);
       demo?.insertBefore(chooser,demo.querySelector('[data-cache-demo]'));
-      // Stated from the measurement, never a fixed figure: it moves with the
-      // period, and on a corpus with no ties it says nothing at all rather
-      // than disclosing a caveat that does not apply.
-      const ties=doc.createElement('p');
-      ties.className='insight-demo-ties';
-      const showTies=()=>{
-        const total=impact.comparableReturns,count=impact.unorderedTies??0;
-        const share=total>0?count/total:0;
-        ties.hidden=count===0;
-        ties.textContent=count===0?'':t('accounting.cacheContinuity.matrix.unorderedTies',
-          {count:new Intl.NumberFormat(locale()).format(count),
-           percent:new Intl.NumberFormat(locale(),{maximumFractionDigits:1}).format(share*100)+'%'});
-      };
-      showTies();
-      for(const button of buttons)button.addEventListener('click',showTies);
-      demo?.insertBefore(ties,demo.querySelector('[data-cache-demo]'));
     }).catch(()=>{});
   }
   const win=doc.defaultView;

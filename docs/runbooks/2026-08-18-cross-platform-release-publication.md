@@ -463,20 +463,20 @@ asset differs from the manifest, stop all downstream publication.
 
 ### macOS
 
-The existing local finalizer is scripts/release-macos-app.js. It must finish
+The Electron production builder and its reviewed finalization flow must finish
 Developer ID signing, hardened runtime, Apple notarization, ticket stapling,
-Gatekeeper assessment, and clean installation before freezing the DMG. The
-protected GitHub native finalizer still needs a real caller workflow with the
-permissions above, pinned actions, protected environments, exact-tag checks,
-and a fresh draft-to-published verification rehearsal. Until then, do not
-claim GitHub source/build provenance for the local DMG.
+Gatekeeper assessment, and clean installation before freezing each DMG. The
+[macOS runbook](./macos-stable-release-runbook.md) owns both architectures,
+installed update qualification, and the two incoming native Sparkle feeds.
+The protected GitHub finalizer needs the permissions above, pinned actions,
+protected environments, exact-tag checks, and draft-to-published verification
+before claiming hosted source/build provenance for the exact final bytes.
 
 #### Private Electron native-handover rehearsal
 
 The Electron path uses
 [`scripts/package-electron-production.mjs`](../../scripts/package-electron-production.mjs)
-and its fixed production builder configuration; the native Sparkle finalizer
-above is not an Electron finalizer. This private rehearsal proves specific
+and its fixed production builder configuration. This private rehearsal proves specific
 candidate operations, not stable release or platform support. Complete each
 step for both `darwin-arm64` and `darwin-x64` and for the explicitly approved
 ordered pair of prerelease versions. Never infer a build number or allocate a
@@ -549,6 +549,60 @@ native Windows x64 clean install/upgrade/uninstall and host-access behavior,
 sign nested executables and the final package with Authenticode, and use a
 trusted SHA-256 timestamp. Add the native finalizer and manifest entry only
 after those checks pass. Microsoft Store output is a separate subject.
+
+#### Final signed installer upgrade
+
+The signing workflow and the default frozen-installer qualification prove a
+fresh installed journey. For 0.1.28, also run the separate installer-upgrade
+mode of `electron-windows-installer-diagnostic.yml` against the exact final
+signing artifact. Select a reviewed runner ref and provide `qualify_installed`
+and `qualify_upgrade` as `true`, the exact `source_revision`, `signing_run_id`,
+`artifact_id`, `installer_sha256`, and a `predecessor_intake` JSON object matching
+`WINDOWS_FINAL_UPGRADE_PREDECESSOR` in
+`scripts/smoke-electron-windows-final-upgrade.mjs`. Omit the upgrade mode and
+predecessor intake for the retained diagnostic/fresh-install lanes. The
+replacement successor is explicitly 0.1.28 with provenance build `2026100901`;
+its `tibotattle-windows-final-upgrade-v2` receipt records both fields. The
+historical 0.1.27 / `2026100301` route keeps its v1 receipt. Neither route accepts
+another version/build pair or reuses installed proof from the other.
+
+The predecessor is the immutable published
+[0.1.26 release](https://github.com/adamallcock/tibotattle/releases/tag/v0.1.26).
+The closed intake pins its source revision, manifest digest, installer digest,
+size, version and target; it accepts no caller-selected URL or stable-feed
+substitution. The wrapper verifies the immutable GitHub release and pinned
+public manifest before downloading its fixed Windows installer. Native
+Authenticode checks require the expected publisher and timestamp before either
+installer is extracted or executed. Extracted comparison stages are explicitly
+marked as such; they are not independent pre-signing evidence or rebuilt apps.
+
+The native Windows x64 lane installs 0.1.26 into a new owned NSIS directory and
+creates one isolated synthetic profile. Its normal rendered journey ingests
+representative history/projects, sets a preference and verifies durable opt-out.
+The lane proves exit of the predecessor's observed main/companion process tree
+using retained process identities, then runs the exact signed 0.1.28 installer
+into the same owned installation without recreating or reseeding the profile.
+It requires profile byte equality across the installer operation. Afterward,
+normal runtime migration/cache updates are allowed: two successor launches
+must instead prove retained history, project/thread views, settings, opt-out,
+local refresh, clean quit and cold restart, bound to the successor's exact
+ASAR, executable, source metadata and native closure.
+
+Retain `frozen-reference.json`, `frozen-predecessor-reference.json` and
+`windows-final-upgrade.json`. Success requires the owned successor uninstall,
+registry absence, app-process quiescence, firewall removal and profile cleanup.
+An unsettled installer, live descendant or unproven ownership refuses cleanup
+and fails the disposable run. The separate fresh-install receipt remains the
+source of `cleanInstallSmokePassed`; do not add a manifest assurance merely
+because this additional gate exists.
+
+This proves replacement by the signed NSIS installer. Automatic updater
+feed/download/replacement, general existing-credential continuity and physical
+desktop notification behavior remain unqualified. The receipt retains
+`automaticUpdaterReplacement: not_exercised`,
+`credentialPersistence: not_requalified_by_this_normal_journey` and
+`productionReady: false`. A passing portable harness test is not a native
+installed result.
 
 #### Source-bound Azure builder preflight
 
@@ -658,6 +712,77 @@ missing, failed or differently bound smoke evidence refuses final qualification.
 This proves the extracted application's runtime only. AppImage mounting/launcher
 integration, physical desktop behavior and replacement of the older public
 release remain separate observations; the receipt explicitly leaves them open.
+
+The separate manual `electron-linux-final-qualification.yml` lane consumes the
+already built final package; it never rebuilds a private current/next pair. Its
+closed intake binds the reviewed runner revision, frozen application revision,
+unchanged `production-source-candidate.json`, successful production packaging
+run, package-receipt digest, final AppImage size/digest, and executable/ASAR
+digests. The application revision must be an ancestor of the runner, with the
+same package version. The explicit v2 intake admits only 0.1.28 with provenance
+build `2026100901`; v1 retains 0.1.27 / `2026100301`. Both use the immutable public
+[0.1.26 release](https://github.com/adamallcock/tibotattle/releases/tag/v0.1.26);
+its manifest and AppImage digests are pinned in
+`scripts/lib/linux-final-artifact-intake.mjs`. Earlier owner acceptance is not
+reused for the new bytes.
+
+Dispatch `mode=plan` first with the reviewed intake. Both modes install the
+locked verifier dependencies; plan stops before artifact downloads or application
+execution. `mode=execute` also requires
+`RUN_DISPOSABLE_FINAL_LINUX_LIFECYCLE`. The owning preparation entrypoint is
+`scripts/qualify-electron-linux-installed-lifecycle.mjs` (`--preflight`,
+`--acquire`, then `--prepare`); downloads require the workflow's read-only token.
+It rejects other workflow sources, incomplete runs, unexpected ZIP members,
+links, changed receipts and different artifact bytes. Extraction establishes
+comparison hashes only and is never counted as installed execution.
+
+The native x64 job requires `/dev/fuse`, the scoped `SYS_ADMIN` capability and
+FUSE device, an ordinary AppImage launcher, enabled Chromium sandbox, Xvfb and
+an isolated Secret Service. There is no extract-and-run fallback, external
+network, host profile mount, system credential access, signing or publication.
+`scripts/smoke-electron-linux-final-lifecycle.mjs` binds kernel FUSE mounts,
+process start identities, running executable and ASAR hashes to the installed
+image. It observes a fresh synthetic profile, local refresh and credential
+access, rejection of an intentionally mismatched feed checksum without replacing
+the predecessor, the public predecessor's real Settings download/install/restart,
+exact-byte replacement, settings/opt-out/source and credential continuity,
+cold restart, no-update behavior, owned uninstall and process/mount cleanup.
+The fixed production feed URL is served only inside the network-none container.
+
+The host entrypoint `scripts/run-electron-linux-final-lifecycle.mjs` performs a
+fresh five-case causal AppArmor comparison in the same job: baseline denials for
+both exact images, permitted mounts for both under the one narrow owned
+candidate profile, and an outside-nonce negative control. Only after all five
+cases pass may the ordinary lifecycle use that exact still-loaded profile and
+nonce. Profile definition, successful-add ownership, parser/import bindings and
+enforce state are rechecked before and after use. No prior run's randomly named
+profile is treated as equivalent to this one. The diagnostic CLI remains
+mount-only, and its comparison receipt remains diagnostic-only.
+
+The host allows removal only after recorded container closure and the helper's
+independent absence-of-profile-actors check. Its `--cleanup` recovery command
+binds the recorded container ID, run/runner labels, image revision and profile;
+it never removes a container by name alone. A failed lifecycle can retain valid
+causal diagnosis while still failing host qualification.
+
+Retain the original pair, `apparmor-comparison.json`, `installed-lifecycle.json`
+and `host-lifecycle.json` with the package receipts and successful workflow/run
+and ZIP provenance. The host receipt binds all three original JSON digests and
+the exact candidate-profile identity. The replacement uses
+`tibotattle-linux-final-installed-lifecycle-v2` with
+`publicPredecessorUpdate: exact_published_0.1.26_to_final_0.1.28`; the historical
+v1 receipt keeps its 0.1.27 route. Both require the same lifecycle assertions.
+Acceptance must require the host's passed status,
+comparison/lifecycle success, no interruption and both container/profile cleanup
+before using the runtime receipt for `cleanInstallSmokePassed`. Merely uploading
+extra proof files does not update a downstream admission allowlist: update that
+consumer explicitly and verify every original-file binding.
+
+Only a passing run with all lifecycle assertions supports `cleanInstallSmokePassed`;
+missing FUSE, failed sandbox or incomplete cleanup is a failed gate. The receipt
+keeps `physicalDesktop: not_qualified`, and the isolated feed does not prove
+production updater publication. Review that scope when preparing release
+assurances; do not broaden it into a physical-desktop claim.
 
 ### Stores and updater channels
 
@@ -810,13 +935,86 @@ The lock coordinates participating writers; it does not supply conditional R2
 creation or fence legacy and external writers. Merely holding it does not prove
 immutable path admission or authorize publication.
 
+`scripts/publish-macos-qualification-artifacts.mjs` is the separate closed
+writer for the macOS qualification namespace. Its default `--plan` mode is
+local and read-only. A reviewed proposal binds the exact runner and source
+candidate, complete object set and hashes, and the concurrent production
+operation's object keys for an explicit disjointness check. Native trust
+inspection and approval of those concrete bytes remain separate prerequisites.
+
+The closed proposal schema is `tibotattle-macos-qualification-artifacts-v1`.
+It contains `identity` (the same eight fields admitted by the empty-profile
+lane), the unchanged `sourceCandidate`, `fixtureOperationId` (null without a
+fixture), `objects`, and `productionObjectKeys`. Each object contains exactly
+`family`, `localPath` relative to the artifact root, `sha256`, and `bytes`. An
+empty production key set needs the operator's verified no-overlap basis; it is
+not an inference that no production operation exists.
+
+The only admitted objects are the candidate DMG and optional signed test
+`appcast.xml` under its exact source/bundle/DMG-digest prefix, and the credential
+lane's optional sealed fixture ZIP under its exact runner/operation/archive-digest
+prefix. Object names, MIME types and cache policies are derived from those closed
+families. Arbitrary keys, stable feeds, production appcasts and deletions are not
+accepted. Optional appcasts must pass the existing signed-feed validator against
+the exact DMG; fixture archives retain the existing closed file inventory.
+
+`--prepare` reserves a new private operation inside `.release-build`, snapshots
+and verifies all local bytes before remote I/O, and retains the exact plan.
+Explicit `--publish` requires its approved digest, confirmation and the held
+immutable artifact owner. Before remote I/O, the writer verifies the parentless
+commit, empty tree and closed owner record, whose `id` matches the operation,
+`sourceCommit` names the **candidate source**, and `planSha256` binds that exact
+plan. The separately admitted runner may be a reviewed descendant. The tool
+never acquires, steals or releases the remote lock.
+
+```sh
+node scripts/publish-macos-qualification-artifacts.mjs --plan \
+  --artifact-root <verified-artifacts> --proposal <proposal.json>
+node scripts/publish-macos-qualification-artifacts.mjs --prepare \
+  --artifact-root <verified-artifacts> --proposal <proposal.json> \
+  --operation-directory <new-private-operation>
+```
+
+After exact-plan review and owner acquisition, the explicit writer is:
+
+```sh
+node scripts/publish-macos-qualification-artifacts.mjs --publish \
+  --artifact-root <verified-artifacts> --proposal <proposal.json> \
+  --operation-directory <existing-private-operation> \
+  --approved-plan-sha256 <reviewed-plan-digest> --coordination-owner <held-owner> \
+  --confirm PUBLISH_IMMUTABLE_MAC_QUALIFICATION_ARTIFACTS
+```
+
+Use the plan digest returned by preparation and the owner bound to its operation
+ID. The pinned Wrangler R2
+[streaming object commands](https://developers.cloudflare.com/workers/wrangler/commands/r2/)
+remain the transport; credentials stay in the existing secret store.
+
+The writer checks authoritative R2 state, refuses existing different bytes,
+records durable intent before each upload, and checks authoritative and public
+readback. Interrupted or uncertain writes require explicit GET-only
+`--reconcile --operation-directory <existing-private-operation>
+--approved-plan-sha256 <reviewed-plan-digest> --coordination-owner <held-owner>`.
+Reconciliation reads the retained plan and snapshots, so moved original artifacts
+or unrelated working-tree edits cannot block that read-only recovery. It still
+verifies the historical candidate/runner identities and exact held owner. A
+resumed publication is permitted only after successful reconciliation and fresh
+clean-source/local-input validation. Preserve the journal and owner until the completed result has
+been reviewed. This publishes qualification inputs only and does not qualify
+a native installation, updater journey or stable release.
+
 A separately reviewed GitHub-only release operation may use the same artifact
 coordination factory for an exact new-version draft, its complete allowlisted
 asset set, and finalization as an immutable release. Its closed plan must also
 explicitly name promotion to GitHub's `latest` release: that is a mutable
 discovery change, not an immutable object upload. Bind the source/tag, notes,
-canonical manifest/checksums and completed release-admission receipt before
-draft creation, then verify every downloaded draft and published asset. Require
+canonical manifest/checksums and a retained final admission review before draft
+creation. That review binds the completed source, installed/native and required
+live-hosted evidence to their exact receipt and artifact identities. There is no
+aggregate final-admission validator: use the existing gate-specific validators
+and review the remaining evidence explicitly. Early synthetic admission and
+canonical manifest validation alone do not establish final release readiness.
+Then verify every downloaded draft and published asset. Require
 immutable finalization and fresh `latest` identity readback before releasing the
 artifact owner. Pending qualification or owner acceptance still blocks this
 operation; accepted limits must remain explicit in the manifest and review.

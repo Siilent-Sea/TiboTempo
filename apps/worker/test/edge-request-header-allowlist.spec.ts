@@ -120,12 +120,20 @@ const DYNAMIC_HEADER_READS: readonly Readonly<{
     reason: "copies an allowlisted set of headers from a provider RESPONSE",
   },
   ...[
-    "headers.get(`${format}:${record.recordId}`)",
-    "afterHeaders.get(`${input.format}:${newRecord.recordId}`)",
-    "headers.get(`10:${record.recordId}`)",
-  ].map((expression) => ({
-    file: "../src/postgres-classification-links.ts",
-    expression,
+    {
+      file: "../src/postgres-classification-links.ts",
+      expression: "headers.get(`${format}:${record.recordId}`)",
+    },
+    {
+      file: "../src/postgres-classification-activation.ts",
+      expression: "afterHeaders.get(`${input.format}:${newRecord.recordId}`)",
+    },
+    {
+      file: "../src/postgres-classification-activation.ts",
+      expression: "headers.get(`10:${record.recordId}`)",
+    },
+  ].map((entry) => ({
+    ...entry,
     reason: "a Map of stored classification header proofs keyed by format and record id, not an HTTP header read",
   })),
 ]);

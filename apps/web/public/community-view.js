@@ -6,8 +6,9 @@ export { allowanceModelPresentation, modelThemeIcon } from "./model-visuals.js";
 // retired in favour of daily revisions, so no snapshot render path lives here
 // any more.
 
-import { normalizeCommunityDailySeries, planWeeklyApiEquivalentUsd,
-  COMMUNITY_ALLOWANCE_NORMALIZATION, COMMUNITY_ALLOWANCE_PRO10_NORMALIZATION } from "./community-data.js";
+import { chartedModelsWith, normalizeCommunityDailySeries, planWeeklyApiEquivalentUsd,
+  COMMUNITY_ALLOWANCE_NORMALIZATION, COMMUNITY_ALLOWANCE_PRO10_NORMALIZATION,
+  COMMUNITY_ALLOWANCE_PRO20_PROMAX_NORMALIZATION } from "./community-data.js";
 import {
   compact,
   compactPrecise,
@@ -116,23 +117,51 @@ function allTokens(totals) {
   ]);
 }
 
+// Presentation identities only: the API owns admission and preserves the original
+// publication. Unknown pairs must never imply current repricing.
+const PUBLISHED_SPEND_PRICING_IDENTITIES = Object.freeze({
+  historical: Object.freeze({
+    method: "server-api-price-equivalent-v0.5",
+    registry: "48119389ecbcaced58837bc24fa852c3c4a99835289b417e69f34fb0166a63b9",
+  }),
+  current: Object.freeze({
+    method: "server-api-price-equivalent-v0.6",
+    registry: "d57a7443bb43a756f1458872897dfcfcafdde0893433fc83b1036d58184de78d",
+  }),
+});
+
+function publishedSpendPricingIdentity(spend) {
+  for (const [identity, pair] of Object.entries(PUBLISHED_SPEND_PRICING_IDENTITIES)) {
+    if (spend.pricingMethodVersion === pair.method && spend.registrySha256 === pair.registry) {
+      return identity;
+    }
+  }
+  return "unknown";
+}
+
 function communityDailySpendSummary(days) {
   let knownCostUsd = 0;
   let pricedDays = 0;
   let complete = true;
+  const pricingIdentities = new Set();
   for (const day of days) {
     const spend = day.apiEquivalentSpend;
     complete &&= spend?.coverage === "complete";
     if (spend?.knownCostUsd === null || spend?.knownCostUsd === undefined) continue;
+    pricingIdentities.add(publishedSpendPricingIdentity(spend));
     knownCostUsd += spend.knownCostUsd;
     if (!Number.isFinite(knownCostUsd)) {
-      return { knownCostUsd: null, pricedDays: 0, coverage: "unavailable" };
+      return { knownCostUsd: null, pricedDays: 0, coverage: "unavailable", pricing: "unavailable" };
     }
     pricedDays += 1;
   }
   return {
     knownCostUsd: pricedDays > 0 ? knownCostUsd : null,
     pricedDays,
+    pricing: pricedDays === 0 ? "unavailable"
+      : pricingIdentities.has("historical")
+        ? pricingIdentities.size === 1 ? "historical" : "mixed"
+        : pricingIdentities.has("unknown") ? "unknown" : "current",
     coverage: pricedDays === 0 ? "unavailable" : complete ? "complete" : "partial",
   };
 }
@@ -173,7 +202,7 @@ function valueAxis(maximum, plotTop, plotBottom, minimum = 0) {
   const step = chartTickStep(top);
   const axisTop = Math.ceil(top / step) * step;
   // A zero baseline wastes most of the panel when a band sits well above it:
-  // three plans on their own axes only read if each one fills its own panel.
+  // plans on their own axes only read if each one fills its own panel.
   // The floor still snaps to a whole tick, so the gridlines stay round and the
   // axis never implies a precision the step does not have. Zero is kept when
   // the data actually reaches down toward it.
@@ -186,6 +215,24 @@ function valueAxis(maximum, plotTop, plotBottom, minimum = 0) {
     ticks.push({ value, y: y(value) });
   }
   return { axisTop, axisBase, y, ticks };
+}
+
+// Allowance estimates occupy a narrow positive range. Derive a rounded floor
+// from the visible estimates and uncertainty bands instead of spending most of
+// the chart on empty space below them. Activity counts keep their zero axes.
+function allowanceValueAxis(minimum, maximum, plotTop, plotBottom) {
+  const spread = Math.max(maximum - minimum, maximum * 0.1, 1);
+  const padding = spread * 0.12;
+  const step = chartTickStep(spread + padding * 2);
+  const roundedBase = Math.floor(Math.max(minimum - padding, minimum * 0.5) / step) * step;
+  const axisBase = roundedBase > 0 ? roundedBase : chartTickStep(minimum * 0.5, 1);
+  const axisTop = axisBase + Math.ceil((maximum + padding - axisBase) / step) * step;
+  const y = value => plotBottom - (value - axisBase) / (axisTop - axisBase) * (plotBottom - plotTop);
+  const ticks = [];
+  for (let value = axisBase; value <= axisTop + step / 100; value += step) {
+    ticks.push({ value, y: y(value) });
+  }
+  return { axisBase, axisTop, y, ticks };
 }
 
 /**
@@ -362,6 +409,30 @@ function allowanceNormalization(series, view = "aggregate") {
   return series?.days?.findLast(day => day.allowance != null)?.allowance.normalization
     ?? COMMUNITY_ALLOWANCE_NORMALIZATION;
 }
+// Presentation per validated normalization: the reference unit's label, the
+// plan cards in display order ([key, label, colour]), whether a declared plan
+// keeps its card without an estimate, and the copy keys that differ from the
+// historical Pro 20x catalog. `current` marks the declared four-plan contracts
+// whose metadata block is the served catalog's public roster.
+const PRO10_COPY_KEYS = new Set(["heading", "heroCopy", "chartDescription",
+  "modelChartDescription", "modelMethod", "cardsCaption", "referenceEquivalent", "methodNote"]);
+const ALLOWANCE_PRESENTATION = new Map([
+  [COMMUNITY_ALLOWANCE_NORMALIZATION, Object.freeze({ reference: "Pro 20×", current: false,
+    plans: [["plus", "Plus", 2], ["prolite", "Pro 5×", 1], ["pro", "Pro 20×", 0]],
+    copyPrefix: null, copyKeys: new Set() })],
+  [COMMUNITY_ALLOWANCE_PRO10_NORMALIZATION, Object.freeze({ reference: "Pro 10×", current: true,
+    plans: [["plus", "Plus", 2], ["prolite", "Pro 5×", 1], ["promax", "Pro 25×", 3], ["pro", "Pro 10×", 0]],
+    copyPrefix: "community.allowance.pro10.", copyKeys: PRO10_COPY_KEYS })],
+  // Option B: the Pro 20x unit with Pro Max at x0.8. It reuses the historical
+  // Pro 20x copy except the method note (four plans, Pro Max x0.8, 25-point
+  // floor) and adds a neutral note that every Pro account is counted at 20x.
+  [COMMUNITY_ALLOWANCE_PRO20_PROMAX_NORMALIZATION, Object.freeze({ reference: "Pro 20×", current: true,
+    plans: [["plus", "Plus", 2], ["prolite", "Pro 5×", 1], ["promax", "Pro 25×", 3], ["pro", "Pro 20×", 0]],
+    copyPrefix: "community.allowance.pro20Promax.", copyKeys: new Set(["methodNote"]),
+    planNoteKey: "community.allowance.pro20Promax.planCohortNote" })],
+]);
+const allowancePresentation = normalization => ALLOWANCE_PRESENTATION.get(normalization)
+  ?? ALLOWANCE_PRESENTATION.get(COMMUNITY_ALLOWANCE_NORMALIZATION);
 function sameAllowanceBasis(allowance, normalization) {
   return allowance != null && (allowance.normalization ?? COMMUNITY_ALLOWANCE_NORMALIZATION) === normalization;
 }
@@ -411,12 +482,10 @@ function buildCommunityAllowanceSingleChartModel(series, {
     ? margin.left + plotWidth / 2
     : margin.left + ((atMs - startMs) / (endMs - startMs)) * plotWidth);
 
-  const dollars = valueAxis(
-    Math.max(...points.map((point) => (
-      point.band80Usd === null ? point.centralUsd : point.band80Usd.upperUsd
-    ))),
-    plotTop,
-    plotBottom,
+  const dollars = allowanceValueAxis(
+    Math.min(...points.map(point => point.band80Usd?.lowerUsd ?? point.centralUsd)),
+    Math.max(...points.map(point => point.band80Usd?.upperUsd ?? point.centralUsd)),
+    plotTop, plotBottom,
   );
 
   const dots = points.map((point) => ({
@@ -508,19 +577,24 @@ function buildCommunityAllowanceSingleChartModel(series, {
 }
 
 /**
- * Model series in display order. A model the server published an order for
- * leads, by that order; every other drawable model follows in this page's own
- * preferred order, then catalog order. The input list is never reordered.
- * Without published metadata this is exactly the page's own order.
+ * Model series in display order. This page's own charted list is authoritative
+ * for its own models; the entries a publication carried metadata for (the only
+ * ones with a published `order`) lead, by that order, and may add models the
+ * page has never seen. Every other model follows in the page's own order. The
+ * input list is never reordered. Without metadata this is the page's own list.
+ * `pinned` marks the page's roster models that keep a card even with no
+ * estimate, while any other model is charted only when it has one.
  */
-function modelDefinitions(modelConfig) {
-  return modelConfig.map(({ modelId, label, family, order }, index) => {
-    const published = Number.isSafeInteger(order);
-    const presentation = allowanceModelPresentation(modelId, index, family);
-    return { tier: published ? 0 : 1, definition: {
-      key: modelId, label, view: "models", ...presentation, ...(published ? { order } : {}),
-    } };
-  }).sort((left, right) => left.tier - right.tier || left.definition.order - right.definition.order)
+function modelDefinitions(modelConfig, currentMetadata = false) {
+  return chartedModelsWith(modelConfig.filter(entry => Number.isSafeInteger(entry.order)))
+    .map(({ modelId, label, family, order, pinned }, index) => {
+      const published = Number.isSafeInteger(order);
+      return { tier: published ? 0 : 1, definition: {
+        key: modelId, label, view: "models", ...allowanceModelPresentation(modelId, index, family),
+        order: published ? order : index, pinned: pinned === true
+          || (currentMetadata && published && modelId === "gpt-6.1-sol"),
+      } };
+    }).sort((left, right) => left.tier - right.tier || left.definition.order - right.definition.order)
     .map(({ definition }) => definition);
 }
 
@@ -529,10 +603,11 @@ function modelDefinitions(modelConfig) {
 export function buildCommunityAllowanceChartModel(series, options = {}) {
   const { view = "aggregate", rangeDays = null, seriesKeys = null,
     width = COMMUNITY_ALLOWANCE_CHART_WIDTH,
-    height = COMMUNITY_ALLOWANCE_CHART_HEIGHT } = options;
+    height = view === "models" || view === "aggregate"
+      ? COMMUNITY_ALLOWANCE_CHART_HEIGHT * 1.5 : COMMUNITY_ALLOWANCE_CHART_HEIGHT } = options;
   if (!["aggregate", "plans", "models"].includes(view)) return null;
   if (!series?.breakdowns) {
-    return view === "aggregate" ? buildCommunityAllowanceSingleChartModel(series, options) : null;
+    return view === "aggregate" ? buildCommunityAllowanceSingleChartModel(series, { ...options, height }) : null;
   }
   if (series.state !== "published" || series.days.length === 0) return null;
   const anchor = series.breakdowns.hasCombined
@@ -542,15 +617,22 @@ export function buildCommunityAllowanceChartModel(series, options = {}) {
   const rangeDaysWithActivity = series.days.filter(day => day.day <= anchor && communityDayStartMs(day.day) >= cutoff);
   if (rangeDaysWithActivity.length === 0) return null;
   const normalization = allowanceNormalization(series, view);
-  const pro10 = normalization === COMMUNITY_ALLOWANCE_PRO10_NORMALIZATION;
+  const presentation = allowancePresentation(normalization);
   const breakdownDays = new Map(series.breakdowns.days.map(day => [day.day, day]));
   const definitions = [
     { key: "aggregate", view: "aggregate", label: null, className: "" },
-    ...[ ["pro", pro10 ? "Pro 10×" : "Pro 20×", 0], ["prolite", "Pro 5×", 1],
-      ...(pro10 ? [["promax", "Pro 25×", 3]] : []), ["plus", "Plus", 2] ].map(([key, label, color]) => ({
-      key, label, view: "plans", className: `allowance-series-${color}`,
+    ...presentation.plans.map(([key, label, color]) => ({
+      // A declared (v1.4/v1.5) plan roster is closed, so each declared plan
+      // keeps its card and panel with the empty-estimate state rather than
+      // silently vanishing (Pro 25× has no published fit yet). Legacy rosters
+      // keep their gate.
+      key, label, view: "plans", className: `allowance-series-${color}`, pinned: presentation.current,
     })),
-    ...modelDefinitions(series.breakdowns.modelConfig),
+    // Current v1.4/v1.5 metadata can name GPT-6.1 Sol before a fit is published.
+    // Keep its card honest with the existing empty-estimate state; legacy
+    // metadata and models without current catalog authority retain their gate.
+    ...modelDefinitions(series.breakdowns.modelConfig,
+      presentation.current && series.breakdowns.modelMetadata === "applied"),
   ];
   const summaryFor = (day, definition) => {
     const breakdown = breakdownDays.get(day.day);
@@ -586,12 +668,9 @@ export function buildCommunityAllowanceChartModel(series, options = {}) {
     const own = planWeeklyApiEquivalentUsd(value, definition.key, normalization);
     return own === null ? value : own;
   };
-  // Dollar axes stay comparable across tabs, so the bound is every definition,
-  // not just the drawn ones — EXCEPT when a caller asks for a single series.
-  // That is the small-multiples case, where the whole point is that each panel
-  // gets its own axis; sharing one there would reintroduce the squashing the
-  // panels exist to avoid.
-  const axisDefinitions = seriesKeys === null ? definitions : viewDefinitions;
+  // Each view gets a scale from its own visible series. A plan small multiple
+  // narrows that further to one plan's own weekly value.
+  const axisDefinitions = viewDefinitions;
   let maximum = 0;
   let minimum = Infinity;
   for (const day of rangeDaysWithActivity) for (const definition of axisDefinitions) {
@@ -612,7 +691,7 @@ export function buildCommunityAllowanceChartModel(series, options = {}) {
   const endMs = communityDayStartMs(days.at(-1).day);
   const x = day => startMs === endMs ? (plot.left + plot.right) / 2
     : plot.left + (communityDayStartMs(day) - startMs) / (endMs - startMs) * (plot.right - plot.left);
-  const dollars = valueAxis(maximum, plot.top, plot.bottom, minimum);
+  const dollars = allowanceValueAxis(minimum, maximum, plot.top, plot.bottom);
   const split = points => {
     const segments = [];
     for (const point of points) {
@@ -653,6 +732,13 @@ export function buildCommunityAllowanceChartModel(series, options = {}) {
     return { ...definition, dots, markerDots, centralSegments, bandSegments: split(band), latest: dots.at(-1) ?? null };
   }).filter(definition => definition.dots.length > 0);
   if (visible.length === 0) return null;
+  const visibleByKey = new Map(visible.map(definition => [definition.key, definition]));
+  // The page's pinned roster keeps a card (and a legend entry) while it has no
+  // estimate; every other model, however it became known, is drawn only once it
+  // has one. A catalog of dozens of models must not become dozens of empty cards.
+  const cardSeries = view === "models" || view === "plans"
+    ? viewDefinitions.filter(definition => definition.pinned || visibleByKey.has(definition.key))
+      .map(definition => visibleByKey.get(definition.key) ?? { ...definition, latest: null }) : visible;
   const dots = visible.flatMap(definition => definition.dots)
     .sort((a, b) => a.day.localeCompare(b.day) || a.seriesOrder - b.seriesOrder);
   const dayTicks = Array.from({ length: 6 }, (_, index) => {
@@ -663,6 +749,7 @@ export function buildCommunityAllowanceChartModel(series, options = {}) {
   return { width, height, margin, plot, dots, view,
     markerDots: visible.flatMap(definition => definition.markerDots),
     latest: dots.at(-1), legendSeries: view === "aggregate" ? null : visible,
+    cardSeries,
     latestSummaries: visible.map(definition => definition.latest),
     spanDays: 1 + Math.round((endMs - startMs) / MILLISECONDS_PER_DAY),
     sparse: new Set(dots.map(dot => dot.day)).size <= 2,
@@ -990,12 +1077,18 @@ export function renderCommunityDailySeries({
       t("community.daily.activityThroughDetail"),
     ],
     [
-      t("community.daily.apiEquivalentSpend"),
+      t(spend.pricing === "current" || spend.pricing === "unavailable"
+        ? "community.daily.apiEquivalentSpend"
+        : "community.daily.publishedApiEquivalentEstimates"),
       spend.knownCostUsd === null ? compact(null) : usdFormatter(2).format(spend.knownCostUsd),
-      t(`community.daily.apiEquivalentSpendDetail.${spend.coverage}`, {
-        days: historyDays,
-        pricedDays: compact(spend.pricedDays),
-      }),
+      [
+        t(`community.daily.apiEquivalentSpendDetail.${spend.coverage}`, {
+          days: historyDays,
+          pricedDays: compact(spend.pricedDays),
+        }),
+        ...(["historical", "mixed", "unknown"].includes(spend.pricing)
+          ? [t(`community.daily.publishedPricing.${spend.pricing}`)] : []),
+      ].join(" "),
     ],
     [
       t("community.daily.turnsCounted"),
@@ -1037,6 +1130,9 @@ export function renderCommunityDailySeries({
   ));
   breakdown.append(summary);
   const wrap = node("div", "table-wrap snapshot-table");
+  wrap.setAttribute("role", "region");
+  wrap.setAttribute("aria-label", t("community.daily.metricsCaption"));
+  wrap.setAttribute("tabindex", "0");
   const table = documentRef.createElement("table");
   const caption = node("caption", "sr-only", t("community.daily.metricsCaption"));
   const thead = documentRef.createElement("thead");
@@ -1172,18 +1268,30 @@ function appendCommunityAllowanceChart({ documentRef, container, model, t, inspe
   const legend = node("div", "community-daily-legend allowance-series-legend");
   const legendButtons = [];
   const legendItems = model.legendSeries?.map(series => [
-    `daily-legend-swatch allowance-central ${series.className}`, series.label, series.key,
+    `daily-legend-swatch allowance-central ${series.className}`, series.label, series.key, true,
   ]) ?? [
     ["daily-legend-swatch allowance-central", "community.allowance.legendCentral"],
     ["daily-legend-swatch allowance-band", "community.allowance.legendBand"],
     ["daily-legend-swatch allowance-dot", "community.allowance.legendDots"],
   ].map(([className, key]) => [className, t(key)]);
-  for (const [swatchClass, label, seriesKey] of legendItems) {
-    const item = node(seriesKey ? "button" : "span", seriesKey ? "allowance-legend-button" : "");
+  if (model.view === "models") {
+    legendItems.splice(0, legendItems.length, ...model.cardSeries.map(series => [
+      `daily-legend-swatch allowance-central ${series.className}`,
+      series.label, series.key, series.latest !== null,
+    ]));
+  }
+  for (const [swatchClass, label, seriesKey, hasEstimate] of legendItems) {
+    const item = node(seriesKey && hasEstimate ? "button" : "span",
+      seriesKey ? `allowance-legend-button${hasEstimate ? "" : " unavailable"}` : "");
     if (seriesKey) {
-      item.setAttribute("type", "button");
-      item.setAttribute("aria-pressed", "false");
-      legendButtons.push({ item, seriesKey });
+      if (hasEstimate) {
+        item.setAttribute("type", "button");
+        item.setAttribute("aria-pressed", "false");
+        legendButtons.push({ item, seriesKey });
+      } else {
+        item.setAttribute("role", "note");
+        item.setAttribute("aria-label", `${label}: ${t("community.allowance.noModelEstimate")}`);
+      }
     }
     const swatch = node("span", swatchClass);
     swatch.setAttribute("aria-hidden", "true");
@@ -1550,9 +1658,10 @@ function appendCommunityAllowanceChart({ documentRef, container, model, t, inspe
 export function renderCommunityAllowanceSection({
   documentRef,
   container,
-  stateNode = null,
+  sourceContainer = null,
   headingNode = null,
   heroNode = null,
+  stateNode = null,
   payload,
   rangeDays = null,
   view = "aggregate",
@@ -1562,11 +1671,10 @@ export function renderCommunityAllowanceSection({
   const locale = documentRef?.documentElement?.lang ?? "en-US";
   const series = normalizeCommunityDailySeries(payload, { retained: cache !== null && cache !== undefined });
   const normalization = allowanceNormalization(series, view);
-  const pro10 = normalization === COMMUNITY_ALLOWANCE_PRO10_NORMALIZATION;
-  const basisKeys = new Set(["heading", "heroCopy", "chartDescription",
-    "modelChartDescription", "modelMethod", "planMethod", "cardsCaption", "referenceEquivalent", "methodNote"]);
-  const basisKey = key => pro10 && basisKeys.has(key.replace("community.allowance.", ""))
-    ? key.replace("community.allowance.", "community.allowance.pro10.") : key;
+  const presentation = allowancePresentation(normalization);
+  const basisKey = key => presentation.copyPrefix !== null
+    && presentation.copyKeys.has(key.replace("community.allowance.", ""))
+    ? key.replace("community.allowance.", presentation.copyPrefix) : key;
   const t = (key, values = {}) => translate(basisKey(key), values, locale);
   for (const [element, key] of [[headingNode, "community.allowance.heading"], [heroNode, "community.allowance.heroCopy"]]) {
     if (element === null) continue;
@@ -1578,6 +1686,7 @@ export function renderCommunityAllowanceSection({
   const inspection = previousInspection?.view === view ? previousInspection : null;
   allowanceInspectionByContainer.delete(container);
   clear(container);
+  sourceContainer?.replaceChildren();
   const retained = cachedEvidence(cache);
   const setChip = (labelKey, published) => {
     if (!stateNode) return;
@@ -1620,7 +1729,7 @@ export function renderCommunityAllowanceSection({
   if (view === "aggregate" && !series.breakdowns?.hasCombined
       && series.days.some(day => day.allowance != null && !sameAllowanceBasis(day.allowance, normalization))) {
     container.append(node("p", "snapshot-disclosure", t("community.allowance.basisTransition", {
-      basis: pro10 ? "Pro 10×" : "Pro 20×",
+      basis: presentation.reference,
     })));
   }
   const model = buildCommunityAllowanceChartModel(series, { rangeDays, view });
@@ -1640,16 +1749,21 @@ export function renderCommunityAllowanceSection({
 
   setChip("community.allowance.available", true);
   const dollars = usdFormatter();
-  container.append(sourceDisclosureDetails(node, t, ["community.allowance.smallSampleDisclosure"]));
+  const sourceDisclosure = sourceDisclosureDetails(node, t,
+    view === "aggregate"
+      ? ["community.allowance.smallSampleDisclosure", "community.allowance.methodNote"]
+      : ["community.allowance.smallSampleDisclosure"]);
+  (sourceContainer ?? container).append(sourceDisclosure);
   if (view !== "aggregate") {
     container.append(node("p", "allowance-summary-caption", t(view === "plans"
       ? "community.allowance.planOwnWeekCaption" : "community.allowance.cardsCaption")));
     const cards = node("div", "allowance-summary-cards");
-    for (const latest of model.latestSummaries) {
-      const card = node("article", `allowance-summary-card ${latest.seriesClass}`.trim());
+    for (const seriesCard of model.cardSeries) {
+      const latest = seriesCard.latest;
+      const card = node("article", `allowance-summary-card ${seriesCard.className}`.trim());
       const heading = node("div", "allowance-summary-heading");
-      heading.append(node("h3", "", latest.seriesLabel));
-      const icon = modelThemeIcon(documentRef, latest.seriesTheme);
+      heading.append(node("h3", "", seriesCard.label));
+      const icon = modelThemeIcon(documentRef, seriesCard.theme);
       if (icon) heading.append(icon);
       // A plan cohort leads with ITS OWN week at API prices, because that is
       // the number a reader on that plan is asking about. The declared
@@ -1658,12 +1772,14 @@ export function renderCommunityAllowanceSection({
         ? planWeeklyApiEquivalentUsd(latest.centralUsd, latest.seriesKey, normalization) : null;
       card.append(heading,
         node("strong", "allowance-summary-value",
-          dollars.format(planUsd === null ? latest.centralUsd : planUsd)));
+          latest === null ? "—" : dollars.format(planUsd === null ? latest.centralUsd : planUsd)));
       if (planUsd !== null) {
         card.append(node("p", "allowance-plan-value",
           t("community.allowance.referenceEquivalent", { value: dollars.format(latest.centralUsd) })));
       }
-      card.append(node("p", "allowance-headline-caveat", `${formatUtcCalendarDay(latest.day)} · ${plural("community.allowance.shortAccountCount", latest.participantCount)}`));
+      card.append(node("p", "allowance-headline-caveat", latest === null
+        ? t("community.allowance.noModelEstimate")
+        : plural("community.allowance.shortAccountCount", latest.participantCount)));
       cards.append(card);
     }
     container.append(cards);
@@ -1676,13 +1792,19 @@ export function renderCommunityAllowanceSection({
       // comparison becomes deliberate rather than automatic, which is the
       // honest trade now that the cards lead with each plan's own week.
       const panels = node("div", "allowance-small-multiples");
-      for (const latest of model.latestSummaries) {
-        const panelModel = buildCommunityAllowanceChartModel(series,
+      for (const seriesCard of model.cardSeries) {
+        const latest = seriesCard.latest;
+        const panelModel = latest === null ? null : buildCommunityAllowanceChartModel(series,
           { rangeDays, view, seriesKeys: [latest.seriesKey] });
-        if (panelModel === null) continue;
-        const panel = node("div", `allowance-panel ${latest.seriesClass}`.trim());
-        panel.append(node("h4", "allowance-panel-title", latest.seriesLabel));
-        appendCommunityAllowanceChart({ documentRef, container: panel, model: panelModel, t, inspection });
+        if (panelModel === null && latest !== null) continue;
+        const panel = node("div", `allowance-panel${panelModel === null ? " allowance-panel-empty" : ""} ${seriesCard.className}`.trim());
+        panel.append(node("h4", "allowance-panel-title", seriesCard.label));
+        if (panelModel === null) {
+          // A pinned plan with no estimate is named, never drawn at zero.
+          panel.append(node("p", "allowance-panel-empty-note", t("community.allowance.noModelEstimate")));
+        } else {
+          appendCommunityAllowanceChart({ documentRef, container: panel, model: panelModel, t, inspection });
+        }
         panels.append(panel);
       }
       container.append(panels);
@@ -1691,6 +1813,8 @@ export function renderCommunityAllowanceSection({
     }
     container.append(node("p", "snapshot-disclosure", t(view === "models"
       ? "community.allowance.modelMethod" : "community.allowance.planMethod")),
+    ...(view === "plans" && presentation.planNoteKey
+      ? [node("p", "snapshot-disclosure", t(presentation.planNoteKey))] : []),
     ...unrecognizedModelNotice());
     return "published";
   }
@@ -1731,10 +1855,5 @@ export function renderCommunityAllowanceSection({
 
   appendCommunityAllowanceChart({ documentRef, container, model, t, inspection });
 
-  container.append(node(
-    "p",
-    "snapshot-disclosure",
-    t("community.allowance.methodNote"),
-  ));
   return "published";
 }

@@ -481,8 +481,8 @@
     "resourcePolicySourceSha256": "d9748895468534062e9c8c436db75cbf5acf4ccf54f84319db37e88197627870",
     "resourcePolicyValuesSha256": "3cbe7853c8f75e96912885f64ba4ad1aeb13aff8a22e4ffbd51806b27c73b418",
     "schemaModuleSha256": "9437252c19967d1baab279dd1b1dc7947bb33a1d12f42d3e4d30fff47ee3d456",
-    "workloadCodeFileCount": 449,
-    "workloadCodeSha256": "0106685ecaa43eda4d9eac4b0e438d77c7c530d4ba0e51fdfa9170b20822fefe"
+    "workloadCodeFileCount": 452,
+    "workloadCodeSha256": "7efa1078492a38d4fad91e959661ad17d0610b4a4d131c853d495538fdea7892"
   },
   "determinism": {
     "comparisons": {
@@ -500,8 +500,8 @@
     "projectionVersion": "g1-r7-release-deterministic-projection-v0.1",
     "runCount": 2,
     "runProjectionSha256es": [
-      "d5ffb507b59a5e9a4bea8448398528d99e2196a2b55dbb0853513341a0ef4f0a",
-      "d5ffb507b59a5e9a4bea8448398528d99e2196a2b55dbb0853513341a0ef4f0a"
+      "e2b26f27dc5788d786f1509a5d7075224afca420fa51148002321d717337c0d2",
+      "e2b26f27dc5788d786f1509a5d7075224afca420fa51148002321d717337c0d2"
     ],
     "status": "passed"
   },
@@ -514,12 +514,12 @@
     {
       "failureCode": "none",
       "metrics": {
-        "childCpuMs": 115,
-        "childMaxRssBytes": 129253376,
+        "childCpuMs": 72,
+        "childMaxRssBytes": 129679360,
         "decodedBytes": 0,
-        "durablePeakRssBytes": 129204224,
+        "durablePeakRssBytes": 129646592,
         "encodedBytes": 0,
-        "externalPeakRssBytes": 127582208,
+        "externalPeakRssBytes": 129679360,
         "externalRssSampleCount": 8,
         "externalRssSampleFailureCount": 0,
         "filesystem": {
@@ -528,12 +528,12 @@
           "sampledHighWaterBytes": 200864
         },
         "outputRecords": 27,
-        "parentElapsedMs": 359,
+        "parentElapsedMs": 317,
         "runCount": 2,
         "sourceBytes": 154645,
         "sourceFiles": 14,
         "stderrBytes": 169,
-        "stdoutBytes": 1073
+        "stdoutBytes": 1072
       },
       "name": "source_scan",
       "projectionSha256": "9a32d3d160adf2c4f0f900f4583abf8c4b37c5460377fcdd74447945cfa9acd7",
@@ -542,26 +542,26 @@
     {
       "failureCode": "none",
       "metrics": {
-        "childCpuMs": 81,
-        "childMaxRssBytes": 127238144,
+        "childCpuMs": 48,
+        "childMaxRssBytes": 127188992,
         "decodedBytes": 0,
-        "durablePeakRssBytes": 174243840,
+        "durablePeakRssBytes": 174768128,
         "encodedBytes": 0,
-        "externalPeakRssBytes": 126763008,
-        "externalRssSampleCount": 7,
-        "externalRssSampleFailureCount": 1,
+        "externalPeakRssBytes": 127139840,
+        "externalRssSampleCount": 6,
+        "externalRssSampleFailureCount": 0,
         "filesystem": {
           "afterBytes": 401568,
           "beforeBytes": 368800,
-          "sampledHighWaterBytes": 401679
+          "sampledHighWaterBytes": 401568
         },
         "outputRecords": 27,
-        "parentElapsedMs": 319,
+        "parentElapsedMs": 248,
         "runCount": 2,
         "sourceBytes": 154645,
         "sourceFiles": 14,
         "stderrBytes": 169,
-        "stdoutBytes": 1078
+        "stdoutBytes": 1077
       },
       "name": "checkpoint_resume",
       "projectionSha256": "9a32d3d160adf2c4f0f900f4583abf8c4b37c5460377fcdd74447945cfa9acd7",
@@ -570,77 +570,77 @@
     {
       "failureCode": "none",
       "metrics": {
-        "childCpuMs": 215,
-        "childMaxRssBytes": 138330112,
-        "decodedBytes": 109963,
-        "durablePeakRssBytes": 138280960,
-        "encodedBytes": 32409,
-        "externalPeakRssBytes": 138035200,
-        "externalRssSampleCount": 30,
+        "childCpuMs": 164,
+        "childMaxRssBytes": 137461760,
+        "decodedBytes": 109977,
+        "durablePeakRssBytes": 137428992,
+        "encodedBytes": 32443,
+        "externalPeakRssBytes": 137428992,
+        "externalRssSampleCount": 16,
         "externalRssSampleFailureCount": 0,
         "filesystem": {
-          "afterBytes": 554579,
+          "afterBytes": 554628,
           "beforeBytes": 401568,
-          "sampledHighWaterBytes": 554579
+          "sampledHighWaterBytes": 555317
         },
         "outputRecords": 27,
-        "parentElapsedMs": 1436,
+        "parentElapsedMs": 769,
         "runCount": 2,
         "sourceBytes": 154645,
         "sourceFiles": 14,
         "stderrBytes": 169,
-        "stdoutBytes": 1225
+        "stdoutBytes": 1222
       },
       "name": "export_set_materialize",
-      "projectionSha256": "f805d27d34bb6de573c8a733d1716f5831e801f7c46bed4d84694f0b9bd40c76",
+      "projectionSha256": "394f3f542c79bfbd140e169d8e706957d90804f599ac5249fa289014c9ac8478",
       "status": "completed"
     },
     {
       "failureCode": "none",
       "metrics": {
-        "childCpuMs": 71,
-        "childMaxRssBytes": 130170880,
-        "decodedBytes": 109963,
+        "childCpuMs": 41,
+        "childMaxRssBytes": 132349952,
+        "decodedBytes": 109977,
         "durablePeakRssBytes": 0,
-        "encodedBytes": 32409,
-        "externalPeakRssBytes": 114343936,
-        "externalRssSampleCount": 6,
+        "encodedBytes": 32443,
+        "externalPeakRssBytes": 90914816,
+        "externalRssSampleCount": 4,
         "externalRssSampleFailureCount": 0,
         "filesystem": {
-          "afterBytes": 554579,
-          "beforeBytes": 554579,
-          "sampledHighWaterBytes": 554579
+          "afterBytes": 554628,
+          "beforeBytes": 554628,
+          "sampledHighWaterBytes": 554628
         },
         "outputRecords": 27,
-        "parentElapsedMs": 292,
+        "parentElapsedMs": 192,
         "runCount": 2,
         "sourceBytes": 0,
         "sourceFiles": 0,
         "stderrBytes": 169,
-        "stdoutBytes": 998
+        "stdoutBytes": 997
       },
       "name": "export_set_verify",
-      "projectionSha256": "dfd4901d025633e17d756177af8bd08805df92c8ed0e9f36e370fa642e674eb0",
+      "projectionSha256": "8dc027b530b26391c95987aa61852a35ae1def3944d50f5b6028360be3d837c7",
       "status": "completed"
     },
     {
       "failureCode": "none",
       "metrics": {
-        "childCpuMs": 214,
-        "childMaxRssBytes": 141197312,
+        "childCpuMs": 147,
+        "childMaxRssBytes": 143704064,
         "decodedBytes": 0,
         "durablePeakRssBytes": 0,
         "encodedBytes": 0,
-        "externalPeakRssBytes": 141180928,
-        "externalRssSampleCount": 18,
+        "externalPeakRssBytes": 142983168,
+        "externalRssSampleCount": 13,
         "externalRssSampleFailureCount": 0,
         "filesystem": {
           "afterBytes": 203384,
-          "beforeBytes": 556642,
-          "sampledHighWaterBytes": 568116
+          "beforeBytes": 556691,
+          "sampledHighWaterBytes": 567574
         },
         "outputRecords": 0,
-        "parentElapsedMs": 875,
+        "parentElapsedMs": 632,
         "runCount": 2,
         "sourceBytes": 0,
         "sourceFiles": 0,
@@ -648,27 +648,27 @@
         "stdoutBytes": 997
       },
       "name": "complete_set_delete",
-      "projectionSha256": "9042229e8ad5f2e1039534cc2f2cee61fa990212c3be5efc304031168c10d51d",
+      "projectionSha256": "791a1ddd3d042997849d33ce54f9a1ab62a881736d5ee674ea5af1f91985f395",
       "status": "completed"
     },
     {
       "failureCode": "interruption_injected",
       "metrics": {
-        "childCpuMs": 44,
-        "childMaxRssBytes": 120438784,
+        "childCpuMs": 37,
+        "childMaxRssBytes": 120619008,
         "decodedBytes": 0,
         "durablePeakRssBytes": 0,
         "encodedBytes": 0,
-        "externalPeakRssBytes": 120324096,
-        "externalRssSampleCount": 14,
+        "externalPeakRssBytes": 120340480,
+        "externalRssSampleCount": 10,
         "externalRssSampleFailureCount": 0,
         "filesystem": {
-          "afterBytes": 556642,
-          "beforeBytes": 920672,
-          "sampledHighWaterBytes": 920672
+          "afterBytes": 556691,
+          "beforeBytes": 920770,
+          "sampledHighWaterBytes": 920770
         },
         "outputRecords": 0,
-        "parentElapsedMs": 673,
+        "parentElapsedMs": 469,
         "runCount": 2,
         "sourceBytes": 0,
         "sourceFiles": 0,
@@ -676,32 +676,32 @@
         "stdoutBytes": 1005
       },
       "name": "complete_set_delete_recovery",
-      "projectionSha256": "9042229e8ad5f2e1039534cc2f2cee61fa990212c3be5efc304031168c10d51d",
+      "projectionSha256": "791a1ddd3d042997849d33ce54f9a1ab62a881736d5ee674ea5af1f91985f395",
       "status": "interrupted_recovered"
     },
     {
       "failureCode": "none",
       "metrics": {
-        "childCpuMs": 26,
-        "childMaxRssBytes": 120619008,
+        "childCpuMs": 16,
+        "childMaxRssBytes": 120717312,
         "decodedBytes": 0,
         "durablePeakRssBytes": 0,
         "encodedBytes": 0,
-        "externalPeakRssBytes": 120487936,
-        "externalRssSampleCount": 8,
+        "externalPeakRssBytes": 120602624,
+        "externalRssSampleCount": 6,
         "externalRssSampleFailureCount": 0,
         "filesystem": {
-          "afterBytes": 555112,
-          "beforeBytes": 722515,
-          "sampledHighWaterBytes": 722515
+          "afterBytes": 555161,
+          "beforeBytes": 722564,
+          "sampledHighWaterBytes": 722564
         },
         "outputRecords": 0,
-        "parentElapsedMs": 347,
+        "parentElapsedMs": 229,
         "runCount": 2,
         "sourceBytes": 0,
         "sourceFiles": 0,
         "stderrBytes": 169,
-        "stdoutBytes": 992
+        "stdoutBytes": 991
       },
       "name": "workspace_discard",
       "projectionSha256": "495426e69724d58733a4605ce62a0a9e61a094e67823671e64b872acf28bbea5",
@@ -710,26 +710,26 @@
     {
       "failureCode": "interruption_injected",
       "metrics": {
-        "childCpuMs": 20,
-        "childMaxRssBytes": 120111104,
+        "childCpuMs": 14,
+        "childMaxRssBytes": 120782848,
         "decodedBytes": 0,
         "durablePeakRssBytes": 0,
         "encodedBytes": 0,
-        "externalPeakRssBytes": 119898112,
-        "externalRssSampleCount": 7,
+        "externalPeakRssBytes": 120766464,
+        "externalRssSampleCount": 6,
         "externalRssSampleFailureCount": 0,
         "filesystem": {
-          "afterBytes": 555645,
-          "beforeBytes": 724276,
-          "sampledHighWaterBytes": 724276
+          "afterBytes": 555694,
+          "beforeBytes": 724325,
+          "sampledHighWaterBytes": 724325
         },
         "outputRecords": 0,
-        "parentElapsedMs": 344,
+        "parentElapsedMs": 217,
         "runCount": 2,
         "sourceBytes": 0,
         "sourceFiles": 0,
         "stderrBytes": 169,
-        "stdoutBytes": 1000
+        "stdoutBytes": 999
       },
       "name": "workspace_discard_recovery",
       "projectionSha256": "495426e69724d58733a4605ce62a0a9e61a094e67823671e64b872acf28bbea5",
@@ -738,21 +738,21 @@
     {
       "failureCode": "none",
       "metrics": {
-        "childCpuMs": 9,
-        "childMaxRssBytes": 116588544,
+        "childCpuMs": 6,
+        "childMaxRssBytes": 117702656,
         "decodedBytes": 0,
         "durablePeakRssBytes": 0,
         "encodedBytes": 0,
-        "externalPeakRssBytes": 114262016,
-        "externalRssSampleCount": 6,
-        "externalRssSampleFailureCount": 0,
+        "externalPeakRssBytes": 93945856,
+        "externalRssSampleCount": 4,
+        "externalRssSampleFailureCount": 1,
         "filesystem": {
-          "afterBytes": 555915,
-          "beforeBytes": 556094,
-          "sampledHighWaterBytes": 556094
+          "afterBytes": 555964,
+          "beforeBytes": 556143,
+          "sampledHighWaterBytes": 556143
         },
         "outputRecords": 0,
-        "parentElapsedMs": 283,
+        "parentElapsedMs": 205,
         "runCount": 2,
         "sourceBytes": 0,
         "sourceFiles": 0,
@@ -766,21 +766,21 @@
     {
       "failureCode": "interruption_injected",
       "metrics": {
-        "childCpuMs": 7,
-        "childMaxRssBytes": 117735424,
+        "childCpuMs": 5,
+        "childMaxRssBytes": 117178368,
         "decodedBytes": 0,
         "durablePeakRssBytes": 0,
         "encodedBytes": 0,
-        "externalPeakRssBytes": 116146176,
-        "externalRssSampleCount": 6,
+        "externalPeakRssBytes": 92798976,
+        "externalRssSampleCount": 4,
         "externalRssSampleFailureCount": 0,
         "filesystem": {
-          "afterBytes": 556185,
-          "beforeBytes": 556373,
-          "sampledHighWaterBytes": 556373
+          "afterBytes": 556234,
+          "beforeBytes": 556422,
+          "sampledHighWaterBytes": 556422
         },
         "outputRecords": 0,
-        "parentElapsedMs": 265,
+        "parentElapsedMs": 188,
         "runCount": 2,
         "sourceBytes": 0,
         "sourceFiles": 0,
@@ -836,7 +836,7 @@
     "kind": "release_synthetic_semantics"
   },
   "protocolVersion": "g1-r7-release-evidence-v0.1",
-  "receiptSha256": "55501ca6df3dd956dc4b5983fe572c68b63417e4ebe987f1e52ac360e22e1c52",
+  "receiptSha256": "494e3ea7be1e541cf22c2e3806d07dcc520c5178e2efdbabaffd96a53f303d5b",
   "runtimeProvenance": {
     "architecture": "arm64",
     "elapsedClock": "parent_monotonic",

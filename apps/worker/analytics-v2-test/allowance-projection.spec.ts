@@ -114,7 +114,7 @@ describe("GCP current Pro 20x B' projection with retained Pro 10x and legacy pro
     const latest = buildAdminCommunityAllowancePreview(promax, NOW).days.at(-1)!;
     expect(latest.byPlanType.promax).toEqual({ fitCount: 1, participantCount: 1, centralUsd: 1400, band80Usd: null });
     expect(latest.combined).toEqual(latest.byPlanType.promax);
-    expect(latest.byPlanType.promax.centralUsd! / 0.8).toBeCloseTo(1750, 9);
+    expect((latest.byPlanType.promax.centralUsd ?? NaN) / 0.8).toBeCloseTo(1750, 9);
     for (const plan of ["pro", "prolite", "plus"] as const) expect(latest.byPlanType[plan]).toEqual(EMPTY);
   });
 
@@ -231,7 +231,7 @@ describe("GCP current Pro 20x B' projection with retained Pro 10x and legacy pro
           [after.band80Usd?.upperUsd, old.band80Usd?.upperUsd]];
         for (const [next, previous] of values) {
           if (next === null || next === undefined) continue;
-          expect(Math.abs(next / now - previous! / then)).toBeLessThanOrEqual(tolerance(then));
+          expect(Math.abs(next / now - (previous ?? NaN) / then)).toBeLessThanOrEqual(tolerance(then));
           compared++;
         }
       }

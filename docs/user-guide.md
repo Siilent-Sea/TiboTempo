@@ -1,6 +1,6 @@
 ---
 title: User guide
-date: 2026-09-23
+date: 2026-10-09
 type: guide
 status: maintained
 ---
@@ -90,6 +90,25 @@ Display windows do not delete older local history. The dashboard may show a
 shorter horizon while the local index retains the evidence needed for replay,
 corrections, and longer-term views.
 
+Historical model identification and pricing updates require a completed main
+**Refresh**. Desktop startup requests this refresh once local analysis is
+allowed. Retained session and archived-session logs let the app correct earlier
+unrecognized GPT-6.1 Sol records without changing token totals. An exact stored
+model identity can also be repriced from sufficient preserved token, context
+and time evidence. If a record's model became `unknown` and its original log is
+gone, the app cannot safely reconstruct that identity; missing evidence and
+unsupported historical prices remain explicit. These are local analysis
+updates. A repaired model identity does not automatically replace an already
+accepted hosted contribution; hosted synchronization requires a compatible
+correction contract.
+
+Explicitly identified auto-review usage from October 6, 2026 (UTC) appears
+separately from the main Codex allowance after a completed detailed refresh.
+Its `$0.00*` value describes the main-allowance charge; recorded tokens and
+API-price evidence remain available. Earlier usage keeps its previous
+treatment, missing metadata remains unknown, and Spark retains its own
+measured allowance and timeline.
+
 When local history contains more than one plan, **Allowance** separates the
 plans instead of averaging Plus and Pro reset estimates together. The plan
 selector keeps the headline, history, range, pace and share card on the same
@@ -119,13 +138,28 @@ local accounting cache. The choice becomes available only when that retained
 history contains a plan-specific five-hour reset with enough observed quota
 movement to fit; missing evidence is never presented as zero.
 
+**Save image** exports the share card as a PNG named with the local save time,
+such as `2026-09-28-19-15-tibotattle-results.png`. Desktop builds confirm the
+completed save in Downloads and offer **Open image** in the default app. A
+second save within the same minute receives a numeric suffix. In a browser,
+the destination follows that browser's download settings.
+
 These historical estimates are conditional on the locally observed plan, not
 proof of which provider account generated every token. Known plan switches and
 ambiguous boundary quantities are excluded narrowly; coherent older history is
 still useful. **Usage and costs** continues to retain all-plan accounting totals.
-Community chart lines and headline values retain their common Pro 20x-equivalent
-scale. In By plan, the smaller card value shows that plan's own weekly allowance
-at API prices: divide the headline by 1 for Pro 20x, 4 for Pro 5x, or 20 for Plus.
+The current client/source contract uses a Pro 10x-equivalent weekly basis for
+the Aggregate and By model community views. The deployed public website still
+uses the older Pro 20x-equivalent reference as of October 9, 2026; its migration
+is separate from this client release. See [current status](./current-status.md)
+for the observed publication boundary. By plan charts each plan's own weekly
+API-price value on its own scale;
+the card shows that value first and the Pro 10x equivalent underneath. The
+plan value is the reference estimate divided by 1 for Pro 10x, 2 for Pro 5x,
+0.4 for Pro Max 25x, or 10 for Plus. The Pro Max 25x factor assumes the
+same Plus baseline as the existing tiers and awaits provider confirmation.
+The Pro 10x rename retains the existing Pro history; it does not start a new
+account or discard earlier evidence.
 This is an estimated API value, not the subscription price, and does not authorize
 mixing personal Plus and Pro allowance histories.
 
@@ -181,21 +215,28 @@ and use the shared **Reporting period** above the page. The 0.1.24 desktop
 release includes this page, including on Windows x64. Local timing analysis is
 separate from activation of optional hosted performance telemetry.
 
-The page starts in **Standard** mode. Use the **Standard / Fast** toggle to show
+The page starts in **Standard** mode. Use the **Standard / Fast / Ultrafast** controls to show
 only the selected mode; counts, medians, bands and both charts use that same
 population. The choice lasts while the page is mounted, including period/model
-changes and refreshes. Fast mode can have few or no observations. Hollow points
+changes and refreshes. Fast and Ultrafast can have few or no observations. Hollow points
 have fewer than five measured turns, and those bins have no percentile bands.
-Unknown or mixed modes are excluded from both views, with their excluded turn
+Unknown or mixed modes are excluded from all three views, with their excluded turn
 count shown. Older saved measurements without mode evidence stay unclassified.
 
 After the initial dashboard loads, the app prepares all four shared reporting
-periods in both Standard and Fast in the background. Once ready, opening the
+periods in Standard, Fast and Ultrafast in the background. Once ready, opening the
 page or switching either control displays its cached result immediately while
 checking for updates. A first history scan may still show progress until its
 measurements are ready. Browser results stay in memory only; restarting the app
 starts a fresh page cache. Speculative requests pause while the app document is
 hidden.
+
+Accountless performance sharing rechecks its protected sharing preference and
+current hosted grant when the desktop restarts or that preference changes. A
+current grant can resume an earlier authorization or response-version rejection
+while preserving acknowledged upload progress. Ordinary polling does not retry
+a terminal rejection. Recorded opt-outs and invalid measurements remain
+protected; local Model performance analysis is independent of hosted sharing.
 
 **Output speed** includes response-timed measurements plus eligible tool-free
 turn estimates from older logs. Each turn contributes once: covered response
@@ -290,10 +331,13 @@ Results update as you type after two characters and a short pause (300 ms).
 Deleting the text or shortening it below two characters restores the project
 list automatically. Names and search terms stay local.
 
-Small bars beside token and cost shares show their relative size. The token-mix
-strip separates cached and uncached input from recorded output categories;
-combined output stays combined when no split was recorded. Numeric labels remain
-available alongside the graphics. Model rows reuse the app's decorative icons.
+Small bars beside token and cost shares show their relative size. Token mix uses
+two rows: input tokens split into cached, uncached and any recorded cache writes;
+output tokens split into output text and reasoning. Output text excludes reasoning.
+Each row shows its recorded total, with percentages calculated within that row.
+Combined output stays separate when no split was recorded, and rows without
+positive recorded counts are omitted. Numeric labels remain available alongside
+the graphics. Model rows reuse the app's decorative icons.
 
 Choose a period and model to compare token and API-equivalent shares. These are
 estimates of recorded usage, not subscription charges or quota shares. Omitted
@@ -326,13 +370,13 @@ and its remaining limits.
 
 ## Refresh, progress, and recovery
 
-Use **Refresh** (or Cmd-R in the native app) to update quota, retained history,
+Use **Refresh** to update quota, retained history,
 and detailed Usage-and-costs and Trends evidence together. A valid
 generation-bound accounting cache is reused; a changed generation is
 recalculated. There is no separate detailed-accounting button. The app keeps
 verified prior figures visible, with their current freshness state, while work
 is in progress. If another refresh is already running, the shared controller
-keeps that single operation authoritative. Native controls follow its progress;
+keeps that single operation authoritative. Desktop controls follow its progress;
 the browser shows an informational notice without starting a second operation.
 
 Startup and frequent automatic quota checks stay light. While the app remains
@@ -456,43 +500,43 @@ is performed against a copy before replacing durable state.
 
 ### Secure upgrade
 
-In builds with the [native migration change](./decisions/2026-08-31-silent-keychain-migration.md),
-TiboTattle first tries to preserve older saved keys silently, up to three times.
-If it cannot finish, **Secure upgrade** appears quietly in **Settings… →
-General**. Choose **Review migration…** when ready. The explanation tells you
-why access is needed before **Approve migration** can open a macOS Keychain
-dialog. Enter a password only in that macOS dialog; TiboTattle does not receive
-it. Cancel leaves migration pending, and approval changes neither key values
-nor contribution consent. Do not reset keys or delete local history to resolve
-this state. The linked decision records qualification; this is not a claim
-that an older installed app already has the new flow.
+If Electron cannot read a preserved legacy credential, startup can stop with
+**Unable to prepare secure storage** and support code
+`SECURE_STORAGE_MIGRATION_REQUIRED`. The credential remains preserved. Choose
+**Quit** and follow [SUPPORT.md](../SUPPORT.md) with the support code. Do not
+delete or reset Keychain items or TiboTattle data.
+
+The current Electron app has no self-service credential migration or approval
+control. **Retry** repeats the silent readiness check; it does not migrate the
+credential. The [native migration decision](./decisions/2026-08-31-silent-keychain-migration.md)
+records the older AppKit app's approval flow, not a Settings control available
+in the current Electron app.
 
 ## Optional community contribution
 
-Community participation requires sign-in and explicit consent. Before the first
-upload, TiboTattle presents the derived, allowlisted contribution. Contributions
-are pseudonymous and omit session content; pseudonymous does not mean anonymous.
+Electron uses accountless, content-free sharing under the
+[accepted sharing policy](./decisions/2026-09-04-accountless-sharing-policy.md).
+Identified fresh installations default on. Existing saved choices are preserved;
+existing installations without a choice receive three visible notices before
+activation. Community and Settings display the same persisted sharing choice
+and current upload status. Contributions are pseudonymous and omit session
+content; pseudonymous does not mean anonymous. Local analysis remains available
+when sharing is off or uploads are unavailable.
 
-A staged successor contribution format can add account/plan attribution only
-after a separate field review and explicit new consent, and only if the hosted
-service enables that format. Existing consent is not upgraded automatically.
-Its pseudonyms can link observations within an enrollment/destination; they
-never include raw provider account identifiers. Interrupted replacement uploads
-remain staged while the previous complete hosted history stays selected.
-Missing identity proof does not erase local usage or imply zero usage.
-
-Re-pairing or renewing this Mac's contribution credential pauses delivery while
-the credential changes. If completion cannot be verified, delivery stays paused
-and the app offers device repair; an ordinary refresh cannot bypass that pause.
-Local usage analysis and previously contributed history remain available.
-
-Signing in, pairing a device, local indexing, successful upload, aggregate
-publication, and device disconnect are separate states. Keep the app’s
-displayed state or sanitized error if support is needed.
+The shared dashboard no longer presents Google/Apple sign-in, legacy field
+review, consent, pairing or device-disconnect controls. Their backend contracts
+remain available to legacy clients. Successful collection, upload and aggregate
+publication are separate states. Keep the displayed status or sanitized error
+if support is needed.
 
 ### Stop sharing from this Mac
 
-Choose **Disconnect this Mac** and review the confirmation. Confirming revokes
+Turn off **Share usage measurements** in Community to stop future accountless
+uploads and save your choice across restart. You can also reach Community through
+**Settings… → Data & privacy → Community sharing → Manage sharing**. This
+preserves accepted hosted history, local analysis and the existing enrollment.
+
+Older clients may offer **Disconnect this Mac** with a confirmation. It revokes
 this Mac's hosted contribution authority, clears its local device credential
 and binding, and pauses delivery. It preserves previously contributed hosted
 history, other devices, and local analysis. Signing out only ends the browser
@@ -516,18 +560,24 @@ privacy notice is at `https://tibotattle.com/privacy.html`.
 Uninstalling the app bundle does not imply that accumulated local indexes,
 preferences, logs, or Keychain items were erased. That separation prevents an
 ordinary application replacement from destroying history. Use documented
-local erase, identity-reset, and device-disconnect controls only for their
+local erase, identity-reset, sharing and legacy device-disconnect controls only for their
 separate effects. None erases hosted history; private owner erasure is separate.
 Follow the support guide for intentional cleanup and never remove broad
 Application Support or Keychain locations blindly.
 
 ## Updates and help
 
-In Electron, check for updates in **Settings → About**. Native Mac version
-0.1.18 uses its retained signed Sparkle feed to transition to Electron.
+In Electron, check for updates in **Settings → About**. An installed native Mac
+0.1.18 app can use **Check for Updates** on its retained signed Sparkle feed to
+transition to Electron on Apple silicon or Intel.
 A temporary network failure should leave the installed app usable; it does not
 prove an update exists or failed to
 publish. Verify the current release independently if an update looks stale.
+
+A known 0.1.28 upgrade limitation affects 0.1.26 installations with saved
+history but no remaining Codex logs: the history view can be unavailable because
+the stored index is not migrated. Keep the existing app data when reporting
+this. See the [macOS qualification details](./reference/platform-support.md#macos).
 
 For bugs, diagnostics, privacy questions, and security reporting, start at
 [SUPPORT.md](../SUPPORT.md). Security-sensitive reports follow

@@ -19,6 +19,14 @@ export const ADMIN_MODEL_CONFIG = Object.freeze(REVIEWED_MODEL_CATALOG
     pricingStatus: model.pricingStatus,
   })));
 
+// The current reviewed catalog already contains the September 29 publication.
+// Reuse its immutable configuration rather than appending its 43rd model twice.
+export const SEPTEMBER29_ADMIN_MODEL_HISTORY_CATALOG_VERSION = "reviewed-model-catalog-2026-09-29.1";
+export const SEPTEMBER29_ADMIN_MODEL_CONFIG = ADMIN_MODEL_CONFIG;
+const adminHistorySeptember29Ids = Object.freeze(SEPTEMBER29_ADMIN_MODEL_CONFIG
+  .filter((model) => model.allowanceTrack === "primary")
+  .map((model) => model.modelId));
+
 const adminHistoryLegacyIds = Object.freeze([
   "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5",
 ]);
@@ -122,12 +130,14 @@ export function projectAdminModelHistoryDay(value) {
     ? adminHistoryCurrentIds
     : catalogVersion === adminHistorySeptember23Version
       ? adminHistorySeptember23Ids
+    : catalogVersion === SEPTEMBER29_ADMIN_MODEL_HISTORY_CATALOG_VERSION
+      ? adminHistorySeptember29Ids
       : catalogVersion === PREVIOUS_ADMIN_MODEL_HISTORY_CATALOG_VERSION
-      ? adminHistoryPreviousIds
-      : catalogVersion === OLDER_ADMIN_MODEL_HISTORY_CATALOG_VERSION
-        ? adminHistoryOlderIds
-        : catalogVersion === LEGACY_ADMIN_MODEL_HISTORY_CATALOG_VERSION
-          ? adminHistoryLegacyIds : null;
+        ? adminHistoryPreviousIds
+        : catalogVersion === OLDER_ADMIN_MODEL_HISTORY_CATALOG_VERSION
+          ? adminHistoryOlderIds
+          : catalogVersion === LEGACY_ADMIN_MODEL_HISTORY_CATALOG_VERSION
+            ? adminHistoryLegacyIds : null;
   if (!ids || !Array.isArray(values) || values.length > ids.length) return null;
   const allowed = new Set(ids);
   const seen = new Set();
@@ -156,14 +166,18 @@ export function expandAdminModelHistoryDay(value) {
     ? adminHistoryCurrentIds
     : day.catalogVersion === adminHistorySeptember23Version
       ? adminHistorySeptember23Ids
+    : day.catalogVersion === SEPTEMBER29_ADMIN_MODEL_HISTORY_CATALOG_VERSION
+      ? adminHistorySeptember29Ids
       : day.catalogVersion === PREVIOUS_ADMIN_MODEL_HISTORY_CATALOG_VERSION
-      ? adminHistoryPreviousIds
-      : day.catalogVersion === OLDER_ADMIN_MODEL_HISTORY_CATALOG_VERSION
-        ? adminHistoryOlderIds : adminHistoryLegacyIds);
+        ? adminHistoryPreviousIds
+        : day.catalogVersion === OLDER_ADMIN_MODEL_HISTORY_CATALOG_VERSION
+          ? adminHistoryOlderIds : adminHistoryLegacyIds);
   const identified = new Map(day.values.map(([id, capacityUsd, participantCount]) => [
     id, Object.freeze({ capacityUsd, participantCount }),
   ]));
-  const byModel = Object.freeze(Object.fromEntries(ADMIN_MODEL_CONFIG.map(({ modelId }) => [
+  const modelConfig = day.catalogVersion === SEPTEMBER29_ADMIN_MODEL_HISTORY_CATALOG_VERSION
+    ? SEPTEMBER29_ADMIN_MODEL_CONFIG : ADMIN_MODEL_CONFIG;
+  const byModel = Object.freeze(Object.fromEntries(modelConfig.map(({ modelId }) => [
     modelId,
     identified.get(modelId) ?? Object.freeze({
       capacityUsd: null,

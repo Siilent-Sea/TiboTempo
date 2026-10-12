@@ -697,7 +697,7 @@ describe("community allowance in the daily aggregate", () => {
     const participant = await enrolledParticipant();
     // The identical calibratable series, but observed on a ProLite (5x) plan.
     // The fit gates pass and the combined public summary converts it to the
-    // Pro 20x-equivalent basis with the shared multiplier configuration.
+    // Pro 10x-equivalent basis with the shared multiplier configuration.
     const accepted = await upload(
       participant,
       calibratableContribution("unknown", "prolite"),
@@ -2872,7 +2872,7 @@ describe("per-model composition from the v1.0 chunk corpus", () => {
           "gpt-5.6-terra": 1_100,
         }),
         // Plus capacities are per that plan's own weekly pool; x20 normalizes
-        // to the Pro-20x basis, landing on the same 2,400.
+        // 120 to 2,400 on the Pro-20x basis; the two-plan median is 2,400.
         composition("p-plus", "plus", { "gpt-5.6-sol": 120 }),
         // Identification failure: contributes to unstable, never to a median.
         composition("p-unstable", "pro", null, "fallback_blended"),

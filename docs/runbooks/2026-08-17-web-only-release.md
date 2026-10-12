@@ -50,7 +50,7 @@ dependency update, or Wrangler configuration change.
   `apps/web/public/model-catalog.generated.js` and
   `apps/web/public/telemetry-shared.generated.js`.
 
-It rejects every other path, including `apps/macos/`, Worker source/runtime
+It rejects every other path, including `apps/electron/`, Worker source/runtime
 code, migrations, package-lock files, and deployment configuration. No other
 file under `packages/` is admitted: not `packages/i18n/index.d.ts`, not
 `packages/telemetry-contract/index.js`, its typings, package manifest, JSON
@@ -437,6 +437,33 @@ commit. Other agents can prepare their own candidates in separate worktrees;
 release one candidate at a time against the latest recorded deployed base.
 
 ## Reviewed Electron stable downloads
+
+### Reuse an already-published release without its private build plan
+
+For a website-only update after the release worktree has been retired, use the
+canonical `release-manifest.json` asset from the existing GitHub release. First
+run `gh release verify vX.Y.Z --repo adamallcock/tibotattle` and confirm the
+release assets pass attestation verification. Download that exact manifest,
+record its SHA-256, and check its version, source commit, repository, and four
+direct installer records. Retain the digest with the local publication receipt.
+This is a recovery intake for an already-published release, not a way to create
+new installer trust claims or reconstruct a missing private plan.
+
+Pass `--electron-published-manifest`, `--electron-published-manifest-sha256`,
+and `--electron-published-build-number` to `product:web-release:prepare` after
+the `--` separator. The build number must be taken from the currently live
+`release-site-manifest.json` for that same installer version. The generator
+validates the canonical release schema, exact four installer targets and
+platform assurances and release tag; it streams and hashes each public
+GitHub installer before writing a production-qualified site manifest. The
+web-only receipt and deploy guards remain unchanged. Never claim that the
+local digest check itself verifies a release attestation; `gh release verify`
+is the separate cryptographic gate.
+
+Do not pass the private-plan flags or native installer flags with this mode.
+Keep the release manifest outside the public source and generated output.
+
+### Reuse a retained reviewed publication plan
 
 For a four-target normal Electron release, use the same public-site generator
 with `--electron-publication-plan`, `--electron-publication-root`, and

@@ -100,19 +100,25 @@ export const EXPECTED_PRIMARY_MIGRATIONS = Object.freeze([
     sha256: "cfd43797151ea3d5a6740da9792be49bf897968094347cd6fbbb9a0cf6510825",
   }),
   Object.freeze({
-    name: "0013_v12_quarantine_admission.sql",
+    name: "0013_performance_ultrafast.sql",
+    sha256: "88ac498493c869009e322e029ccff805236afd8d08ef299c39a3befda72d4aad",
+  }),
+  Object.freeze({
+    name: "0014_v12_quarantine_admission.sql",
     sha256: "01f7b2f75dcbe9de8d42fb194702504db39f7ea8dbc475e28d09604230152344",
   }),
 ] as const);
 
 // The usage successor is independently activatable. The performance
-// migration is deliberately excluded from its gate so a deployment can carry
+// migrations are deliberately excluded from its gate so a deployment can carry
 // a staged usage runtime while the optional histogram stream is still absent.
 const EXPECTED_USAGE_PRIMARY_MIGRATIONS = Object.freeze(
-  EXPECTED_PRIMARY_MIGRATIONS.filter((migration) => migration.name !== "0009_performance_reports.sql"),
+  EXPECTED_PRIMARY_MIGRATIONS.filter((migration) => migration.name !== "0009_performance_reports.sql"
+    && migration.name !== "0013_performance_ultrafast.sql"),
 );
 const EXPECTED_PERFORMANCE_PRIMARY_MIGRATIONS = Object.freeze(
-  EXPECTED_PRIMARY_MIGRATIONS.filter((migration) => migration.name === "0009_performance_reports.sql"),
+  EXPECTED_PRIMARY_MIGRATIONS.filter((migration) => migration.name === "0009_performance_reports.sql"
+    || migration.name === "0013_performance_ultrafast.sql"),
 );
 
 export const EXPECTED_ANALYTICS_MIGRATIONS = Object.freeze([
@@ -259,6 +265,8 @@ const EXPECTED_PRIMARY_SCHEMA_OBJECTS: readonly SchemaObjectPin[] = Object.freez
   { type: "trigger", name: "telemetry_performance_capability_admission" },
   { type: "trigger", name: "telemetry_performance_capability_immutable" },
   { type: "trigger", name: "telemetry_performance_capability_revision" },
+  { type: "trigger", name: "telemetry_performance_cohort_dictionary_insert" },
+  { type: "trigger", name: "telemetry_performance_cohort_dictionary_update" },
   { type: "trigger", name: "telemetry_performance_report_admission" },
   { type: "trigger", name: "telemetry_performance_report_immutable" },
   { type: "trigger", name: "telemetry_performance_report_revision_order" },

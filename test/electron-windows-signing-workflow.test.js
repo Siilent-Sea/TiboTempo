@@ -30,7 +30,7 @@ test("Windows signing workflow registers safely, while signing stays manual and 
   assert.match(workflow, /TIBOTATTLE_ELECTRON_AZURE_ENDPOINT: \$\{\{ vars\.AZURE_CODE_SIGNING_ENDPOINT \}\}/u);
   assert.match(workflow, /TIBOTATTLE_ELECTRON_AZURE_CODE_SIGNING_ACCOUNT_NAME: \$\{\{ vars\.AZURE_CODE_SIGNING_ACCOUNT_NAME \}\}/u);
   assert.match(workflow, /TIBOTATTLE_ELECTRON_AZURE_CERTIFICATE_PROFILE_NAME: \$\{\{ vars\.AZURE_CODE_SIGNING_PROFILE_NAME \}\}/u);
-  assert.match(workflow, /azure\/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca/u);
+  assert.match(workflow, /azure\/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906/u);
   assert.match(workflow, /azure\/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82/u);
   assert.match(workflow, /exclude-environment-credential: true/u);
   assert.match(workflow, /exclude-azure-cli-credential: false/u);

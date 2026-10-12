@@ -114,8 +114,10 @@ test("a v1.3 payload draws every view, and the model view charts the block's mod
   }
   const chart = modelsChart(v13());
   assert.deepEqual(chart.legendSeries.map(item => item.key),
-    ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.5"], "published order leads, the page's own catalog follows");
-  assert.deepEqual(chart.legendSeries.map(item => item.label), ["GPT-6 Astra", "GPT-5.6 Sol", "GPT-5.5"]);
+    ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol"], "published order leads, hidden historical models stay off the comparison");
+  assert.deepEqual(chart.legendSeries.map(item => item.label), ["GPT-6 Astra", "GPT-6 Sol", "GPT-6 Luna", "GPT-5.6 Sol"]);
+  assert.ok(normalized.breakdowns.days.some(day => day.models.some(tuple => tuple[0] === "gpt-5.5")),
+    "a hidden model's evidence is retained without adding it to the selected comparison");
   const models = render(v13(), "models");
   assert.equal(models.state, "published");
   for (const label of ["GPT-6 Astra", "GPT-5.6 Sol"]) assert.ok(models.text.includes(label), label);
@@ -226,7 +228,7 @@ test("crossed v1.4 claims and unreadable versions are refused whole while activi
   }
 });
 
-test("the accepted-version list is exactly v1.0, v1.1, v1.3 and v1.4, and legacy v1.0 rows remain readable", () => {
+test("the accepted-version list is exactly v1.0, v1.1, v1.3, v1.4 and v1.5, and legacy v1.0 rows remain readable", () => {
   // Pinned at the list itself, so adding a version without reading it cannot
   // pass on the side effect of a row shape.
   assert.deepEqual([...COMMUNITY_ALLOWANCE_BREAKDOWN_SCHEMA_VERSIONS], [
@@ -234,6 +236,7 @@ test("the accepted-version list is exactly v1.0, v1.1, v1.3 and v1.4, and legacy
     "community-allowance-breakdowns-v1.1",
     "community-allowance-breakdowns-v1.3",
     "community-allowance-breakdowns-v1.4",
+    "community-allowance-breakdowns-v1.5",
   ]);
   assert.ok(Object.isFrozen(COMMUNITY_ALLOWANCE_BREAKDOWN_SCHEMA_VERSIONS));
   // Control: the legacy v1.0 row shape remains readable under its own version.

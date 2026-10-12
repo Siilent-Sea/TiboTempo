@@ -10,8 +10,8 @@ FROM node:26.2.0-bookworm-slim@sha256:ba2f9edd0785ee291c1a5287764cb41fdb7922336f
 
 ARG TIBOTATTLE_QUALIFICATION_REVISION
 LABEL org.opencontainers.image.revision="${TIBOTATTLE_QUALIFICATION_REVISION}"
+# Electron checks presence, so even "0" disables its sandbox. Keep the override absent.
 ENV CI=1 \
-    ELECTRON_DISABLE_SANDBOX=0 \
     TIBOTATTLE_IMAGE_SOURCE_REVISION="${TIBOTATTLE_QUALIFICATION_REVISION}" \
     npm_config_update_notifier=false \
     npm_config_fund=false \
@@ -78,15 +78,15 @@ RUN pnpm install --frozen-lockfile --ignore-scripts
 # manager or network work. A direct archive fetch also avoids the asynchronous
 # installer path, which aborts under local QEMU amd64 emulation.
 RUN curl --fail --silent --show-error --location --retry 3 \
-    --output /tmp/electron-v43.2.0-linux-x64.zip \
-    https://github.com/electron/electron/releases/download/v43.2.0/electron-v43.2.0-linux-x64.zip \
+    --output /tmp/electron-v43.5.0-linux-x64.zip \
+    https://github.com/electron/electron/releases/download/v43.5.0/electron-v43.5.0-linux-x64.zip \
   && printf '%s  %s\n' \
-    f77ca6ed67bbc68702b69b56ad499bca6ae090705ade7d04f0ac545e409dec68 \
-    /tmp/electron-v43.2.0-linux-x64.zip \
+    3d93fb0b9517fcd74107c628f61990bff60d3c2543694c28b26b1ef78b80def1 \
+    /tmp/electron-v43.5.0-linux-x64.zip \
     | sha256sum --check --strict \
-  && unzip -q /tmp/electron-v43.2.0-linux-x64.zip -d /workspace/node_modules/electron/dist \
+  && unzip -q /tmp/electron-v43.5.0-linux-x64.zip -d /workspace/node_modules/electron/dist \
   && printf 'electron' > /workspace/node_modules/electron/path.txt \
-  && rm -f /tmp/electron-v43.2.0-linux-x64.zip
+  && rm -f /tmp/electron-v43.5.0-linux-x64.zip
 
 COPY apps/electron ./apps/electron
 COPY native/macos-keychain/contract.js ./native/macos-keychain/contract.js
@@ -98,6 +98,7 @@ COPY generated ./generated
 COPY schemas ./schemas
 COPY src ./src
 COPY scripts/smoke-electron-linux.mjs ./scripts/smoke-electron-linux.mjs
+COPY scripts/lib/linux-startup-diagnostics.mjs ./scripts/lib/linux-startup-diagnostics.mjs
 COPY scripts/qualify-linux-secret-service.mjs ./scripts/qualify-linux-secret-service.mjs
 COPY scripts/run-linux-secret-service-qualification.mjs ./scripts/run-linux-secret-service-qualification.mjs
 # Docker build steps and unqualified COPY directives run as root, so the

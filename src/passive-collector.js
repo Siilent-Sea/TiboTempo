@@ -26,6 +26,7 @@ import {
 } from "./providers/codex/logs.js";
 import { localCodexLogScanner } from "./local-node-runtime.js";
 import {
+  codexTierObservation,
   normalizeProviderTier,
   unknownCodexTier,
 } from "./providers/codex/logs.js";
@@ -49,6 +50,7 @@ import { SPARK_QUOTA_LIMIT_IDS } from "./local-companion-usage-model.js";
 import { sanitizeTelemetryAttributionBinding } from "./contribution/index.js";
 
 const CHECKPOINT_SCHEMA_VERSION = "0.3";
+const SURFACE_CLASSIFICATION_CACHE_VERSION = "auto-review-v1";
 const { readRolloutLineage } = localCodexLogScanner;
 const RECORD_SCHEMA_VERSION = "0.3";
 const MAX_RECENT_EVENT_KEYS = 5_000;
@@ -377,10 +379,14 @@ function trimRecentKeys(checkpoint, recentSet, maximumRecentEventKeys) {
 }
 
 function tierUpdateFromRecord(record, diagnostics) {
-  if (record?.type !== "event_msg" || record.payload?.type !== "thread_settings_applied") return null;
-  const settings = record.payload?.thread_settings;
-  if (!settings || typeof settings !== "object" || !Object.hasOwn(settings, "service_tier")) {
+  const observation = codexTierObservation(record);
+  if (observation === null) return null;
+  if (observation.status === "omitted") {
     diagnostics.tierSettingOmissions = (diagnostics.tierSettingOmissions ?? 0) + 1;
+    return null;
+  }
+  if (observation.status === "malformed") {
+    diagnostics.malformedTierSettingEvents = (diagnostics.malformedTierSettingEvents ?? 0) + 1;
     return null;
   }
   const observedAtMs = Date.parse(record.timestamp);
@@ -388,14 +394,14 @@ function tierUpdateFromRecord(record, diagnostics) {
     diagnostics.malformedTierSettingEvents = (diagnostics.malformedTierSettingEvents ?? 0) + 1;
     return null;
   }
-  const rawTier = settings.service_tier;
+  const rawTier = observation.rawTier;
   if (rawTier !== null && typeof rawTier !== "string") {
     diagnostics.malformedTierSettingEvents = (diagnostics.malformedTierSettingEvents ?? 0) + 1;
     return null;
   }
   const tier = normalizeProviderTier(rawTier, {
     billingSurface: "chatgpt_subscription",
-    tierSource: "rollout_thread_settings",
+    tierSource: observation.tierSource,
     tierObservedAt: record.timestamp,
   });
   if (rawTier !== null && tier.providerTierRaw === null) {
@@ -405,14 +411,14 @@ function tierUpdateFromRecord(record, diagnostics) {
   diagnostics.tierSettingEvents = (diagnostics.tierSettingEvents ?? 0) + 1;
   diagnostics.tierSettingCounts ??= {};
   diagnostics.tierSettingCounts[tier.codexSpeedMode] = (diagnostics.tierSettingCounts[tier.codexSpeedMode] ?? 0) + 1;
-  return { providerTierRaw: tier.providerTierRaw, observedAt: record.timestamp, observedAtMs };
+  return { providerTierRaw: tier.providerTierRaw, tierSource: observation.tierSource, observedAt: record.timestamp, observedAtMs };
 }
 
 function updateTierState(state, update) {
   if (!update) return;
   const priorMs = Date.parse(state.tierState?.observedAt);
   if (Number.isFinite(priorMs) && priorMs > update.observedAtMs) return;
-  state.tierState = { providerTierRaw: update.providerTierRaw, observedAt: update.observedAt };
+  state.tierState = { providerTierRaw: update.providerTierRaw, tierSource: update.tierSource, observedAt: update.observedAt };
 }
 
 function tierForUsage(state, observedAt) {
@@ -422,7 +428,7 @@ function tierForUsage(state, observedAt) {
   if (!tierState || !Number.isFinite(usageMs) || !Number.isFinite(tierMs) || tierMs > usageMs) return unknownCodexTier();
   return normalizeProviderTier(tierState.providerTierRaw, {
     billingSurface: "chatgpt_subscription",
-    tierSource: "rollout_thread_settings",
+    tierSource: tierState.tierSource ?? "rollout_thread_settings",
     tierObservedAt: tierState.observedAt,
   });
 }
@@ -814,7 +820,12 @@ function rolloutRecord({ record, state, receivedAt, checkpoint }) {
       ...provisionalRolloutAccount({ checkpoint, observedMs, receivedAt }),
       controlledState: "unknown",
     };
-    safe.eventKey = eventKey({ ...safe, receivedAt: undefined, stalenessMs: undefined });
+    safe.eventKey = eventKey({
+      ...safe,
+      surfaceClassification: state.occurrenceSurfaceClassification ?? safe.surfaceClassification,
+      receivedAt: undefined,
+      stalenessMs: undefined,
+    });
     return safe;
   }
   if (record.type !== "event_msg" || record.payload?.type !== "token_count") return null;
@@ -862,7 +873,12 @@ function rolloutRecord({ record, state, receivedAt, checkpoint }) {
     windows,
     controlledState: "unknown",
   };
-  safe.eventKey = eventKey({ ...safe, receivedAt: undefined, stalenessMs: undefined });
+  safe.eventKey = eventKey({
+    ...safe,
+    surfaceClassification: state.occurrenceSurfaceClassification ?? safe.surfaceClassification,
+    receivedAt: undefined,
+    stalenessMs: undefined,
+  });
   return safe;
 }
 
@@ -1030,6 +1046,7 @@ export async function ingestRolloutUpdates({
       }
       const lineage = await readRolloutLineage(file.path, {
         maximumTotalBytes: maximumLineagePrefixBytes,
+        signal,
       });
       const seedBoundary = boundedRecentTail
         ? recentTailStart
@@ -1050,6 +1067,8 @@ export async function ingestRolloutUpdates({
         tierState: seed.tierState,
         tailSeeded: initializeAtEnd || boundedRecentTail,
         surfaceClassification: lineage.surfaceClassification,
+        occurrenceSurfaceClassification: lineage.occurrenceSurfaceClassification,
+        surfaceClassificationVersion: SURFACE_CLASSIFICATION_CACHE_VERSION,
         lineageDisposition: lineage.surfaceClassification?.lineageDisposition ?? "standalone",
         isInlineFork: lineage.isInlineFork === true,
         // Codex writes an inline fork's replayed parent history before the
@@ -1098,6 +1117,7 @@ export async function ingestRolloutUpdates({
       const effectiveOffset = file.metadata.size < state.offset ? 0 : state.offset;
       const mainRead = Math.max(0, file.metadata.size - effectiveOffset);
       const lineageRead = state.surfaceClassification
+          && state.surfaceClassificationVersion === SURFACE_CLASSIFICATION_CACHE_VERSION
           && (state.isInlineFork !== undefined
             || state.lineageDisposition === "standalone"
             || state.lineageDisposition === "parent_linked")
@@ -1126,13 +1146,30 @@ export async function ingestRolloutUpdates({
       }
       markChanged();
     }
-    if (!state.surfaceClassification || state.isInlineFork === undefined) {
+    if (!state.surfaceClassification || state.isInlineFork === undefined
+        || state.surfaceClassificationVersion !== SURFACE_CLASSIFICATION_CACHE_VERSION) {
+      const needsLineage = !state.surfaceClassification || state.isInlineFork === undefined;
       const lineage = await readRolloutLineage(file.path, {
         maximumTotalBytes: maximumLineagePrefixBytes,
+        signal,
       });
-      state.surfaceClassification = lineage.surfaceClassification;
-      state.lineageDisposition = lineage.surfaceClassification?.lineageDisposition ?? "standalone";
-      state.isInlineFork = lineage.isInlineFork === true;
+      if (needsLineage) {
+        state.surfaceClassification = lineage.surfaceClassification;
+        state.occurrenceSurfaceClassification = lineage.occurrenceSurfaceClassification;
+        state.lineageDisposition = lineage.surfaceClassification?.lineageDisposition ?? "standalone";
+        state.isInlineFork = lineage.isInlineFork === true;
+      } else if (lineage.surfaceClassification?.threadSource === "auto_review") {
+        // Existing checkpoints memoized classification forever. Refresh only
+        // the newly reviewed dimension from its bounded header evidence;
+        // absent/malformed metadata cannot invent an exemption or discard a
+        // known surface. Cursor, counters and replay state remain untouched.
+        state.occurrenceSurfaceClassification ??= state.surfaceClassification;
+        state.surfaceClassification = {
+          ...state.surfaceClassification,
+          threadSource: "auto_review",
+        };
+      }
+      state.surfaceClassificationVersion = SURFACE_CLASSIFICATION_CACHE_VERSION;
       if (state.ownTurnContextSeen === undefined) {
         // A checkpoint from before this field: the cursor has already
         // consumed some prefix. A known model means at least one own or

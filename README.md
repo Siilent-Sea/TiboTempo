@@ -35,11 +35,11 @@ Native Mac version 0.1.18 retains its default-off, review-and-send behavior.
   explicit uncertainty band.
 - **Timelines** — hourly/daily/weekly usage against allowance, entirely from
   local evidence.
-- **Fast-mode pricing** — API-price-equivalent estimates for Codex Fast turns
-  use the provider's published Priority (Fast) API rates: 2x Standard for
-  GPT-6 Astra, Sol and Luna and the GPT-5.6 and GPT-5.4 families, 2.5x for
-  GPT-5.5, and a clearly disclosed assumed 2x for models with no published
-  Priority rate. These estimates are not subscription charges or quota formulas.
+- **Speed-mode pricing** — reports distinguish observed Standard, Fast and
+  Ultrafast usage. Supported API-equivalent prices include GPT-6.1 Sol;
+  unsupported model and speed combinations remain explicitly unpriced. These
+  estimates are not subscription charges or quota formulas. See the
+  [0.1.28 release notes](release-notes/0.1.28.md) for the model and plan changes.
   Codex records the speed mode only when it is applied or
   changed, so turns before the first change in a session are attributed to
   Standard as a visible assumption unless a timestamped configuration reading
@@ -80,18 +80,18 @@ See [Verify a TiboTattle release](docs/verify-release.md) to check the downloade
 bytes, Apple signature and notarization, and any non-null release-specific
 GitHub provenance evidence yourself.
 
+For Windows x64 or Linux x86_64, download the matching signed Windows installer
+or Linux AppImage from the [latest release](https://github.com/adamallcock/tibotattle/releases/latest).
+See [platform qualification](docs/reference/platform-support.md) for the tested
+installation and upgrade paths and their remaining limits.
+
 ## Build from source (developers)
 
 These requirements are for development, not installation of the released app.
-The native app builder runs on macOS 14 or later on Apple silicon. Repository
-tooling requires Node.js ≥ 22.13,
-[pnpm](https://pnpm.io) 11, and the Xcode command-line tools. The app-bundle
-build itself requires exactly Node v26.2.0 on macOS arm64: it fails on any
-other runtime rather than producing an unverifiable bundle.
-The default target is Apple silicon. To build an Intel target on that same
-builder, follow the explicit target and verified-runtime instructions in
-[the native developer guide](apps/macos/README.md#developer-build). A native
-Intel build host is not currently supported by this builder.
+Repository tooling requires Node.js ≥ 22.13 and
+[pnpm](https://pnpm.io) 11. macOS Electron packaging also requires the
+supported macOS build host and Xcode command-line tools; the production
+candidate procedure is in the [macOS release runbook](docs/runbooks/macos-stable-release-runbook.md).
 
 The root workspace uses pnpm; the Worker keeps its own npm lockfile, which is
 needed only for hosted-service checks and the full gates:
@@ -104,8 +104,7 @@ npm --prefix apps/worker ci
 Build and open the self-contained desktop app:
 
 ```bash
-npm run product:macos:build
-open ".release-build/macos/TiboTattle.app"
+npm run package:electron:development
 ```
 
 For development only, run the local dashboard in an external browser without
@@ -115,9 +114,10 @@ building the app:
 npm run product:local
 ```
 
-then open <http://localhost:8787>. A useful headline usually appears within
-seconds; the first deep pass over a large history is bounded, cancellable, and
-resumable.
+then open <http://localhost:8787>. Electron is the main app and uses this same
+dashboard for local collection, Settings and accountless community sharing. A
+useful headline usually appears within seconds; the first deep pass over a
+large history is bounded, cancellable, and resumable.
 
 ## Uninstall
 
@@ -174,15 +174,15 @@ for the provenance and future-locale policy.
   `account/read`, `account/rateLimits/read`, and `account/usage/read`. Source
   records are processed locally; prompt and response text is not retained in
   derived state.
-- Contribution to the optional hosted community-aggregate service is **off by
-  default**, requires an explicit review of the exact retained metadata, and is
-  pseudonymous and content-free. Confirmed **Disconnect this Mac** stops this
-  device's contribution authority while preserving hosted and local history.
-  Self-service hosted deletion is retired in current source; hosted erasure is
-  a separate private owner operation, not an app control.
-- Contributing requires signing in with Google or Apple so that one person
-  counts once. The service stores only an irreversible hash of that sign-in,
-  never your name or email, and local-only use needs no account at all.
+- Electron's optional community sharing is accountless, pseudonymous and
+  content-free. The [accepted sharing policy](docs/decisions/2026-09-04-accountless-sharing-policy.md)
+  enables it for identified fresh installations and preserves saved opt-outs.
+  Existing installations without a choice receive the policy's visible notices
+  before activation. Community and Settings expose the same saved choice.
+- The shared dashboard contains no Google/Apple sign-in or legacy social
+  controls. Legacy enrollment and **Disconnect this Mac** backend contracts
+  remain compatible with their existing consumers. Hosted erasure is a separate
+  private owner operation, not an app control; local-only use needs no account.
 - Derived artifacts (reports, exports, telemetry) are schema-validated to
   exclude prompts, responses, commands, paths, URLs, and raw identifiers.
 
@@ -204,7 +204,7 @@ compatibility fallback until they are explicitly migrated.
 
 | Path | Contents |
 | --- | --- |
-| `apps/macos`, `apps/local`, `apps/web` | Desktop app shell, loopback companion server, and browser dashboard |
+| `apps/electron`, `apps/local`, `apps/web` | Desktop app shell, loopback companion server, and browser dashboard |
 | `apps/worker` | Optional hosted contribution service (off by default) |
 | `packages/` | Workspace packages: accounting, quota analysis, telemetry contract, identity core, and i18n |
 | `src/` | Product source: `application/`, `platform/`, `export/`, `contribution/`, `reporting/`, `providers/` owners plus compatibility roots |
@@ -215,11 +215,11 @@ Despite the name, `local-review/` is committed developer tooling that builds a
 reproducible standalone review artifact — no local user data is tracked there.
 
 The hosted community-aggregate service at
-[tibotattle.com](https://tibotattle.com) is operated by the maintainer, and
-the deploy scripts in this repository target the owner's Cloudflare account.
-Forks that want their own hosted service must provision their own resources
-per `apps/worker/wrangler.jsonc`; the local app never requires the hosted
-service.
+[tibotattle.com](https://tibotattle.com) is operated by the maintainer. See the
+[current status](docs/current-status.md) and
+[production operations](docs/runbooks/production-operations.md) for the observed
+deployment and its operating boundaries. Forks must provision their own hosted
+resources; the local app never requires the hosted service.
 
 For the complete engineering map of loopback and hosted HTTP routes, native
 bridges, child-process protocols, Cloudflare bindings, workspace package APIs,
@@ -242,43 +242,30 @@ pnpm container:portable:build
 pnpm container:portable:test
 ```
 
-These commands are preparation evidence only. The shipping application remains
-macOS-only. See the [current status matrix](docs/current-status.md) for the
-separate source, native, installed, release, updater, and platform gates.
+These commands are preparation evidence only. The released desktop app has
+macOS Apple silicon, macOS Intel, Windows x64 and Linux x64 installers. See the
+[current status matrix](docs/current-status.md) for the separate source, native,
+installed, release, updater and platform qualification.
 
 ```bash
 npm run product:check
 ```
 
-For native iteration, start with a deterministic preflight and the source-only
-macOS lane:
+For iteration, run the preflight and the retained native-upgrade transition
+contract gate:
 
 ```bash
-npm run test:fast
-npm run test:macos:smoke
+npm run test:preflight
+npm run product:macos:transition:test
 ```
 
-`test:macos:smoke` builds one development-only app with the test compiler
-profile; that profile cannot create preview or external-distribution output.
-Use `npm run test:changed -- --base <revision>` to select known changed paths,
-which includes `<revision>...HEAD` plus staged, unstaged, and untracked local
-paths. It narrows only reviewed native app/build and i18n paths: native source
-changes include the test-profile smoke, and `--full` adds the expensive
-bundle-artifact lane. Web, local-server, shared configuration, runner, and
-unfamiliar paths conservatively run the complete `npm run check` gate. The
-smoke lane requires macOS arm64 with the pinned Node v26.2.0 builder; it fails
-rather than falsely reporting a smoke result on another platform. The retained
-release-quality macOS gate is always:
-
-```bash
-npm run product:macos:test
-```
-
-`npm test` and lane execution remain serial by design. The artifact lane itself
-uses two isolated OS-level builder processes for its reproducibility check;
-each build has a separate output and compiler scratch directory. Measure the
-local lanes with `npm run test:benchmark` (or `test:benchmark:release` to
-include the retained release gate).
+The transition gate prepares the pinned Sparkle tools and tests historical
+signed-artifact validation, both incoming appcast paths, and Electron handover
+contracts. It does not build the retired native app or qualify an installed
+upgrade. Use `npm run test:changed -- --base <revision>` to select known changed
+paths; unfamiliar or shared changes run the complete `npm run check` gate.
+Both-architecture installed upgrade qualification remains a separate release
+gate in the [macOS release runbook](docs/runbooks/macos-stable-release-runbook.md).
 
 `npm run architecture:check` enforces ownership boundaries. Maintained current
 references are deliberately split by authority:

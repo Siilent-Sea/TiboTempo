@@ -597,7 +597,13 @@ was dropped in favour of `main`'s `0010`. It was then `0012` until the
 2026-09-26 merge of `main`'s production hotfix
 `0012_v12_empty_day_manifests.sql`, when it and the retained-history transfer
 migration were renamed byte-identically to `0013` and `0014` so both run after
-the hotfix re-creates the v1.2 tables. Seven focused tests cover
+the hotfix re-creates the v1.2 tables. On 2026-10-12, an owner-authorized
+production ledger readback proved both still unapplied. The combined source
+keeps main's performance migration at `0013` and renames these files,
+byte-identically, to `0014_v12_quarantine_admission.sql` and
+`0015_accountless_history_transfer_v12.sql`; applied names and bytes remain
+unchanged ([integration record](./2026-10-11-gcp-release-pr-integration.md)).
+Seven focused tests cover
 admission, missing/mismatched/deleting registrations and transaction rollback.
 Usage activation pins the migration ledger hash and trigger. The historical
 source-pinned migration operator ends at `0009`; `0013` needs a separately

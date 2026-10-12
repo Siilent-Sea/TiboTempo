@@ -611,4 +611,3 @@ export function createGoogleFrontEnd({
 export function loopbackOrigin(port) {
   return Object.freeze({ protocol: "http:", hostname: "127.0.0.1", port, host: `127.0.0.1:${port}` });
 }
-

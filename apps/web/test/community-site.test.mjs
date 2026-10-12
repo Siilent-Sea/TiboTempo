@@ -9,6 +9,7 @@ import {
   PublicCommunityClient,
   communityDailyWindow,
   normalizeCommunityDailySeries,
+  projectCommunityDailyPayloadForCache,
   normalizeCommunitySnapshot,
 } from "../public/community-data.js";
 import {
@@ -317,7 +318,7 @@ test("the public site presents only the install call to action and the community
   assert.match(html, /id="community-daily-hero"/u);
   assert.match(
     html,
-    /id="community-method-summary"[^>]*>See community activity<\/summary>/u,
+    /id="community-method-summary"[^>]*>Explore the contribution history<\/summary>/u,
   );
   assert.doesNotMatch(html, /community-daily-status|community-daily-panel-state/u);
 
@@ -511,7 +512,7 @@ test("the first visit leads with the product, platform choice, and daily communi
     /brew install --cask adamallcock\/tap\/tibotattle/u,
   );
   assert.match(html, /Latest community evidence/u);
-  assert.match(html, /See community activity/u);
+  assert.match(html, /Explore the contribution history/u);
   assert.match(html, /Community activity over time/u);
   assert.match(
     html,
@@ -1126,7 +1127,7 @@ test("unavailable community activity uses the compact public state", async () =>
   );
   assert.match(
     html,
-    /<summary id="community-method-summary"[^>]*>See community activity<\/summary>/u,
+    /<summary id="community-method-summary"[^>]*>Explore the contribution history<\/summary>/u,
   );
   assert.match(html, /Community activity over time/u);
   assert.match(
@@ -1195,7 +1196,7 @@ test("the public guidance pages are useful stubs without app-only controls", asy
   assert.match(verifyRelease, /### Linux AppImage/u);
   assert.match(verifyRelease, /Mac App Store/u);
   assert.match(verifyRelease, /does not prove safety/u);
-  assert.match(privacy, /<title>TiboTattle Privacy Overview<\/title>/u);
+  assert.match(privacy, /<title data-i18n="privacy.page.title">TiboTattle Privacy Overview<\/title>/u);
   assert.match(privacy, /This website cannot read local Codex files\./u);
   assert.match(privacy, /fresh installations enable sharing\s+automatically/u);
   assert.match(privacy, /No social sign-in is required/u);
@@ -1215,7 +1216,7 @@ test("the public guidance pages are useful stubs without app-only controls", asy
     assert.match(page, /href="\.\/community\.html#download"/u);
     assert.match(
       page,
-      /<span class="header-download-label">Download<\/span>/u,
+      /<span class="header-download-label"(?: data-i18n="privacy.page.download")?>Download<\/span>/u,
       "resource-page download labels must collapse without clipping on narrow headers",
     );
     assert.match(page, /href="\.\/docs\.html"/u);
@@ -1227,7 +1228,7 @@ test("the public guidance pages are useful stubs without app-only controls", asy
   }
 });
 
-test("the dashboard keeps contribution review local while the public site owns delayed evidence", async () => {
+test("the dashboard uses accountless sharing while the public site owns delayed evidence", async () => {
   const siteSource = await readFile(SITE_SOURCE, "utf8");
   const appSource = await readFile(APP_SOURCE, "utf8");
   assert.match(siteSource, /from "\.\/community-view\.js"/u);
@@ -1262,8 +1263,8 @@ test("the dashboard keeps contribution review local while the public site owns d
   // flow, so the dashboard's local destination is now the consent card.
   assert.doesNotMatch(appHtml, /id="prepare-contribution"/u);
   assert.doesNotMatch(appHtml, /id="sync-run-once"/u);
-  assert.match(appHtml, /id="incremental-consent"/u);
-  assert.match(appHtml, /id="incremental-consent-approve"/u);
+  assert.doesNotMatch(appHtml, /id="incremental-consent"/u);
+  assert.match(appHtml, /id="electron-accountless-sharing-enabled"/u);
 });
 
 test("the retained weekly snapshot normalizer still guards the app's closed contract", () => {
@@ -1328,6 +1329,8 @@ test("the community allowance surface leads the product hero with honest labelin
     /data-range-days="30" class="active" aria-pressed="true"/u,
   );
   assert.match(html, /Pro 20x-equivalent allowance/u);
+  assert.match(html, /class="allowance-intro-copy" role="paragraph"[\s\S]*?id="community-allowance-source-summary"/u);
+  assert.match(html, /class="allowance-picker-row"[\s\S]*?data-allowance-view-controls[\s\S]*?id="community-allowance-range-controls"/u);
   assert.match(html, /API-price value of a Pro 20x-equivalent week: overall, by plan or by model/u);
   for (const view of ["aggregate", "plans", "models"]) {
     assert.equal(html.match(new RegExp(`data-allowance-view="${view}"`, "gu"))?.length, 2);
@@ -1672,6 +1675,10 @@ test("a published daily series renders friendly cumulative activity, latest-firs
 
   const table = container.descendants().find(({ tag }) => tag === "table");
   assert.ok(table, "a published daily series renders its table");
+  const tableRegion = container.descendants().find(element => element.className === "table-wrap snapshot-table");
+  assert.equal(tableRegion.attributes.get("role"), "region");
+  assert.equal(tableRegion.attributes.get("tabindex"), "0");
+  assert.equal(tableRegion.attributes.get("aria-label"), "Delayed daily community activity totals");
   const columnLabels = table
     .descendants()
     .filter((element) => element.tag === "th")
@@ -1726,7 +1733,8 @@ test("community spend card sums only reported equivalents and qualifies incomple
       basis: "reported_usage_event_time_api_price_equivalent_v1",
       currency: "USD", knownCostUsd, coverage: "complete", usageEvents: 120,
       fullyPricedUsageEvents: 120, partiallyPricedUsageEvents: 0, unpricedUsageEvents: 0,
-      pricingMethodVersion: "server-api-price-equivalent-v1.0", registrySha256: "a".repeat(64),
+      pricingMethodVersion: "server-api-price-equivalent-v0.6",
+      registrySha256: "d57a7443bb43a756f1458872897dfcfcafdde0893433fc83b1036d58184de78d",
       ...overrides,
     };
   }
@@ -1768,6 +1776,88 @@ test("community spend card sums only reported equivalents and qualifies incomple
     assert.equal(cards[1].children[1].textContent, value, label);
     assert.equal(cards[1].children[2].textContent, detail, label);
     assert.doesNotMatch(container.text, /Contributors that day|9,999/u, label);
+  }
+});
+
+test("published spend pricing provenance preserves original totals, dates and versions", () => {
+  const historical = {
+    basis: "reported_usage_event_time_api_price_equivalent_v1", currency: "USD",
+    knownCostUsd: 1.25, coverage: "complete", usageEvents: 120,
+    fullyPricedUsageEvents: 120, partiallyPricedUsageEvents: 0, unpricedUsageEvents: 0,
+    pricingMethodVersion: "server-api-price-equivalent-v0.5",
+    registrySha256: "48119389ecbcaced58837bc24fa852c3c4a99835289b417e69f34fb0166a63b9",
+  };
+  const current = {
+    ...historical, knownCostUsd: 2.5,
+    pricingMethodVersion: "server-api-price-equivalent-v0.6",
+    registrySha256: "d57a7443bb43a756f1458872897dfcfcafdde0893433fc83b1036d58184de78d",
+  };
+  const unknown = { ...current, registrySha256: historical.registrySha256 };
+  const unavailable = {
+    ...historical, knownCostUsd: null, coverage: "unavailable",
+    fullyPricedUsageEvents: 0, unpricedUsageEvents: 120,
+  };
+  const day = (date, spend) => publishedDailyDay(date, 2, {
+    payload: { apiEquivalentSpend: spend, allowance: allowanceBlock({ centralUsd: 9999 }) },
+  });
+  for (const [label, days, value, title, notice] of [
+    ["historical", [day("2026-08-06", historical)], "$1.25", "Total published API-equivalent estimates",
+      "Published estimates use earlier pricing. Repricing pending."],
+    ["current", [day("2026-08-06", current)], "$2.5", "Total API-equivalent spend", ""],
+    ["mixed", [day("2026-08-06", historical), day("2026-08-07", current)], "$3.75",
+      "Total published API-equivalent estimates", "Some published estimates use earlier pricing. Repricing pending."],
+    ["historical and absent", [day("2026-08-06", historical), publishedDailyDay("2026-08-07", 1)], "$1.25",
+      "Total published API-equivalent estimates", "Published estimates use earlier pricing. Repricing pending."],
+    ["unknown pair", [day("2026-08-06", unknown)], "$2.5", "Total published API-equivalent estimates",
+      "Published estimates include an unrecognized pricing version."],
+    ["historical and unknown", [day("2026-08-06", historical), day("2026-08-07", unknown)], "$3.75",
+      "Total published API-equivalent estimates", "Some published estimates use earlier pricing. Repricing pending."],
+    ["all unavailable", [day("2026-08-06", unavailable)], "—", "Total API-equivalent spend", ""],
+  ]) {
+    const payload = publishedDailySeries({ days });
+    const documentRef = fakeDocument(), container = documentRef.createElement("div");
+    renderCommunityDailySeries({ documentRef, container, payload,
+      cache: { fetchedAt: "2026-08-08T02:00:00.000Z", ageMs: 3600000 } });
+    const card = container.descendants().find(element => element.className === "snapshot-quality-grid").children[1];
+    assert.equal(card.children[0].textContent, title, label);
+    assert.equal(card.children[1].textContent, value, label);
+    assert.equal(card.children[2].textContent.endsWith(notice), true, label);
+    assert.equal(card.children[2].textContent.includes("Repricing pending."), notice.includes("Repricing pending."), label);
+    assert.match(card.children[2].textContent, /not an actual bill/u, label);
+    assert.doesNotMatch(container.text, /9,999/u, label);
+    const normalized = normalizeCommunityDailySeries(payload);
+    assert.equal(normalized.days[0].day, "2026-08-06", label);
+    assert.equal(normalized.days[0].revision, 2, label);
+    assert.equal(normalized.days[0].releasedAt, days[0].releasedAt, label);
+    assert.deepEqual(normalized.days[0].apiEquivalentSpend, days[0].payload.apiEquivalentSpend, label);
+    assert.deepEqual(payload.days, days, "rendering must never reprice or restamp the publication");
+    const cached = JSON.parse(JSON.stringify(projectCommunityDailyPayloadForCache(payload)));
+    renderCommunityDailySeries({ documentRef, container, payload: cached,
+      cache: { fetchedAt: "2026-08-08T02:00:00.000Z", ageMs: 3600000 } });
+    const restoredCard = container.descendants().find(element => element.className === "snapshot-quality-grid").children[1];
+    assert.equal(restoredCard.text, card.text, `${label}: cache reload retains the original estimate and pricing notice`);
+    const restored = normalizeCommunityDailySeries(cached).days[0];
+    assert.deepEqual(restored.apiEquivalentSpend, normalized.days[0].apiEquivalentSpend, label);
+    assert.equal(restored.releasedAt, normalized.days[0].releasedAt, label);
+    assert.equal(restored.revision, normalized.days[0].revision, label);
+  }
+  const invalid = { ...historical, fullyPricedUsageEvents: 119 };
+  const payload = publishedDailySeries({ days: [day("2026-08-06", invalid)] });
+  const documentRef = fakeDocument(), container = documentRef.createElement("div");
+  renderCommunityDailySeries({ documentRef, container, payload });
+  const card = container.descendants().find(element => element.className === "snapshot-quality-grid").children[1];
+  assert.equal(card.children[1].textContent, "—", "invalid conservation cannot become a published estimate");
+  assert.equal(card.children[2].textContent, "API-equivalent spend unavailable; not an actual bill");
+});
+
+test("published pricing notices retain their meaning in every shipped language", () => {
+  for (const locale of SUPPORTED_LOCALES) {
+    for (const identity of ["historical", "mixed", "unknown"]) {
+      const key = `community.daily.publishedPricing.${identity}`;
+      const notice = translate(key, {}, locale);
+      assert.notEqual(notice, key, `${locale}: ${identity}`);
+      assert.ok(notice.length > 0);
+    }
   }
 });
 
@@ -2123,6 +2213,25 @@ test("the daily normalizer treats the allowance block as additive and per-day", 
     centralUsd: 1879,
     band80Usd: null,
   });
+
+  const current = allowanceBlock({
+    basis: "seven_day_codex_pro10x_equivalent_personal_plans_trailing_30d_promax25",
+    normalization: "pro_x1_prolite_x2_promax_x0_4_plus_x10",
+  });
+  const currentOnly = normalizeCommunityDailySeries(publishedDailySeries({
+    days: [allowanceDay("2026-08-06", current)],
+  }));
+  assert.equal(currentOnly.days[0].allowance.basis, current.basis);
+  assert.equal(currentOnly.days[0].allowance.normalization, current.normalization);
+  const mixed = normalizeCommunityDailySeries(publishedDailySeries({
+    days: [allowanceDay("2026-08-06", allowanceBlock()), allowanceDay("2026-08-07", current)],
+  }));
+  assert.equal(mixed.state, "published");
+  assert.deepEqual(mixed.days.map(day => day.allowance.centralUsd), [1879, 1879],
+    "a cutover preserves each day's raw evidence");
+  const mixedChart = buildCommunityAllowanceChartModel(mixed);
+  assert.deepEqual(mixedChart.dots.map(dot => dot.day), ["2026-08-07"],
+    "the selected basis cannot connect an estimate recorded under another basis");
 });
 
 test("the allowance chart model maps estimates honestly and slices ranges", () => {
@@ -2179,7 +2288,7 @@ test("the allowance chart model maps estimates honestly and slices ranges", () =
   assert.ok(radiusByDay.get("2026-08-05") > radiusByDay.get("2026-04-01"));
   // The dollar axis covers the largest published claim (the band top).
   assert.ok(all.dollarTicks[all.dollarTicks.length - 1].value >= 2300);
-  assert.equal(all.dollarTicks[0].value, 0);
+  assert.ok(all.dollarTicks[0].value > 0, "allowance history uses a data-derived positive floor");
   // The latest point carries the honest counts the headline renders.
   assert.equal(all.latest.day, "2026-08-05");
   assert.equal(all.latest.fitCount, 12);
@@ -2238,9 +2347,14 @@ test("the allowance section renders the estimate with its visible caveat", () =>
   assert.match(container.text, /5 qualifying reset fits in the trailing 30 days/u);
   assert.match(container.text, /Latest published estimate \(Aug 7, 2026\)/u);
   assert.doesNotMatch(container.text, /Latest published estimate \(Aug 6, 2026\)/u);
-  // The methodology note names the merged multipliers and real 40pp gate.
-  assert.match(container.text, /Pro ×1, Pro 5x ×4, Plus ×20/u);
-  assert.match(container.text, /40-point observed-span floor/u);
+  // The methodology stays available inside the source disclosure, without a
+  // second visible paragraph below the aggregate chart.
+  const methodDetails = container.descendants().find(element => element.className === "snapshot-disclosure-details");
+  assert.ok(methodDetails);
+  assert.match(methodDetails.text, /Pro ×1, Pro 5x ×4, Plus ×20/u);
+  assert.match(methodDetails.text, /40-point observed-span floor/u);
+  assert.doesNotMatch(methodDetails.text, /25-point observed-span floor/u);
+  assert.equal(container.children.at(-1).className, "community-daily-chart community-allowance-chart");
   // Chart present with band, line, and fit dots; sparse two-point series
   // carries the still-filling note.
   const svg = container.descendants().find(({ tag }) => tag === "svg");
@@ -2747,20 +2861,19 @@ test("every figure on the page carries a legible TiboTattle credit", async () =>
   );
 });
 
-test("the band opens on its chart, with its figures hosted in the hero", async () => {
+test("contribution history starts collapsed while headline figures stay in the hero", async () => {
   const html = await readFile(SITE_HTML, "utf8");
   const styles = await readFile(new URL("../public/styles.css", import.meta.url), "utf8");
-  // The disclosure stays -- the published-site contract pins its summary --
-  // but it no longer hides the page's community evidence behind a click.
-  assert.match(html, /<details class="community-method" open>/u);
+  // Headline evidence stays in the hero; the volume history is supporting detail.
+  assert.match(html, /<details class="community-method">/u);
   assert.match(
     html,
-    /<summary id="community-method-summary"[^>]*>See community activity<\/summary>/u,
+    /<summary id="community-method-summary"[^>]*>Explore the contribution history<\/summary>/u,
   );
   assert.equal(
     insideClosedDetails(html, html.indexOf('id="community-daily-result"')),
-    false,
-    "the figures the daily renderer writes are not behind a closed disclosure",
+    true,
+    "daily details remain inside the contribution history disclosure",
   );
   // The figures now lead the hero instead, so the band opens on its chart and
   // must not keep a gap where they used to sit.
@@ -2768,8 +2881,7 @@ test("the band opens on its chart, with its figures hosted in the hero", async (
     styles,
     /\.community-site \.community-proof \.community-daily-chart:first-child \{\s*margin-top: 0;/u,
   );
-  // Open by default, the summary is the band's rule, so the heading below it
-  // does not draw a second one.
+  // When opened, the summary and heading share a single dividing rule.
   assert.match(
     styles,
     /\.community-site \.community-method\[open\] > summary \{[^}]*border-bottom: 1px solid var\(--line\);/u,
@@ -3003,16 +3115,15 @@ test("the cache chart's unit noun is the same measurement in every locale", asyn
   }
 });
 
-test("the measured cache section styles its period control and its caveat", async () => {
+test("the measured cache section styles its period control without the ties caveat", async () => {
   const styles = await readFile(new URL("../public/feature-tour.css", import.meta.url), "utf8");
   const source = await readFile(
     new URL("../public/feature-insights.js", import.meta.url),
     "utf8",
   );
-  // Both are inserted above the plot once measured evidence arrives, so both
-  // have to be styled for that position rather than left unstyled.
+  // The period picker is inserted above the plot once measured evidence arrives.
   assert.match(source, /className='insight-demo-periods'/u);
-  assert.match(source, /className='insight-demo-ties'/u);
+  assert.doesNotMatch(source, /className='insight-demo-ties'/u);
   assert.match(source, /className='insight-demo-period-note'/u);
 
   // The period control reads as interactive: a pressed state, a hover, a
@@ -3026,24 +3137,20 @@ test("the measured cache section styles its period control and its caveat", asyn
   assert.match(styles, /\.insight-demo-periods button:hover \{/u);
   assert.match(styles, /\.insight-demo-periods button:focus-visible \{[^}]*outline:/u);
 
-  // The caveat reads as a caveat: quieter than the section label above it,
-  // held to a readable measure, and not dressed as a warning.
-  const label = styles.match(/\.insight-demo-label \{([^}]*)\}/u);
-  const ties = styles.match(/\.insight-demo-ties \{([^}]*)\}/u);
-  assert.ok(label && ties, "the label and the caveat are both styled");
-  const size = (rule) => Number(rule.match(/font-size:(\d+(?:\.\d+)?)px/u)?.[1]);
-  assert.ok(
-    size(ties[1]) < size(label[1]),
-    `the caveat sits below the label's weight (${size(ties[1])} vs ${size(label[1])})`,
-  );
-  assert.match(ties[1], /max-width:\d+ch/u, "the caveat is held to a readable measure");
-  assert.doesNotMatch(ties[1], /background|border|font-weight:\s*(6|7|8)/u);
-  // An empty period is an absence of evidence, so it is not painted in the
-  // caveat's tone: the two say different things.
+  assert.doesNotMatch(styles, /\.insight-demo-ties/u);
+  // An empty period still reports the absence of evidence.
   const note = styles.match(/\.insight-demo-period-note \{([^}]*)\}/u);
   assert.ok(note, "an empty period states itself");
-  assert.notEqual(
-    note[1].match(/color:([^;]+);/u)?.[1],
-    ties[1].match(/color:([^;]+);/u)?.[1],
-  );
+  assert.match(note[1], /color:var\(--amber/u);
+});
+
+
+test("community findings precede app examples and closing steps lead to the download", async () => {
+  const html = await readFile(SITE_HTML, "utf8");
+  const positions = ["community-allowance-figure", "community-findings-title", "cache-continuity", "community-method-summary", "feature-tour-title"]
+    .map(id => html.indexOf(`id="${id}"`));
+  assert.ok(positions.every((position, index) => position >= 0 && (index === 0 || position > positions[index - 1])));
+  assert.match(html, /class="model-performance" data-speeds-demo/u);
+  assert.ok(html.indexOf('id="how-it-works"') < html.indexOf('<section class="tour-cta">'));
+  assert.match(html, /src="\.\/feature-value\.png" width="988" height="1007"/u);
 });

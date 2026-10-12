@@ -115,7 +115,7 @@ test("the four latest Anthropic cards retain exact rates, validity and independe
     APP_PRICE_REGISTRY_MANIFEST.sources.find((source) => source.evidenceVersion === "anthropic-latest-model-pricing-reviewed-2026-09-23").evidenceSha256);
 });
 
-test("Astra has eight exact cards with a strict above-272K boundary and independent release provenance", () => {
+test("Astra retains eight original cards with a strict above-272K boundary and independent release provenance", () => {
   const expected = {
     standard: { short: ["10", "1", "12.5", "50"], long: ["20", "2", "25", "75"] },
     batch: { short: ["5", "0.5", "6.25", "25"], long: ["10", "1", "12.5", "37.5"] },

@@ -104,10 +104,10 @@ are not part of the API registry.
 ### Public allowance breakdowns
 
 `GET /api/v1/community/daily` may add `allowanceBreakdowns` with schema
-`community-allowance-breakdowns-v1.1`. Its only fields are schema version,
+`community-allowance-breakdowns-v1.2`. Its only fields are schema version,
 aggregate basis, reference plan, normalization, model basis/gate, generation
 timestamp and up to 70 date rows. Each row contains the day, the combined
-summary, the three reviewed
+summary, the four configured
 personal-plan summaries and reviewed model tuples `[modelId, usd, accountCount]`.
 Combined and plan summaries contain only median dollars, account/fit counts and an optional
 middle-80%-of-fits band. Model estimates have no band or reset-fit count.
@@ -178,7 +178,17 @@ required before v1.5 values can be served; the public reader and admin client
 must accept v1.5 and v0.5 first, then the origin, then the Jobs. This source
 contract does not claim a production rollout.
 Unknown plans and separate-track Spark estimates remain excluded. Model values require the existing composition identification gate;
+The public By plan chart divides a reference estimate by that plan's declared
+factor to display its own week; cards also retain the named reference value.
 historical values are never carried backward from today's fit.
+
+The raw `pro` identity and retained evidence continue through the Pro 10x
+rename; only the configured cross-plan ratios change. Derived allowance and
+model publications use a new normalization identity, so they are rebuilt from
+retained fits instead of relabeling an old serialized estimate. Public v1.0/v1.1
+read compatibility preserves the original Pro 20x basis and coefficients;
+v1.2 publishes the four-plan Pro 10x basis. Frozen local `pro-20x` and
+`pro-10x-promo` variant identifiers retain their original meanings.
 
 The daily range/state and cached preview are read in one two-statement
 transaction. The optional cache is limited to 256 KiB, must match the current
@@ -358,7 +368,7 @@ is never an arbitrary local proxy.
 | `GET` | `/api/local/overview` | Dashboard | Loopback read | Reads the current derived overview snapshot. | Local companion |
 | `GET` | `/api/local/cache-drop-thread-links` | Local dashboard only | Same-origin custom-header read | Ephemeral, generation-bound names and Codex thread IDs for recent cache-drop rows; no query parameters, persistence, or export. | Local companion |
 | `POST` | `/api/local/work-usage/query` | Local dashboard only | Same-origin custom-header read; closed 4 KiB JSON | Cancellable, read-only project/worktree/thread reports over a pinned index; optional canonical ISO `endAt` pins the selected period and rejects older snapshot substitution; bounded process-local snapshots with closed `touch` lease renewal, per-thread model/component breakdowns and transient display metadata; optional `search` (at most 100 characters) finds project/task names before pagination while preserving global share denominators; optional `sourceSnapshotId` anchors related period/scope queries to an available report and its canonical generation; no export. During revalidation an available saved reply has `retained`, `refreshing`, `namesAvailable` and a separate `refreshSnapshotId`; saved figures retain their original bounds and have no paging cursor. Names survive document reload only in process memory; durable snapshots contain anonymous usage figures. | Local reporting |
-| `GET` | `/api/local/model-performance` | Model performance page | Loopback read | Requires one `period` value: `1`, `7`, `30`, or `all`; optional canonical ISO `endAt` pins exact rolling bounds (never a future instant); optional `speedMode=standard|fast` (default `standard`) filters before aggregation; returns schema-5/method-5 bounded local timing aggregates, with the selected `speedMode` and period-scoped `excludedUnknownTurns`, including tool-free fallback estimates in Output speed with one sample per turn, restores validated saved measurements before starting work, and renews an independent background scan lease. No accounting or network effect. | Local timing |
+| `GET` | `/api/local/model-performance` | Model performance page | Loopback read | Requires one `period` value: `1`, `7`, `30`, or `all`; optional canonical ISO `endAt` pins exact rolling bounds (never a future instant); optional `speedMode=standard|fast|ultrafast` (default `standard`) filters before aggregation; returns schema-5/method-5 bounded local timing aggregates, with the selected `speedMode` and period-scoped `excludedUnknownTurns`, including tool-free fallback estimates in Output speed with one sample per turn, restores validated saved measurements before starting work, and renews an independent background scan lease. No accounting or network effect. | Local timing |
 | `GET` | `/api/local/gradient` | Dashboard | Loopback read | Reads the derived cost/quota gradient. | Local analysis |
 | `GET` | `/api/local/weekly` | Dashboard | Loopback read | Reads derived weekly capacity and pace evidence. | Local analysis |
 | `GET` | `/api/local/weekly-pace-outlook` | Native shell | Loopback read | Reads the bounded account-scoped weekly pace presentation projection. | Local analysis |
@@ -448,9 +458,11 @@ and bounded blob downloads. Provider sign-in opens in the system browser.
 | Direction | Name | Payload boundary |
 | --- | --- | --- |
 | Web to native | `tibotattleLocalization` | Closed language-preference enum. |
-| Web to native | `tibotattleDownloads` | Fixed `reveal-latest-download` action; no path crosses the bridge. |
+| Web to native | `tibotattleDownloads` | Fixed `reveal-latest-download` and exact completed-share `open-completed-download` actions; no path crosses the bridge. |
 | Web to native | `tibotattleHostedSignIn` | One boolean indicating whether a handoff is in flight. |
 | Native to web | `tibotattle:hosted-sign-in-return` | Payload-free wake-up event. |
+| Native to web | `tibotattle:share-download-result` | Share-save completion status and final basename, never a path. |
+| Native to web | `tibotattle:share-open-result` | Default-app open result for the exact completed share basename. |
 | Native to web | `tibotattle:local-evidence-updated` | Payload-free refresh-complete event. |
 | Native to web | `tibotattle:locale-override` | Closed language preference plus locale table metadata. |
 | Native to web | `tibotattle:appearance-override` | Closed appearance preference and resolved theme. |
@@ -464,6 +476,15 @@ one fixed IPC channel. Its refresh subset is dashboard-frame-only:
 | Renderer to main | `refreshStarted` | Exact `{ mode }`, where mode is `quick` or `detailed`; returns one positive integer lease. |
 | Renderer to main | `refreshHeartbeat` | Exact `{ lease }` with one positive safe integer; renews only the matching missing-heartbeat watchdog. |
 | Renderer to main | `refreshSettled` | Exact `{ lease }` with one positive safe integer; matching terminal settlement is idempotent. |
+
+## Electron share bridge
+
+The sandboxed Electron dashboard can request `openLatestDownload` without a
+path or filename. The main process authorizes only its live dashboard frame,
+rechecks the completed PNG in Downloads, and opens it with the OS default app.
+The desktop completion command contains only the validated final basename;
+the failure command contains no filesystem detail. The dashboard's main frame
+alone may request `clipboard-sanitized-write`; clipboard reads remain denied.
 
 ## Process and provider protocols
 

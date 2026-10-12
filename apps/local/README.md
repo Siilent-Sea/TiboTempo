@@ -99,80 +99,35 @@ The participant relay is intentionally narrow rather than a generic reverse
 proxy. It validates bounded JSON request and response bodies, forwards only the
 fixed TiboTattle session cookie and route-appropriate CSRF value, rejects
 incoming `Authorization`, and rejects unexpected upstream cookies. This lets
-the local dashboard complete its current identity/pairing journey from one
-origin without exposing raw logs or granting arbitrary network access.
+legacy clients complete their identity/pairing journey from one origin without
+exposing raw logs or granting arbitrary network access. The shared dashboard
+has no social sign-in, consent or pairing controls; Electron uses its existing
+accountless sharing controller and persisted preference.
 
 Retired self-service `DELETE /api/v1/me` and private owner erasure are not
-participant-relay permissions. Confirmed **Disconnect this Mac** uses
+participant-relay permissions. Legacy confirmed **Disconnect this Mac** uses
 `POST /api/local/contribution/device-disconnect` and the collector's fixed
 hosted device client; it does not widen the relay or delete hosted/local
 history. This describes the
 [2026-08-30 source contract](../../docs/decisions/2026-08-30-self-service-deletion-retirement.md),
 not a verified installed release or hosted deployment.
 
-## Native macOS developer app
+## Electron developer app
 
-The repository can build a self-contained AppKit developer bundle, including a
-pinned Node runtime, so a user does not need to install Node or start the
-companion from Terminal:
-
-```bash
-npm run product:macos:build
-open ".release-build/macos/TiboTattle.app"
-```
-
-The native window starts the loopback companion on an ephemeral port and opens
-the same real dashboard. First-run may register the normal TiboTattle app as a
-macOS Login Item only after the user confirms the visibly preselected choice;
-it installs no daemon, LaunchAgent, browser extension, privileged helper, or
-separate background uploader. Development/ad-hoc builds contain no updater.
-Signed stable releases embed the pinned Sparkle framework, enable automatic
-downloads by default, and expose that switch under **Settings → About**.
-Closing the app stops its companion; a
-parent-death watchdog also prevents the bundled child from surviving a forced
-launcher termination. External preparation is repeatable: an existing exact
-pinned framework is independently verified and reused, while an alias or
-modified framework fails closed.
-
-The default bundle is deliberately local-only. For an end-to-end developer
-smoke against the disposable backend laboratory, bake its loopback origin into
-the signed bundle:
-
-```bash
-node ./scripts/build-macos-app.js \
-  --output ".release-build/macos-connected/TiboTattle.app" \
-  --central-origin http://127.0.0.1:8792 \
-  --allow-loopback-central-origin
-
-".release-build/macos-connected/TiboTattle.app/Contents/MacOS/UsageMonitor" \
-  --central-smoke-test
-```
-
-Plain HTTP is accepted only for the exact `127.0.0.1` host, with an explicit
-port and the explicit development flag. Preview and production builds derive
-the reviewed HTTPS origin from
-[`config/deployment-endpoints.js`](../../config/deployment-endpoints.js); the
-generic builder cannot accept an independent production origin.
-
-The normalized origin and its mode are sealed into `Info.plist`; the native
-launcher validates them again and passes only that value into its closed child
-environment. It never inherits a central origin from the launching shell.
-Credentials, paths, queries, fragments, arbitrary HTTP hosts, and loopback
-HTTPS are rejected. The build manifest records only whether the service is
-configured and the connection mode, not its origin.
-
-The HTTPS configuration and exact participant relay are covered by local
-contract tests, but they are not evidence that a particular hosted deployment
-or installed app is healthy. Track source, preview, installed, live-service,
-release, and updater evidence separately in
-[`docs/current-status.md`](../../docs/current-status.md).
+The Electron shell starts this loopback companion and displays the same local
+dashboard. Build a development package with `npm run package:electron:development`.
+The production release procedure and separate installed-app qualification are
+in the [macOS release runbook](../../docs/runbooks/macos-stable-release-runbook.md).
+The signed Electron app retains compatible native state and uses the ordinary
+Electron updater; native 0.1.18 installations receive the transition through
+their existing Sparkle feed. Neither path changes the local analysis boundary.
 
 On first use:
 
-1. open the dashboard from the native window;
+1. open the dashboard from the Electron window;
 2. review whether local Codex metadata and writable installed state are
    available;
-3. let the native launcher refresh after the dashboard's first paint; Electron
+3. let Electron refresh after the dashboard's first paint; it
    chooses detailed ingestion when the trusted unified-index publication is
    missing, invalid, in the future or at least one hour old, and quick
    quota/headline refresh when it is recent; or choose **Refresh** in a standalone browser
@@ -346,7 +301,8 @@ or cancelled refreshes do not claim a new index publication.
 The accountless production profile exposes a read-only scheduler snapshot through
 `GET /api/local/diagnostics/contribution`. Its closed `accountless` object contains
 `state`, `lastAttemptAt`, `lastSuccessfulSyncAt`, `lastAcceptedAt`, `nextAttemptAt`
-and `lastFailureCode`; the browser's **Copy diagnostics** preserves these fields.
+and `lastFailureCode`. The retired browser **Copy diagnostics** control is no
+longer presented; the closed diagnostic route remains available to its clients.
 Journey phases distinguish `accountless_active`, `accountless_off` and
 `accountless_unavailable`, without inventing legacy consent, sign-in or pairing.
 A successful bounded pass need not accept new chunks or finish historical
@@ -397,9 +353,9 @@ beyond the eight most-recent accepted sets, removes artifacts before compacting
 accepted queue rows, removes at most sixteen eligible sets per pass, and never
 removes retryable, in-flight, or rejected work.
 
-The ordinary browser journey has no recovery-code, account-reset,
-personal-export, multi-device-management, or self-service hosted-deletion flow.
-**Disconnect this Mac** asks for confirmation, revokes this device's hosted
+The shared dashboard presents accountless sharing through Electron's existing
+bridge. It has no legacy social contribution or device-disconnect controls.
+The retained legacy **Disconnect this Mac** contract asks for confirmation, revokes this device's hosted
 authority, clears its local credential/binding, and pauses delivery. Previously
 hosted history, other devices, and local analysis remain. Browser sign-out is
 not device disconnect; private hosted erasure is an owner operation.
@@ -488,7 +444,7 @@ authorization and can claim only that exact ready job.
 
 ```bash
 npm run product:local:test
-npm run product:macos:test
+npm run product:macos:transition:test
 ```
 
 Run the disposable Worker/D1/R2 acceptance laboratory separately with:

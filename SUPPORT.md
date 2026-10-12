@@ -21,7 +21,10 @@ update to the latest published stable release, read the
 
 ## Hosted history and privacy requests
 
-In the [2026-08-30 source contract](docs/decisions/2026-08-30-self-service-deletion-retirement.md),
+Electron's sharing toggle in Community or Settings saves a persistent opt-out
+and stops future uploads without deleting hosted history or local analysis.
+The shared dashboard no longer exposes social sign-in or device disconnect.
+In the legacy [2026-08-30 source contract](docs/decisions/2026-08-30-self-service-deletion-retirement.md),
 **Disconnect this Mac** requires confirmation and stops this device's hosted
 contribution authority without deleting hosted history or local analysis.
 Signing out is not device disconnect. Self-service hosted deletion is retired;
@@ -94,9 +97,13 @@ and macOS version fields, and up to 40 recent entries from the companion's
 owner-only diagnostics log. Those entries contain fixed codes and opaque
 support references, not raw session content; malformed or unknown fields are
 omitted. It also reads one owner-only, content-free startup result written by
-the Electron main process. That result identifies the last startup phase,
-outcome, and fixed failure code even when the companion never started. The
-doctor reports when either source is missing or could not be read.
+the Electron main process. Builds with phase checkpoints attempt to save each
+phase before its work begins and deliberate early quits before exiting. A
+writable journal gives the last recorded phase, outcome, and fixed failure code
+even when the companion never started. In the released v0.1.24 build,
+`in_progress at profile_selection` was the initial record and does not
+establish which later phase, if any, stopped the app. The doctor
+reports when either source is missing or could not be read.
 The verbose output still needs review before posting to a public issue.
 If deeper private review is needed, an affected user can explicitly create a
 local owner-only evidence directory at a new, absolute path outside the source
@@ -145,12 +152,13 @@ rule out an early failure.
 
 ## Supported surface
 
-The published 0.1.24 release supports macOS 14 or later on Apple silicon and Intel.
+The published 0.1.28 release supports macOS 14 or later on Apple silicon and Intel.
 It also provides a Windows x64 installer and a Linux x86_64 AppImage. Macs use the same
 [Homebrew command](README.md#install-macos-apple-silicon-or-intel), or their
 matching direct DMG. See [platform qualification](docs/reference/platform-support.md)
-for exact artifact assurances and the owner-accepted unperformed macOS
-existing-credential and Linux physical/FUSE/existing-install coverage.
+for exact artifact assurances and remaining limits: Intel existing credentials,
+the complete Mac credential-failure matrix, Windows automatic updating and
+physical Linux desktop behavior remain unqualified.
 Local analysis works without the hosted service; a hosted outage should remain
 visibly unavailable rather than make the
 local dashboard unusable.

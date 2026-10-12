@@ -99,7 +99,7 @@ async function seedPublication() {
       .bind(value.generatedAt, payload, COMMUNITY_ALLOWANCE_PROJECTION_METHOD_VERSION, epoch),
     db().prepare(`UPDATE community_allowance_publication_state SET publication_state='ready',expected_basis=?,
       attribution_method_version=?,safe_from_day=?,safe_to_day=? WHERE singleton=1`)
-      .bind(COMMUNITY_ALLOWANCE_BASIS, COMMUNITY_ATTRIBUTION_METHOD_VERSION, value.from, value.to),
+      .bind(COMMUNITY_ALLOWANCE_BASIS, COMMUNITY_ALLOWANCE_PROJECTION_METHOD_VERSION, value.from, value.to),
     db().prepare(`INSERT INTO community_daily_aggregates
       (aggregate_id,day,revision,source_mutation_epoch,policy_version,payload_json,payload_sha256,release_state,released_at)
       VALUES('synthetic-preserved-activity',?,1,?,'community-daily-v1.0','{}',?,'published',?)`)

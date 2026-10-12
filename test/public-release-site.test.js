@@ -1069,7 +1069,7 @@ test("public static routes keep root, community, docs, privacy, and fallback out
   assert.match(root, /id="installer-unavailable-action"[\s\S]*disabled/u);
   assert.match(root, /Public download coming soon\./u);
   assert.equal(community, root, "the community route must use the public entry alias");
-  assert.match(privacy, /<h1>Your dashboard belongs on your device\.<\/h1>/u);
+  assert.match(privacy, /<h1 data-i18n="privacy.page.heading">Your dashboard belongs on your device\.<\/h1>/u);
   assert.match(privacy, /This website cannot read local Codex files\./u);
   assert.doesNotMatch(privacy, /<script\b/iu);
   assert.match(docs, /<h1>TiboTattle, from download to dashboard\.<\/h1>/u);
@@ -1214,7 +1214,7 @@ test("checked-in public source satisfies the complete release contract", async (
       "feature-insights.js",
       "feature-tour.css",
       "feature-tour.js",
-      "feature-value.jpg",
+      "feature-value.png",
       "feature-week.js",
       "github.svg",
       "i18n.generated.js",
@@ -1312,7 +1312,7 @@ test("checked-in public source satisfies the complete release contract", async (
   assert.match(html, /src="\.\/community\.js"/u);
   assert.match(
     html,
-    /id="community-method-summary"[^>]*>See community activity<\/summary>/u,
+    /id="community-method-summary"[^>]*>Explore the contribution history<\/summary>/u,
   );
   assert.match(html, /id="installer-sha256-copy"/u);
   assert.doesNotMatch(html, /The community signal|installer-verification/u);

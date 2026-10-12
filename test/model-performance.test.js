@@ -7,7 +7,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { modelPerformanceProjection } from '../src/reporting/index.js';
 import { createModelPerformanceController } from '../apps/local/model-performance-controller.js';
-import { createModelPerformanceSnapshotStore, isModelPerformanceSnapshot } from '../apps/local/model-performance-snapshots.js';
+import { createModelPerformanceSnapshotStore, isModelPerformanceSnapshot,
+  MODEL_PERFORMANCE_MAX_WINDOWS } from '../apps/local/model-performance-snapshots.js';
 import { modelPerformanceSupplementDirectory } from '../apps/local/model-performance-worker.js';
 import { createWindowsFilesystemAdapter, loadWindowsSourceReadBinding } from '../src/platform/windows-filesystem.js';
 import { createWindowsSyntheticOwnedSource } from '../scripts/lib/windows-synthetic-source-owner.mjs';
@@ -46,6 +47,19 @@ test('GPT-6 Sol and Luna retain separate model generations and observed speed mo
     mislabeled.models.find(model => model.id === current.id).label = label;
     assert.equal(isModelPerformanceSnapshot(mislabeled), false);
   }
+});
+test('GPT-6.1 Sol keeps its own timing population and refuses unreviewed identities', () => {
+  const result = modelPerformanceProjection([
+    row({ model: 'gpt-6-sol', sample_tokens: 200 }),
+    row({ model: 'gpt-6.1-sol', sample_tokens: 400 }),
+    row({ model: 'gpt-6.1-sol-unreviewed', sample_tokens: 99999 }),
+  ], { now: NOW });
+  assert.equal(isModelPerformanceSnapshot(result), true);
+  assert.equal(result.models.length, 2);
+  assert.deepEqual(result.models.map(model => [model.id, model.label, model.turns,
+    model.speed[0].points[0].median]), [
+    ['gpt-6.1-sol', 'GPT-6.1 Sol', 1, 400], ['gpt-6-sol', 'GPT-6 Sol', 1, 200],
+  ]);
 });
 test('Windows supplemental timing store avoids the primary guard ancestors', () => {
   const timingRoot = join('/state', 'inference-timing-v2');
@@ -215,7 +229,7 @@ async function snapshotFixture(t) {
   let worker;
   const create = patch => createModelPerformanceController({ ...options,
     workerFactory: () => worker = new BlockedWorker(), ...patch });
-  const complete = ['1', '7', '30', 'all'].flatMap(period => ['standard', 'fast'].map(speedMode => modelPerformanceProjection([row({ speed_mode: speedMode })], {
+  const complete = ['1', '7', '30', 'all'].flatMap(period => ['standard', 'fast', 'ultrafast'].map(speedMode => modelPerformanceProjection([row({ speed_mode: speedMode })], {
     now: NOW, period, speedMode, historyProgress: { checked: 1, total: 1 },
   })));
   const initial = create();
@@ -243,12 +257,12 @@ test('saved complete measurements are immediately available after restart with a
     assert.ok(!disk.includes(fixture.options.directory));
   } finally { await controller.close(); }
 });
-test('GPT-6 Sol and Luna performance snapshots survive restart without merging older generations', async t => {
+test('GPT-6.1 Sol and older Sol and Luna performance snapshots survive restart without merging generations', async t => {
   const fixture = await snapshotFixture(t);
   let controller = fixture.create();
-  const latest = modelPerformanceProjection(['sol', 'luna'].flatMap(name => [
+  const latest = modelPerformanceProjection([...['sol', 'luna'].flatMap(name => [
     row({ model: `gpt-5.6-${name}` }), row({ model: `gpt-6-${name}`, sample_tokens: 200 }),
-  ]), { now: NOW + DAY });
+  ]), row({ model: 'gpt-6.1-sol', sample_tokens: 400 })], { now: NOW + DAY });
   try {
     await controller.read('all');
     fixture.worker().emit('message', { type: 'snapshots', values: [latest] });
@@ -257,7 +271,7 @@ test('GPT-6 Sol and Luna performance snapshots survive restart without merging o
     const restored = await controller.read('all');
     assert.equal(restored.status, 'ready');
     assert.deepEqual(restored.models, latest.models);
-    assert.equal(restored.models.length, 4);
+    assert.equal(restored.models.length, 5);
   } finally { await controller.close(); }
 });
 test('combined speed and its fallback subset persist when an additive refresh fails', async t => {
@@ -321,11 +335,55 @@ test('saved pinned windows restore only their exact period and end independently
     assert.equal(rejected.models[0].turns, 2, 'mismatched worker window cannot replace the saved value');
   } finally { await controller.close(); }
 });
-test('pinned retained cache is bounded to eight exact windows plus eight live period/mode pairs', async t => {
+test('all twelve dashboard period and mode windows retain readiness after the live all-period read', async () => {
+  const messages = [];
+  class FakeWorker extends EventEmitter {
+    unref() {}
+    postMessage(message) { messages.push(message); if (message.type === 'stop') queueMicrotask(() => this.emit('exit', 0)); }
+  }
+  const worker = new FakeWorker();
+  const controller = createModelPerformanceController({ directory: 'unused', codexHome: 'unused', workerFactory: () => worker });
+  // This is the actual shared-dashboard request order. The default seven-day
+  // Standard request is fourth, so an eight-window cache evicts it.
+  const targets = ['1', '7', '30', 'all'].flatMap(period => ['standard', 'fast', 'ultrafast']
+    .map(speedMode => ({ period, speedMode })));
+  const rows = [row({ at: NOW - 2 * DAY })];
+  const live = targets.map(options => modelPerformanceProjection(rows, { ...options,
+    now: NOW, historyProgress: { checked: 1, total: 1 } }));
+  const endAt = new Date(NOW).toISOString();
+  const readWindows = () => Promise.all(targets.map(({ period, speedMode }) => controller.read(period, { speedMode, endAt })));
+  try {
+    assert.equal((await controller.read('all')).status, 'loading');
+    worker.emit('message', { type: 'snapshots', values: live });
+    assert.equal((await controller.read('all')).models[0].turns, 1);
+    await readWindows();
+    assert.deepEqual(messages.filter(value => value.type === 'window').map(({ period, speedMode }) => ({ period, speedMode })), targets);
+    const pinned = targets.map(options => ({
+      ...modelPerformanceProjection(rows, { ...options, now: NOW, rolling: true,
+        historyProgress: { checked: 1, total: 1 } }),
+      requestKey: `${options.period}:${options.speedMode}:${NOW}`,
+    }));
+    worker.emit('message', { type: 'snapshots', values: [...live, ...pinned] });
+    for (let repeat = 0; repeat < 2; repeat++) {
+      const results = await readWindows();
+      assert.deepEqual(results, pinned.map(({ requestKey, ...value }) => value));
+      const selected = results[3];
+      assert.equal(selected.period, '7'); assert.equal(selected.speedMode, 'standard');
+      assert.equal(selected.status, 'ready'); assert.equal(selected.collecting, false); assert.equal(selected.stale, false);
+      assert.equal(selected.models[0].turns, 1);
+      assert.equal(selected.models[0].speed[0].points[0].median, 100);
+      assert.equal(selected.models[0].ttft[0].median, 5);
+    }
+    assert.equal(messages.filter(value => value.type === 'window').length, 12,
+      'repeated reads must not evict and re-register the same dashboard windows');
+  } finally { await controller.close(); }
+});
+
+test('pinned retained cache is bounded to twelve exact windows plus twelve live period/mode pairs', async t => {
   const fixture = await snapshotFixture(t);
   let controller = fixture.create();
   try {
-    for (let index = 0; index < 9; index++) {
+    for (let index = 0; index < 13; index++) {
       const end = NOW - index * DAY;
       await controller.read('1', { endAt: new Date(end).toISOString() });
       fixture.worker().emit('message', { type: 'snapshots', values: [{
@@ -336,14 +394,66 @@ test('pinned retained cache is bounded to eight exact windows plus eight live pe
     await controller.close();
     const receipt = JSON.parse(await readFile(fixture.file, 'utf8'));
     assert.equal(receipt.schemaVersion, 'local-model-performance-snapshot-v5');
-    assert.equal(receipt.snapshot.values.length, 16);
-    assert.equal(receipt.snapshot.values.filter(value => Object.hasOwn(value, 'requestKey')).length, 8);
+    assert.equal(receipt.snapshot.values.length, 24);
+    assert.equal(receipt.snapshot.values.filter(value => Object.hasOwn(value, 'requestKey')).length, 12);
     assert.equal(receipt.snapshot.values.some(value => value.requestKey === `1:standard:${NOW}`), false);
     controller = fixture.create();
-    assert.equal((await controller.read('1', { endAt: new Date(NOW - 8 * DAY).toISOString() })).models[0].turns, 1);
+    assert.equal((await controller.read('1', { endAt: new Date(NOW - 12 * DAY).toISOString() })).models[0].turns, 1);
     assert.equal((await controller.read('1', { endAt: new Date(NOW).toISOString() })).status, 'loading');
   } finally { await controller.close(); }
 });
+test('prior eight-window receipts restore unchanged and expand to the complete roster after restart', async t => {
+  const fixture = await snapshotFixture(t);
+  const endAt = new Date(NOW).toISOString();
+  const pinned = ['1', '7', '30', 'all'].flatMap(period => ['standard', 'fast', 'ultrafast'].map(speedMode => ({
+    ...modelPerformanceProjection([row({ speed_mode: speedMode })], { period, speedMode, now: NOW, rolling: true }),
+    requestKey: `${period}:${speedMode}:${NOW}`,
+  })));
+  const prior = pinned.slice(-8);
+  const store = createModelPerformanceSnapshotStore({ ...fixture.options, now: () => NOW });
+  assert.equal(await store.write([...fixture.complete, ...prior]), true);
+  const saved = await readFile(fixture.file, 'utf8');
+  let controller = fixture.create();
+  try {
+    for (const value of prior) {
+      const restored = await controller.read(value.period, { speedMode: value.speedMode, endAt });
+      assert.equal(restored.collecting, true, 'restored evidence remains pending fresh qualification');
+      assert.deepEqual(restored.models, value.models);
+    }
+    assert.equal(await readFile(fixture.file, 'utf8'), saved, 'read-only restoration must not rewrite old evidence');
+    for (const value of pinned) await controller.read(value.period, { speedMode: value.speedMode, endAt });
+    fixture.worker().emit('message', { type: 'snapshots', values: [...fixture.complete, ...pinned] });
+    await controller.close();
+    const expanded = JSON.parse(await readFile(fixture.file, 'utf8'));
+    assert.equal(expanded.schemaVersion, 'local-model-performance-snapshot-v5');
+    assert.equal(expanded.snapshot.values.length, 24);
+    controller = fixture.create();
+    for (const value of pinned) {
+      const restored = await controller.read(value.period, { speedMode: value.speedMode, endAt });
+      assert.equal(restored.status, 'ready'); assert.equal(restored.collecting, true);
+      assert.deepEqual(restored.models, value.models);
+      assert.equal(restored.end, NOW);
+    }
+  } finally { await controller.close(); }
+});
+
+test('snapshot storage accepts the full dashboard roster but refuses a thirteenth exact window', async t => {
+  const fixture = await snapshotFixture(t);
+  const store = createModelPerformanceSnapshotStore({ ...fixture.options, now: () => NOW });
+  const pinned = ['1', '7', '30', 'all'].flatMap(period => ['standard', 'fast', 'ultrafast'].map(speedMode => ({
+    ...modelPerformanceProjection([row({ speed_mode: speedMode })], { period, speedMode, now: NOW, rolling: true }),
+    requestKey: `${period}:${speedMode}:${NOW}`,
+  })));
+  assert.equal(MODEL_PERFORMANCE_MAX_WINDOWS, 12);
+  assert.equal(await store.write([...fixture.complete, ...pinned]), true);
+  const saved = await readFile(fixture.file, 'utf8');
+  const extraEnd = NOW - DAY;
+  const extra = { ...modelPerformanceProjection([row({ at: extraEnd })], {
+    period: '7', now: extraEnd, rolling: true }), requestKey: `7:standard:${extraEnd}` };
+  assert.equal(await store.write([...pinned, extra]), false);
+  assert.equal(await readFile(fixture.file, 'utf8'), saved, 'rejected overflow preserves the last valid receipt');
+});
+
 test('pinned cache receipts reject mismatched keys and rolling bounds even with a valid digest', async t => {
   const fixture = await snapshotFixture(t);
   const endAt = new Date(NOW).toISOString();
@@ -644,7 +754,7 @@ test('actual worker persists separate Codex sources and preserves the unscoped l
   const sourceContent = rows.map(r => JSON.stringify(r)).join('\n') + '\n';
   if (process.platform === 'win32') createWindowsSyntheticOwnedSource(sourcePath, sourceContent);
   else await writeFile(sourcePath, sourceContent);
-  for (const [name, serviceTier, tokens] of [['fast', 'priority', 900], ['unknown', null, 5000]]) {
+  for (const [name, serviceTier, tokens] of [['fast', 'priority', 900], ['ultrafast', 'ultrafast', 1500], ['unknown', null, 5000]]) {
     const others = JSON.parse(JSON.stringify(rows).replaceAll('synthetic-turn', `synthetic-${name}-turn`)
       .replaceAll('synthetic-session', `synthetic-${name}-session`).replaceAll('synthetic-response', `synthetic-${name}-response`));
     others.find(r => r.payload.type === 'thread_settings_applied').payload.thread_settings.service_tier = serviceTier;
@@ -701,17 +811,39 @@ test('actual worker persists separate Codex sources and preserves the unscoped l
     }
     let result = await readReady(controller);
     assert.equal(result.schemaVersion, 5);
-    assert.deepEqual(result.historyProgress, { checked: 3, total: 3 });
+    assert.deepEqual(result.historyProgress, { checked: 4, total: 4 });
     assert.equal(result.excludedUnknownTurns, 1);
-    for (const period of ['1', '7', '30', 'all']) for (const speedMode of ['standard', 'fast']) {
+    for (const period of ['1', '7', '30', 'all']) for (const speedMode of ['standard', 'fast', 'ultrafast']) {
       const snapshot = await controller.read(period, { speedMode });
       assert.equal(snapshot.status, 'ready');
       assert.equal(snapshot.speedMode, speedMode);
       assert.equal(snapshot.excludedUnknownTurns, 1);
       assert.equal(snapshot.models[0].turns, 1);
-      assert.equal(snapshot.models[0].speed[0].points[0].median, speedMode === 'standard' ? 100 : 900);
+      assert.equal(snapshot.models[0].speed[0].points[0].median, { standard: 100, fast: 900, ultrafast: 1500 }[speedMode]);
       assert.equal(snapshot.models[0].speed[0].points[0].p90, null);
     }
+    const end = Date.now(), endAt = new Date(end).toISOString();
+    const targets = ['1', '7', '30', 'all'].flatMap(period => ['standard', 'fast', 'ultrafast']
+      .map(speedMode => ({ period, speedMode })));
+    let pinned = [];
+    const deadline = Date.now() + 10000;
+    do {
+      pinned = await Promise.all(targets.map(({ period, speedMode }) => controller.read(period, { speedMode, endAt })));
+      if (pinned.every(value => value.status === 'ready' && !value.collecting && !value.stale)) break;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    } while (Date.now() < deadline);
+    for (const [index, snapshot] of pinned.entries()) {
+      assert.equal(snapshot.status, 'ready', 'every exact dashboard window must complete');
+      assert.equal(snapshot.collecting, false); assert.equal(snapshot.stale, false);
+      assert.equal(snapshot.period, targets[index].period); assert.equal(snapshot.speedMode, targets[index].speedMode);
+      assert.equal(snapshot.end, end);
+      if (snapshot.period !== 'all') assert.equal(snapshot.start, end - Number(snapshot.period) * DAY);
+      assert.deepEqual(snapshot.historyProgress, { checked: 4, total: 4 });
+      assert.equal(snapshot.models[0].turns, 1);
+      assert.equal(snapshot.models[0].speed[0].points[0].median, { standard: 100, fast: 900, ultrafast: 1500 }[snapshot.speedMode]);
+    }
+    assert.equal(pinned[3].period, '7'); assert.equal(pinned[3].speedMode, 'standard');
+    assert.equal(pinned[3].models[0].ttft[0].median, .2);
     assert.equal(result.models[0].speed[0].points[0].median, 100);
     assert.equal(result.models[0].ttft[0].median, .2);
     assert.equal(result.models[0].turns, 1);
@@ -769,18 +901,22 @@ test('controller caches each exact reporting window independently and rejects ma
   } finally { await controller.close(); }
 });
 
-test('standard and sparse fast evidence have independent counts and distributions', () => {
+test('standard, fast, and ultrafast evidence have independent counts and distributions', () => {
   const rows = [100, 200, 300, 400, 500].map(sample_tokens => row({ sample_tokens }));
   rows.push(row({ speed_mode: 'fast', sample_tokens: 900, ttft: 50 }),
     row({ speed_mode: 'fast', sample_tokens: 1100, ttft: 150 }),
+    row({ speed_mode: 'ultrafast', sample_tokens: 1600, ttft: 300 }),
+    row({ speed_mode: 'ultrafast', sample_tokens: 2200, ttft: 100 }),
     row({ speed_mode: 'unknown', sample_tokens: 99999 }),
     row({ speed_mode: undefined }), row({ speed_mode: 'mixed' }),
     row({ speed_mode: 'unknown', model: 'unknown-model' }));
   const standard = modelPerformanceProjection(rows, { now: NOW });
   const fast = modelPerformanceProjection(rows, { now: NOW, speedMode: 'fast' });
+  const ultrafast = modelPerformanceProjection(rows, { now: NOW, speedMode: 'ultrafast' });
   assert.equal(standard.speedMode, 'standard');
   assert.equal(fast.speedMode, 'fast');
-  for (const value of [standard, fast]) assert.equal(value.excludedUnknownTurns, 3);
+  assert.equal(ultrafast.speedMode, 'ultrafast');
+  for (const value of [standard, fast, ultrafast]) assert.equal(value.excludedUnknownTurns, 3);
   assert.deepEqual([standard.models[0].turns, standard.models[0].speedTurns,
     standard.models[0].ttftTurns, standard.models[0].timedResponses], [5, 5, 5, 5]);
   assert.equal(standard.models[0].speed[0].points[0].median, 300);
@@ -790,6 +926,13 @@ test('standard and sparse fast evidence have independent counts and distribution
   assert.equal(fast.models[0].ttft[0].median, .1);
   assert.deepEqual(fast.models[0].speed[0].points[0], {
     at: Math.floor(NOW / DAY) * DAY, n: 2, median: 1000,
+    p10: null, p25: null, p75: null, p90: null,
+  });
+  assert.deepEqual([ultrafast.models[0].turns, ultrafast.models[0].speedTurns,
+    ultrafast.models[0].ttftTurns, ultrafast.models[0].timedResponses], [2, 2, 2, 2]);
+  assert.equal(ultrafast.models[0].ttft[0].median, .2);
+  assert.deepEqual(ultrafast.models[0].speed[0].points[0], {
+    at: Math.floor(NOW / DAY) * DAY, n: 2, median: 1900,
     p10: null, p25: null, p75: null, p90: null,
   });
   assert.throws(() => modelPerformanceProjection(rows, { now: NOW, speedMode: 'unknown' }));
@@ -817,17 +960,17 @@ test('mode isolation survives persisted live and pinned snapshots, failure, and 
   const endAt = new Date(NOW).toISOString();
   let controller = fixture.create();
   try {
-    const values = ['standard', 'fast'].flatMap((speedMode, index) => {
+    const values = ['standard', 'fast', 'ultrafast'].flatMap((speedMode, index) => {
       const snapshot = modelPerformanceProjection(Array.from({ length: index + 2 }, () => row({ speed_mode: speedMode })),
         { period: '1', now: NOW, speedMode, rolling: true });
       return [snapshot, { ...snapshot, requestKey: `1:${speedMode}:${NOW}` }];
     });
-    for (const speedMode of ['standard', 'fast']) {
+    for (const speedMode of ['standard', 'fast', 'ultrafast']) {
       await controller.read('1', { speedMode, endAt });
     }
     fixture.worker().emit('message', { type: 'snapshots', values });
     for (let pass = 0; pass < 2; pass++) {
-      for (const [index, speedMode] of ['standard', 'fast'].entries()) for (const pinned of [false, true]) {
+      for (const [index, speedMode] of ['standard', 'fast', 'ultrafast'].entries()) for (const pinned of [false, true]) {
         const result = await controller.read('1', { speedMode, ...(pinned ? { endAt } : {}) });
         assert.equal(result.models[0].turns, index + 2);
         assert.equal(result.speedMode, speedMode);
@@ -837,11 +980,11 @@ test('mode isolation survives persisted live and pinned snapshots, failure, and 
     }
     await controller.read('1');
     fixture.worker().emit('error', new Error('synthetic failure'));
-    for (const speedMode of ['standard', 'fast']) {
+    for (const [index, speedMode] of ['standard', 'fast', 'ultrafast'].entries()) {
       const result = await controller.read('1', { speedMode, endAt });
       assert.equal(result.stale, true);
       assert.equal(result.speedMode, speedMode);
-      assert.equal(result.models[0].turns, speedMode === 'standard' ? 2 : 3);
+      assert.equal(result.models[0].turns, index + 2);
     }
     await assert.rejects(controller.read('1', { speedMode: 'mixed' }), /invalid_timing_speed_mode/u);
   } finally { await controller.close(); }

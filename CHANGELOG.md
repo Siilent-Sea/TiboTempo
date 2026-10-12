@@ -7,7 +7,9 @@ version labels; it does not imply API stability before 1.0.
 ## Provenance and acknowledgements
 
 - A release heading links to its checked-in notes. The date is the UTC calendar
-  date on which the public GitHub Release was published.
+  date on which the public GitHub Release was published, except the explicitly
+  marked, unpublished 0.1.25 and 0.1.27 tagged candidates, whose dates
+  are their source freezes.
 - Every released entry links to the public GitHub Release, its exact source
   revision, and the comparison with the preceding release source. Stable tags
   are annotated except for the protected historical v0.1.10 anomaly recorded
@@ -34,6 +36,96 @@ Tool-assisted co-authorship is recorded in Git commit trailers; the maintainer
 remains accountable for release wording, validation, signing, and publication.
 
 ## [Unreleased]
+
+## [0.1.28](./release-notes/0.1.28.md) - 2026-10-09
+
+**Provenance:** [GitHub release](https://github.com/adamallcock/tibotattle/releases/tag/v0.1.28) ·
+[exact application source](https://github.com/adamallcock/tibotattle/commit/bf84bc6c04372bb2cee64ef4a4f29981432fc3eb) ·
+[annotated source tag](https://github.com/adamallcock/tibotattle/tree/v0.1.28) ·
+[changes since the v0.1.27 tagged candidate](https://github.com/adamallcock/tibotattle/compare/v0.1.27...v0.1.28) ·
+[changes since the last public v0.1.26 release](https://github.com/adamallcock/tibotattle/compare/v0.1.26...v0.1.28)
+
+Version 0.1.27 was tagged and signed but never published. Version 0.1.28
+carries those changes forward from the last public 0.1.26 release.
+
+- Carry forward GPT-6.1 Sol, Ultrafast, Pro 10× and Pro Max 25× support from
+  the unpublished 0.1.27 candidate.
+- Separate explicitly identified auto-review usage from the main allowance
+  from October 6, 2026 (UTC), preserving earlier charges, token counts,
+  API-price evidence and Spark's own measured allowance.
+- Preserve absent archive evidence and stable replay identities during the
+  local parser upgrade; admit the new local format in the attribution reader.
+- Retry temporary startup sharing contention and remove obsolete build
+  download dependencies.
+
+
+## [0.1.27](./release-notes/0.1.27.md) - 2026-10-04
+
+**Status:** Tagged and signed candidate only. No public GitHub Release or
+stable update was published. Its source and artifact evidence remain frozen;
+0.1.28 carries its changes forward from the published 0.1.26 release.
+
+**Provenance:** [GitHub release location (unpublished)](https://github.com/adamallcock/tibotattle/releases/tag/v0.1.27) ·
+[annotated source tag](https://github.com/adamallcock/tibotattle/tree/v0.1.27) ·
+[changes since v0.1.26](https://github.com/adamallcock/tibotattle/compare/v0.1.26...v0.1.27)
+
+- Add distinct GPT-6.1 Sol recognition and supported API-equivalent prices.
+  Keep observed Ultrafast usage separate from Fast; unsupported model and speed
+  combinations remain explicitly unpriced. See [PR #257](https://github.com/adamallcock/tibotattle/pull/257).
+- Use Pro 10× and Pro Max 25× labels and configured expected allowance ratios,
+  preserving the existing Pro identity and history. Align Worker publication
+  normalization with that reference in [PR #258](https://github.com/adamallcock/tibotattle/pull/258);
+  hosted migration, activation, and production qualification remain separate.
+- Recheck performance-sharing authorization after restart or a sharing-preference
+  change, preserving acknowledged upload progress when recovering from a rejected
+  grant. The protected choice and current hosted grant still gate uploads.
+- Remove obsolete account, profile, and social controls from the shared dashboard
+  while retaining Electron desktop controls. Split project token mix into
+  separate input and output bars. See [PR #259](https://github.com/adamallcock/tibotattle/pull/259)
+  and [PR #260](https://github.com/adamallcock/tibotattle/pull/260).
+- Update Electron to 43.5.0 and refresh affected transitive dependencies for
+  security advisories.
+
+## [0.1.26](./release-notes/0.1.26.md) - 2026-09-27
+
+**Provenance:** [GitHub release](https://github.com/adamallcock/tibotattle/releases/tag/v0.1.26) ·
+[annotated source tag](https://github.com/adamallcock/tibotattle/tree/v0.1.26) ·
+[changes since the v0.1.25 tagged candidate](https://github.com/adamallcock/tibotattle/compare/v0.1.25...v0.1.26) ·
+[changes since the last public v0.1.24 release](https://github.com/adamallcock/tibotattle/compare/v0.1.24...v0.1.26)
+
+Version 0.1.25 was tagged and signed but never published. Version 0.1.26
+carries those changes forward from the last public 0.1.24 release.
+
+- Restore direct Codex allowance refresh for newer bundled CLI layouts and
+  report selected CLI source without private paths. Keep quota freshness
+  independent of local usage and bound the dashboard's timeout cleanup wait.
+- Distinguish a locked Mac Keychain from an item access denial when macOS
+  reports the same authorization error. Keep credential reads silent and leave
+  existing items and access controls intact.
+- Add Mac update visibility, preserve startup checkpoints and cached reports
+  during refresh, correct cached Trends header ranges, and retain newly
+  recognized Claude model names. Keep forecast-only GPT-6.1 Astra unpriced.
+
+## [0.1.25](./release-notes/0.1.25.md) - 2026-09-27
+
+**Status:** Tagged and signed candidate only. No public GitHub Release or
+stable update was published. The source and artifacts remain frozen on hold.
+
+**Provenance:** [GitHub release location (unpublished)](https://github.com/adamallcock/tibotattle/releases/tag/v0.1.25) ·
+[annotated source tag](https://github.com/adamallcock/tibotattle/tree/v0.1.25) ·
+[changes since v0.1.24](https://github.com/adamallcock/tibotattle/compare/v0.1.24...v0.1.25)
+
+- Restore direct Codex allowance refresh when a current ChatGPT or Codex app
+  bundles its CLI under `codex-cli/bin/codex`; retain legacy bundle and explicit
+  CLI locations, with path-free selection diagnostics. Keep quota freshness
+  independent of newer usage, show a fresh allowance while longer local analysis
+  continues, and bound the UI wait after a terminal timeout.
+- Improve Mac update visibility and prevent a tray cleanup crash during updater
+  shutdown. Persist startup checkpoints before early quits, warm cached dashboard
+  reports across periods and speed modes, and correct the Trends header range
+  for cached plan views.
+- Keep the forecast-only GPT-6.1 Astra identity explicitly unpriced in local
+  Codex usage reports.
 
 ## [0.1.24](./release-notes/0.1.24.md) - 2026-09-23
 

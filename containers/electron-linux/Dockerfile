@@ -10,8 +10,8 @@ FROM node:26.2.0-bookworm-slim@sha256:445b8cda0ec3563106c5a62b4663b3831314ecc81d
 
 ARG TIBOTATTLE_QUALIFICATION_REVISION
 LABEL org.opencontainers.image.revision="${TIBOTATTLE_QUALIFICATION_REVISION}"
+# Electron checks presence, so even "0" disables its sandbox. Keep the override absent.
 ENV CI=1 \
-    ELECTRON_DISABLE_SANDBOX=0 \
     TIBOTATTLE_IMAGE_SOURCE_REVISION="${TIBOTATTLE_QUALIFICATION_REVISION}" \
     npm_config_update_notifier=false \
     npm_config_fund=false \
@@ -73,15 +73,15 @@ RUN pnpm install --frozen-lockfile --ignore-scripts
 # checksum during the image build instead; the test phase then has no package-
 # manager or network work.
 RUN curl --fail --silent --show-error --location --retry 3 \
-    --output /tmp/electron-v43.2.0-linux-arm64.zip \
-    https://github.com/electron/electron/releases/download/v43.2.0/electron-v43.2.0-linux-arm64.zip \
+    --output /tmp/electron-v43.5.0-linux-arm64.zip \
+    https://github.com/electron/electron/releases/download/v43.5.0/electron-v43.5.0-linux-arm64.zip \
   && printf '%s  %s\n' \
-    50e1cdefbf8590e0d89b0276314a99c7b98e8eed732204c6f1a1c2a38376ed87 \
-    /tmp/electron-v43.2.0-linux-arm64.zip \
+    660e31a4593317f512d92e43360a29269ab50e52cf2c3c0272e608171dfed0cd \
+    /tmp/electron-v43.5.0-linux-arm64.zip \
     | sha256sum --check --strict \
-  && unzip -q /tmp/electron-v43.2.0-linux-arm64.zip -d /workspace/node_modules/electron/dist \
+  && unzip -q /tmp/electron-v43.5.0-linux-arm64.zip -d /workspace/node_modules/electron/dist \
   && printf 'electron' > /workspace/node_modules/electron/path.txt \
-  && rm -f /tmp/electron-v43.2.0-linux-arm64.zip
+  && rm -f /tmp/electron-v43.5.0-linux-arm64.zip
 
 COPY --chown=node:node apps/electron ./apps/electron
 COPY --chown=node:node native/macos-keychain/contract.js ./native/macos-keychain/contract.js
@@ -93,6 +93,7 @@ COPY --chown=node:node generated ./generated
 COPY --chown=node:node schemas ./schemas
 COPY --chown=node:node src ./src
 COPY --chown=node:node scripts/smoke-electron-linux.mjs ./scripts/smoke-electron-linux.mjs
+COPY --chown=node:node scripts/lib/linux-startup-diagnostics.mjs ./scripts/lib/linux-startup-diagnostics.mjs
 RUN chown -R node:node /workspace \
   && chown root:root /workspace/node_modules/electron/dist/chrome-sandbox \
   && chmod 4755 /workspace/node_modules/electron/dist/chrome-sandbox

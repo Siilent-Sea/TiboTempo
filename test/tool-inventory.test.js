@@ -303,7 +303,7 @@ test("the checked-in inventory classifies every retained tool entry point and np
     true,
     formatToolInventoryReport(result),
   );
-  // 170 records / 171 executable paths: release-documentation, Codex contract,
+  // 172 records / 173 executable paths: release-documentation, Codex contract,
   // documentation governance, repository-layout, macOS bundle-version, and
   // local index-recovery gates are reviewed repository operations invoked by
   // CI, release runbooks, or supported internal product tooling.
@@ -318,19 +318,31 @@ test("the checked-in inventory classifies every retained tool entry point and np
   // protected PR94 qualification entrypoints/helpers; neither is a product API.
   // Also includes the bounded Windows signing preflight/caller, the pinned
   // Linux AppImage updater adapter proof, Windows native rebinding, the
-  // read-only release doctor, private release helpers,
+  // retained release helpers,
   // publication reconciliation, admission reuse, and the main-branch
   // purchased-credit drawdown analyzer. The five retained 0.1.21 release tools
   // cover incoming Sparkle validation, three disposable Mac replacement/update
   // journeys, and qualification of an already signed Windows installer.
   // The final Linux AppImage qualifier binds the unchanged normal runtime
   // journey to final package bytes without rebuilding or publishing them.
-  // The last four are the macOS credential qualification set: the fixture
-  // preparer, the credentials smoke, and the loopback/intake helpers.
-  // The private GCP test journey and its focused refusal check were retired
-  // on 2026-10-02 (C-SIMP, owner decision), taking two records with them.
-  assert.equal(result.records, 170);
-  assert.equal(result.candidates.length, 171);
+  // The three final Linux tools admit exact package bytes and qualify the
+  // ordinary FUSE launcher and public-predecessor installed lifecycle.
+  // The prior five are the macOS credential qualification set: the fixture
+  // preparer, the credentials smoke, and the loopback/intake/PF-guard helpers.
+  // The temporary HTTP cache advisory guard is an owned, expiry-bound OSV gate.
+  // The Windows final-upgrade tool binds the public predecessor and final signed
+  // installer to one owned profile without qualifying automatic updater delivery.
+  // The two immutable Mac qualification transport tools have a closed object
+  // allowlist and an independently held artifact coordination owner.
+  // The historical Sol helper owns the retained-parser installed proof within
+  // the existing disposable Mac credential journey.
+  // The content-free Linux startup diagnostic helper and the separate exact-byte
+  // mount-only diagnostic each have an explicit owner; neither qualifies a release.
+  // The controlled AppArmor comparison helper owns exact-profile generation and
+  // cleanup; the final host owns the same-profile installed lifecycle handoff.
+  assert.equal(result.records, 173);
+  assert.equal(result.candidates.length, 174);
+  // Integration also retains the reviewed GCP operation tools.
   assert.ok(result.aliases >= 25);
 });
 

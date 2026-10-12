@@ -35,6 +35,18 @@ const SIGNED_MACOS_BUNDLE_VERSION_PLAN = Object.freeze({
   // found startup diagnostics occupying the migration target. Qualification
   // and publication of this replacement allocation remain separate gates.
   "0.1.24": Object.freeze({ stable: "1032" }),
+  // The 0.1.25 successor advances both signed Mac architectures together.
+  // Source, artifact, installed-upgrade and publication proof remain distinct.
+  "0.1.25": Object.freeze({ stable: "1033" }),
+  // Owner-selected successor after the held 0.1.25 candidate. Allocation is
+  // not signed, installed, or published release evidence.
+  "0.1.26": Object.freeze({ stable: "1034" }),
+  // Successor to the published 0.1.26 release on both Mac architectures.
+  // Allocation remains separate from candidate provenance and release proof.
+  "0.1.27": Object.freeze({ stable: "1035" }),
+  // Replacement includes new source and dependency fixes; never reuse 0.1.27
+  // artifacts or receipts. Timestamp provenance remains independently bound.
+  "0.1.28": Object.freeze({ stable: "1036" }),
 });
 
 module.exports = { SIGNED_MACOS_BUNDLE_VERSION_PLAN };

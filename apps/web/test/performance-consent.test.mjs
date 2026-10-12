@@ -8,10 +8,11 @@ import {
 } from "../public/data-client.js";
 
 const DEVICE_ID = "11111111-1111-4111-8111-111111111111";
+
 const METHODS = ["receipt", "tool_free"];
 const CONSENT = {
   schemaVersion: "model-performance-daily-v1",
-  fieldDictionaryVersion: "telemetry-performance-registry-2026-09-21.1",
+  fieldDictionaryVersion: "telemetry-performance-registry-2026-09-29.1",
   privacyContractVersion: "privacy-safe-model-performance-v1",
   scope: "model-performance-daily",
 };
