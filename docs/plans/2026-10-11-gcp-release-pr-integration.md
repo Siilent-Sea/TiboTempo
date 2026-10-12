@@ -37,9 +37,11 @@ Integration decisions:
   once and retain September 23 history without inferring GPT-6.1 Sol coverage.
 - Preserve both telemetry activation migration guards and main's Electron,
   updater, ultrafast performance and desktop quota-package export.
-- The combined closure is kernel 17, sha256
+- The first combined closure is kernel 17, sha256
   `89ee4ba5ceb5ef9d9b754a438b1b943160fce6e8210dfb98542d00525a6d7d03`.
-  Kernel 16 and every older entry are immutable. The vendor, prices and B'
+  The later statement-attribution correction appends kernel 18, sha256
+  `dfc22ac42c7f99a0bc91cc2abacafca239b0fc1bd8a2e9b8cf2019fc30cc09ff`.
+  Kernel 17 and every older entry remain immutable. The vendor, prices and B'
   allowance projection are unchanged; no combined-source image is deployed.
 
 Qualification (2026-10-12):
@@ -112,3 +114,30 @@ Migration collision resolution (2026-10-12):
   performance and v1.2 cases passed. Worker TypeScript and final documentation
   preflight passed. The analytics closure and every migration SQL checksum are
   unchanged. Rebuild Cloud Run before the final hosted checks and normal merges.
+
+Hosted PostgreSQL gate follow-through:
+- Enabling the script checks against PG17 exposed stale full-chain assertions
+  at 77. The promoted primary source already includes
+  `0078_classification_link_lookup_indexes.sql`; exact counts and tail-name
+  assertions now require that existing 78-file chain. PostgreSQL SQL files and
+  migration checksums remain unchanged.
+- The parallel/inline PG parity test also exposed untagged shared
+  classification-proof reads. The A-1 caller now wraps just those helper reads
+  with the existing closed `occurrences.correction_sources` family. It retains
+  SQL parameters, row results, bounds and release behavior. No taxonomy or
+  public failure schema is broadened. The full worker/block matrix retains
+  its assertion that no reader statement is untagged and produces exactly the
+  inline rows.
+- Kernel 18 is appended with immutable registry pin
+  `5f808f13dccf3aa6eb919bb56d7ca9b57b1ea2e474fc1bb5847102a73c78a5fd`.
+  Rebuilt Cloud Run and registry: 630 passed, no skips. Analytics: 349 Vitest
+  and 25 script cases passed. Worker TypeScript passed. Source-transfer scripts
+  passed 23 cases; the correction/intake specs passed seven and the legacy
+  roundtrip passed one. All 76 affected PG Node cases passed with no skips,
+  including the worker/block parity matrix and the dense refresh fixture.
+  Two PG Vitest cases passed; their separate TCP case
+  requires the CI-provided loopback listener and was skipped locally.
+- The disposable local PG17 cluster keeps its 30-connection bound and uses
+  `max_locks_per_transaction=256` for the schema-heavy parity matrix. This
+  changes no production setting or test assertion. Temporary query diagnostics
+  were removed before review.
