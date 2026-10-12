@@ -141,3 +141,13 @@ Hosted PostgreSQL gate follow-through:
   `max_locks_per_transaction=256` for the schema-heavy parity matrix. This
   changes no production setting or test assertion. Temporary query diagnostics
   were removed before review.
+- Complete local Worker follow-through: 2,760 cases passed across 182 files;
+  four cases in the frozen v1/v1.1 reader failed because its exclusion ended at
+  0014 and admitted the renamed 0015 v1.2 history step. Keeping that step out
+  restores the exact frozen fixture; all four cases then passed unchanged.
+- Reviewed the already-deployed v1.5 wrapper's four constant imports from the
+  community/admin allowance facades. It performs no database call. The strict
+  price-reader reach guard now records that exact 19-module, 36-import graph;
+  source-column and shipped-reader checks remain unchanged, and unexpected
+  imports still fail. All 25 guard tests passed. No architecture debt or
+  price-reader shipping allowance was added.
