@@ -1328,10 +1328,10 @@ test("the community allowance surface leads the product hero with honest labelin
     html,
     /data-range-days="30" class="active" aria-pressed="true"/u,
   );
-  assert.match(html, /Pro 10x-equivalent allowance/u);
+  assert.match(html, /Pro 20x-equivalent allowance/u);
   assert.match(html, /class="allowance-intro-copy" role="paragraph"[\s\S]*?id="community-allowance-source-summary"/u);
   assert.match(html, /class="allowance-picker-row"[\s\S]*?data-allowance-view-controls[\s\S]*?id="community-allowance-range-controls"/u);
-  assert.match(html, /Estimated weekly API-price value: Pro 10× equivalent overall and by model; each plan's own week in By plan/u);
+  assert.match(html, /API-price value of a Pro 20x-equivalent week: overall, by plan or by model/u);
   for (const view of ["aggregate", "plans", "models"]) {
     assert.equal(html.match(new RegExp(`data-allowance-view="${view}"`, "gu"))?.length, 2);
   }

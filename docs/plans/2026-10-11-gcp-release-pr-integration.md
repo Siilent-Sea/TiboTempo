@@ -41,3 +41,19 @@ Integration decisions:
   `89ee4ba5ceb5ef9d9b754a438b1b943160fce6e8210dfb98542d00525a6d7d03`.
   Kernel 16 and every older entry are immutable. The vendor, prices and B'
   allowance projection are unchanged; no combined-source image is deployed.
+
+Qualification:
+- Cloud Run rebuilt before checks: 626 passed, four environment skips; kernel
+  registry, Worker TypeScript and architecture checks passed.
+- Local PostgreSQL 17: 47 synthetic integration tests passed, including forced
+  GitHub sync, owner admin routes, reconstruction progress and daily publication.
+- Analytics: 349 synthetic Vitest cases and 25 script cases passed, including
+  differential pricing and the retained allowance goldens.
+- Final browser suite: 1,081 passed. Release-site suite: 81 passed. Localization,
+  model-history, static tool callers and documentation/preflight checks passed.
+- The first full root run had 6,113 passes, 47 skips and 19 failures. Seventeen
+  stale cross-branch assertions/fixtures were resolved and their owning suites
+  rerun. The two retained R7 workload-digest failures reproduce on deployed
+  origin 7a4bc73, while exact main d6df065 passes. Protected receipts are retained
+  unchanged; this integration does not qualify a new R7 release.
+- The full Worker pool suite is still running; record its result before merge.
