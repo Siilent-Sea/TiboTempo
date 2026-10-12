@@ -567,6 +567,8 @@ describe("protected telemetry runtime activation", () => {
   });
 
   it("requires the v1.2 quarantine admission trigger before usage activation", async () => {
+    const beforeUsage = await runtimeRow("usage_v12");
+    const beforePerformance = await runtimeRow("performance");
     await db().prepare(
       "DROP TRIGGER telemetry_v12_chunk_quarantine_admission",
     ).run();
@@ -576,8 +578,8 @@ describe("protected telemetry runtime activation", () => {
       status: 503,
       code: "TELEMETRY_RUNTIME_ACTIVATION_UNAVAILABLE",
     });
-    expect(await runtimeRow("usage_v12")).toEqual({ state: "staged", policy_revision: 1 });
-    expect(await runtimeRow("performance")).toEqual({ state: "staged", policy_revision: 1 });
+    expect(await runtimeRow("usage_v12")).toEqual(beforeUsage);
+    expect(await runtimeRow("performance")).toEqual(beforePerformance);
   });
 
   it("keeps audit details content-free", async () => {

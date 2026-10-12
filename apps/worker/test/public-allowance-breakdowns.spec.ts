@@ -68,7 +68,7 @@ describe("public allowance breakdown allowlist", () => {
       generatedAt: new Date(NOW).toISOString(),
       days: [{
         day: YESTERDAY,
-        combined: { centralUsd: 900, participantCount: 2, fitCount: 2, band80Usd: null },
+        combined: { centralUsd: 1200, participantCount: 2, fitCount: 2, band80Usd: null },
         byPlanType: {
           pro: { centralUsd: 1_200, participantCount: 1, fitCount: 1, band80Usd: null },
           prolite: { centralUsd: null, participantCount: 0, fitCount: 0, band80Usd: null },

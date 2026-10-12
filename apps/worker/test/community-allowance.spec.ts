@@ -2871,8 +2871,8 @@ describe("per-model composition from the v1.0 chunk corpus", () => {
           "gpt-5.6-sol": 2_400,
           "gpt-5.6-terra": 1_100,
         }),
-        // Plus capacities are per that plan's own weekly pool; x10 normalizes
-        // 120 to 1,200 on the Pro-10x basis; the two-plan median is 1,800.
+        // Plus capacities are per that plan's own weekly pool; x20 normalizes
+        // 120 to 2,400 on the Pro-20x basis; the two-plan median is 2,400.
         composition("p-plus", "plus", { "gpt-5.6-sol": 120 }),
         // Identification failure: contributes to unstable, never to a median.
         composition("p-unstable", "pro", null, "fallback_blended"),
@@ -2889,7 +2889,7 @@ describe("per-model composition from the v1.0 chunk corpus", () => {
     expect(day.v1ParticipantCount).toBe(4);
     expect(day.unsupportedSourceParticipantCount).toBe(2);
     expect(expandAdminModelHistoryDay(day)!.byModel["gpt-5.6-sol"]).toEqual({
-      capacityUsd: 1_800,
+      capacityUsd: 2_400,
       participantCount: 2,
     });
     expect(expandAdminModelHistoryDay(day)!.byModel["gpt-5.6-terra"]).toEqual({

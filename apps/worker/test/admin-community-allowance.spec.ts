@@ -372,8 +372,8 @@ describe("admin community allowance preview", () => {
     expect(latest.combined).toEqual({
       fitCount: 4,
       participantCount: 3,
-      centralUsd: 1_100,
-      band80Usd: { lowerUsd: 1_000, upperUsd: 1_760 },
+      centralUsd: 2_000,
+      band80Usd: { lowerUsd: 2_000, upperUsd: 2_280 },
     });
     expect(latest.byPlanType.pro).toMatchObject({
       fitCount: 1,
@@ -386,7 +386,7 @@ describe("admin community allowance preview", () => {
     expect(latest.byPlanType.plus).toMatchObject({
       fitCount: 2,
       participantCount: 2,
-      centralUsd: 1_100,
+      centralUsd: 2_200,
       band80Usd: null,
     });
     expect(Object.keys(latest.byPlanType)).toEqual(["pro", "prolite", "promax", "plus"]);

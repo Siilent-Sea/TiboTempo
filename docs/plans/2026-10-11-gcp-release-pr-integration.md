@@ -2,7 +2,7 @@
 title: Deployed GCP source PR integration
 date: 2026-10-11
 type: plan
-status: in-progress
+status: qualified
 ---
 
 Integrate the deployed origin 7a4bc73ebbc096754adb954fbb2051a6b28b8b35
@@ -42,7 +42,7 @@ Integration decisions:
   Kernel 16 and every older entry are immutable. The vendor, prices and B'
   allowance projection are unchanged; no combined-source image is deployed.
 
-Qualification:
+Qualification (2026-10-12):
 - Cloud Run rebuilt before checks: 626 passed, four environment skips; kernel
   registry, Worker TypeScript and architecture checks passed.
 - Local PostgreSQL 17: 47 synthetic integration tests passed, including forced
@@ -56,4 +56,19 @@ Qualification:
   rerun. The two retained R7 workload-digest failures reproduce on deployed
   origin 7a4bc73, while exact main d6df065 passes. Protected receipts are retained
   unchanged; this integration does not qualify a new R7 release.
-- The full Worker pool suite is still running; record its result before merge.
+- Full Worker pool: 2,750 passed and 14 failed across 183 files. The header audit
+  now names the reviewed Map reads in their actual modules; five old allowance
+  assertions select the current Pro 20x contract, and activation refusal checks
+  prove the captured policy state remains unchanged. All seven failed files
+  then passed (168 tests). The unchanged 16-owner statement-meter case is flaky:
+  its 5,000 ms timeout failed in the full run and passed on retry; no timeout or
+  assertion was relaxed.
+- The generated offline allowance card was inspected at actual viewport widths
+  962 and 293 pixels. Its basis and unavailable state remained explicit without
+  horizontal overflow. No live data was fetched. The task's preview and local
+  PostgreSQL server were stopped afterward.
+
+Merge sequence: PR #291 targets the production origin branch with the qualified
+combined source, then PR #290 targets main. Use ordinary merge commits and match
+the reviewed head SHA at each operation. Confirm both released commits remain
+ancestors of remote main and preserve any automatically deleted deployed refs.

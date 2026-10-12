@@ -256,7 +256,7 @@ describe("GET /api/v1/community/daily", () => {
       centralUsd: null, participantCount: 0, fitCount: 0, band80Usd: null,
     });
     expect(body.allowanceBreakdowns.days[1]?.byPlanType.plus).toEqual({
-      centralUsd: 600, participantCount: 1, fitCount: 1, band80Usd: null,
+      centralUsd: 1_200, participantCount: 1, fitCount: 1, band80Usd: null,
     });
     for (const privateField of ["capacityByPlanType", "synthetic-private", "coverage", "catalogVersion",
       "allowanceTrack", "pricingStatus", "source_mutation_epoch", "refusedParticipantCount",

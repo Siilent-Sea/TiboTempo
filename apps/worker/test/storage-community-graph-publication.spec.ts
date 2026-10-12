@@ -366,7 +366,7 @@ describe('isolated allowance graph publication',()=>{
     .toBe(STORAGE_GRAPH_PROJECTION_METHOD);
   const preview=await readPublishedStorageCommunityAdminPreview(bindings());
   expect(preview?.plans.map(plan=>[plan.planType,plan.multiplier])).toEqual([
-    ['pro',1],['prolite',2],['promax',0.4],['plus',10]]);
+    ['pro',1],['prolite',4],['promax',0.8],['plus',20]]);
  });
  it('fits allowance for an owner who has only ever uploaded v1.2',async()=>{
   const f=await v12Fixture();
