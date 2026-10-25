@@ -6,6 +6,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createParser, createToolFreeParser, digest, METHOD, TOOL_FREE_METHOD, MAX_STATE_BYTES, INFERENCE_TIMING_PARSER_VERSION } from '../src/providers/codex/logs.js';
 import { ingestTimingFile, openTimingStore, readTimingRows } from '../src/platform/inference-timing-store.js';
+import { ROLLOUT_LINE_BYTES } from '../src/platform/index.js';
+import { modelPerformanceProjection } from '../src/reporting/index.js';
+import { projectTelemetryPerformanceDay } from '../src/contribution/index.js';
 
 const BASE = Date.parse('2026-09-01T12:00:00Z');
 const rec = (ms, type, payload) => ({ timestamp: new Date(BASE + ms).toISOString(), type, payload });
@@ -145,6 +148,116 @@ test('parser upgrade reclassifies initial settings without changing retained tim
     assert.equal(after.speed_mode_source, 'rollout_thread_settings');
     assert.deepEqual({ ...after, speed_mode: before.speed_mode, speed_mode_source: before.speed_mode_source }, { ...before });
     assert.deepEqual(await ingestTimingFile(current, file), { bytes: 0, unchanged: true });
+  } finally { current.close(); }
+});
+
+test('v19 replay repairs oversized-output Fast attribution atomically across cancellation and restart', async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'timing-speed-repair-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = join(root, 'source.jsonl'), directory = join(root, 'timing');
+  const first = fixture();
+  first[2].timestamp = new Date(BASE + 500).toISOString();
+  first[3].payload.started_at_ms = BASE + 800;
+  first.at(-1).timestamp = new Date(BASE + 2000).toISOString();
+  Object.assign(first.at(-1).payload, { duration_ms: 2000, time_to_first_token_ms: 800 });
+  const oversized = rec(200, 'response_item', {
+    type: 'message', role: 'assistant',
+    internal_chat_message_metadata_passthrough: { turn_id: 'synthetic-turn' },
+    content: [{ type: 'output_text', text: 'x'.repeat(ROLLOUT_LINE_BYTES + 1) }],
+  });
+  assert.ok(Buffer.byteLength(JSON.stringify(oversized)) > ROLLOUT_LINE_BYTES);
+  first.splice(2, 0, oversized, rec(500, 'event_msg', {
+    type: 'thread_settings_applied', thread_id: 'synthetic-session',
+    thread_settings: { service_tier: 'priority' },
+  }));
+  const second = JSON.parse(JSON.stringify(fixture().slice(1))
+    .replaceAll('synthetic-turn', 'synthetic-next-turn')
+    .replaceAll('synthetic-response', 'synthetic-next-response'));
+  for (const row of second) {
+    row.timestamp = new Date(Date.parse(row.timestamp) + 4000).toISOString();
+    for (const key of ['started_at_ms', 'completed_at_ms']) if (Object.hasOwn(row.payload, key)) row.payload[key] += 4000;
+  }
+  await writeFile(file, lines([...first, ...second]), { mode: 0o600 });
+  const priorVersion = 19;
+  const prior = await openTimingStore(directory, { ...options, parserVersion: priorVersion });
+  await ingestTimingFile(prior, file);
+  // Seed the persisted v19 defect without retaining a duplicate obsolete parser.
+  prior.db.prepare("UPDATE turn SET speed_mode='fast',speed_mode_source='rollout_thread_settings' WHERE at=?")
+    .run(BASE + 2000);
+  const before = readTimingRows(prior, { withRevision: true });
+  const beforeRaw = prior.db.prepare('SELECT * FROM turn ORDER BY at').all();
+  assert.equal(before.rows.length, 2);
+  assert.equal(before.rows[0].quality, 'complete');
+  assert.equal(before.rows[0].sample_duration, 200);
+  assert.equal(JSON.parse(prior.db.prepare('SELECT state FROM source').get().state).diagnostics.oversized, 1);
+  const localFastTurns = rows => modelPerformanceProjection(rows, {
+    period: 'all', speedMode: 'fast', now: BASE + 6000,
+  }).models.reduce((sum, model) => sum + model.turns, 0);
+  const project = rows => projectTelemetryPerformanceDay(rows, {
+    day: '2026-09-01', provider: 'openai_codex', now: BASE + 6000,
+  });
+  assert.equal(localFastTurns(before.rows), 2);
+  assert.equal(project(before.rows).filter(report => report.speedMode === 'fast')
+    .reduce((sum, report) => sum + report.speedTurns, 0), 2);
+  prior.close();
+
+  assert.ok(INFERENCE_TIMING_PARSER_VERSION > priorVersion, 'repair requires a parser-version replay');
+  const currentOptions = { ...options, parserVersion: INFERENCE_TIMING_PARSER_VERSION };
+  let current = await openTimingStore(directory, currentOptions);
+  try {
+    assert.deepEqual(readTimingRows(current, { withRevision: true }), before);
+    const firstBytes = Buffer.byteLength(lines(first));
+    const partial = await ingestTimingFile(current, file, { maxBytes: firstBytes });
+    assert.equal(partial.replayed, true);
+    assert.equal(partial.invalidated, false);
+    assert.equal(partial.bytes, firstBytes);
+    assert.equal(partial.cursor, firstBytes);
+    assert.deepEqual(readTimingRows(current), before.rows, 'incomplete replay retains the prior live population');
+    const staged = current.db.prepare('SELECT * FROM parser_replay_turn').all();
+    assert.equal(staged.length, 1);
+    assert.ok(['unknown', 'mixed'].includes(staged[0].speed_mode));
+    assert.deepEqual({ ...staged[0], speed_mode: beforeRaw[0].speed_mode,
+      speed_mode_source: beforeRaw[0].speed_mode_source }, { ...beforeRaw[0] },
+    'reclassification preserves the HMAC, receipt timing, TTFT and completion measurements');
+    const checkpoint = current.db.prepare('SELECT * FROM source').get();
+    assert.equal(checkpoint.parser_version, priorVersion);
+    assert.equal(checkpoint.replay_parser_version, INFERENCE_TIMING_PARSER_VERSION);
+    assert.equal(JSON.parse(checkpoint.state).diagnostics.oversized, 1);
+    const cancel = new AbortController();
+    await assert.rejects(ingestTimingFile(current, file, {
+      signal: cancel.signal, onReadLine: () => cancel.abort(),
+    }), /cancelled/u);
+    assert.deepEqual(current.db.prepare('SELECT * FROM source').get(), checkpoint);
+    assert.deepEqual(current.db.prepare('SELECT * FROM parser_replay_turn').all(), staged);
+    assert.deepEqual(readTimingRows(current), before.rows);
+    current.close();
+    current = await openTimingStore(directory, currentOptions);
+    assert.deepEqual(readTimingRows(current), before.rows);
+    const complete = await ingestTimingFile(current, file);
+    assert.equal(complete.replayed, true);
+    assert.equal(complete.invalidated, true);
+    assert.equal(complete.revision, 1);
+    const after = readTimingRows(current, { withRevision: true });
+    assert.equal(after.rows.length, 2);
+    assert.ok(['unknown', 'mixed'].includes(after.rows[0].speed_mode));
+    assert.equal(after.rows[1].speed_mode, 'fast');
+    const afterRaw = current.db.prepare('SELECT * FROM turn ORDER BY at').all();
+    assert.deepEqual(afterRaw.map((row, index) => ({ ...row,
+      speed_mode: beforeRaw[index].speed_mode, speed_mode_source: beforeRaw[index].speed_mode_source,
+    })), beforeRaw.map(row => ({ ...row })));
+    assert.equal(after.sources[0].parserVersion, INFERENCE_TIMING_PARSER_VERSION);
+    assert.equal(after.sources[0].replayParserVersion, 0);
+    assert.equal(after.sources[0].telemetryRevision, before.sources[0].telemetryRevision + 2);
+    assert.equal(JSON.parse(current.db.prepare('SELECT state FROM source').get().state).diagnostics.oversized, 1);
+    assert.equal(current.db.prepare('SELECT COUNT(*) AS count FROM parser_replay_turn').get().count, 0);
+    assert.equal(localFastTurns(after.rows), 1);
+    const reports = project(after.rows);
+    assert.equal(reports.filter(report => report.speedMode === 'fast')
+      .reduce((sum, report) => sum + report.speedTurns, 0), 1);
+    assert.equal(reports.filter(report => ['unknown', 'mixed'].includes(report.speedMode))
+      .reduce((sum, report) => sum + report.speedTurns, 0), 1);
+    assert.deepEqual(await ingestTimingFile(current, file), { bytes: 0, unchanged: true });
+    assert.deepEqual(readTimingRows(current, { withRevision: true }), after);
   } finally { current.close(); }
 });
 

@@ -4,7 +4,7 @@ import { createHmac } from 'node:crypto';
 
 export const METHOD = 2;
 // Parsing semantics can advance without changing stable timing HMAC identities.
-export const INFERENCE_TIMING_PARSER_VERSION = 19;
+export const INFERENCE_TIMING_PARSER_VERSION = 20;
 export const MAX_STATE_BYTES = 128 * 1024;
 const MAX_TIER_EVENTS = 512;
 const MAX_CONTEXT_HISTORY = 512;
@@ -271,7 +271,18 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
     t.bad = true; t.problem ??= reason; t.windowBad = true;
     if (!['unreadable_evidence', 'item_interval', 'window_endpoint'].includes(reason)) t.fatal = true;
   };
+  // Late initialization requires proof of no earlier output. Missing identity,
+  // unreadable records or delayed earlier output revoke only that turn's late
+  // inference, without discarding independent timings or future tier evidence.
+  const observeModeOutput = (turn = null, at = null) => {
+    for (const active of turn ? [turn] : Object.values(s.turns)) {
+      active.modeOutputSeen = true;
+      if (active.modeInitializedAt !== null
+          && (!turn || !integer(at) || at < active.modeInitializedAt)) active.modeInvalid = true;
+    }
+  };
   const invalidate = () => {
+    observeModeOutput();
     for (const t of Object.values(s.turns)) { bad(t, 'unreadable_evidence'); t.legacy.windowBad = true; }
     rejectToolFree();
     s.legacyTotal = null;
@@ -467,6 +478,11 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
       ? { output: total.output_tokens, reasoning: total.reasoning_output_tokens } : null;
     const active = Object.values(s.turns);
     if (!s.legacyTotal || !before) {
+      if (p.info != null && (!s.legacyTotal || s.legacyTotal.output !== 0
+          || !integer(last?.output_tokens) || last.output_tokens !== 0
+          || !integer(last?.reasoning_output_tokens) || last.reasoning_output_tokens > last.output_tokens)) {
+        observeModeOutput();
+      }
       rejectToolFree();
       for (const t of active) {
         if (integer(last?.output_tokens) && last.output_tokens > 0) t.legacy.observed++;
@@ -476,6 +492,12 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
     }
     const n = s.legacyTotal.output - before.output, reasoning = s.legacyTotal.reasoning - before.reasoning;
     if (n === 0 && reasoning === 0) return; // Repeated snapshots are not responses.
+    const matched = integer(n) && n > 0 && integer(reasoning) && reasoning <= n
+      && n === last?.output_tokens && reasoning === last?.reasoning_output_tokens;
+    const turn = active.length === 1 ? active[0] : null;
+    const sameThread = p.thread_id === undefined || id(p.thread_id) && hash('session', p.thread_id) === s.own;
+    const sameTurn = p.turn_id === undefined || id(p.turn_id) && s.turns[hash('turn', `${s.own}/${p.turn_id}`)] === turn;
+    observeModeOutput(matched && sameThread && sameTurn ? turn : null, at);
     if (active.length !== 1) {
       rejectToolFree();
       for (const t of active) { resetLegacy(t, at); t.legacy.windowBad = true; }
@@ -483,8 +505,6 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
     }
     const t = active[0], l = t.legacy;
     if (++l.observed > 512) { bad(t, 'response_limit'); return; }
-    const matched = integer(n) && n > 0 && integer(reasoning) && reasoning <= n
-      && n === last?.output_tokens && reasoning === last?.reasoning_output_tokens;
     if (t.toolFree) {
       if (!matched) t.toolFree.bad = true;
       else {
@@ -502,6 +522,7 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
   function line(bytes, offset, partial) {
     if (s.blocked) return;
     if (partial) {
+      observeModeOutput();
       rejectToolFree();
       s.diagnostics.oversized++;
       // Only a verified top-level header can establish irrelevance. In
@@ -516,17 +537,27 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
       if (bytes.includes(TIER_NEEDLE)) markModeEvidenceInvalid(s);
       invalidate(); return;
     }
-    if (!toolFree && !NEEDLES.some(n => bytes.includes(n))) return;
+    const relevant = NEEDLES.some(n => bytes.includes(n));
+    // The timing fast path cannot prove that an unreadable, unclassified line
+    // contains no output while a turn still depends on that proof.
+    if (!toolFree && !relevant && !Object.values(s.turns).some(turn => !turn.modeInvalid
+      && (turn.modeInitializedAt !== null || !turn.modeOutputSeen && turn.mode === 'unknown'))) return;
     let r;
     try { r = JSON.parse(bytes.toString('utf8')); } catch {
+      observeModeOutput();
+      if (!toolFree && !relevant) return;
       s.diagnostics.malformed++;
       rejectToolFree();
       if (bytes.includes(TIER_NEEDLE)) markModeEvidenceInvalid(s);
       invalidate(); return;
     }
-    if (!r || typeof r !== 'object') { rejectToolFree(); return; }
+    if (!r || typeof r !== 'object' || Array.isArray(r)) { observeModeOutput(); rejectToolFree(); return; }
     const p = r.payload;
-    if (!p || typeof p !== 'object') { rejectToolFree(); return; }
+    if (!p || typeof p !== 'object' || Array.isArray(p)) { observeModeOutput(); rejectToolFree(); return; }
+    if (typeof r.type !== 'string' || r.type.length === 0
+        || r.type === 'event_msg' && (typeof p.type !== 'string' || p.type.length === 0)) {
+      observeModeOutput(); rejectToolFree(); return;
+    }
     const at = stamp(r.timestamp);
     if (r.type === 'session_meta') {
       if (s.own || !id(p.id) || p.forked_from_id) { s.blocked = true; s.turns = {}; return; }
@@ -580,14 +611,22 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
       recordTurnContext(p, at, tid);
       return;
     }
+    if (r.type === 'event_msg' && ['agent_message', 'agent_reasoning', 'agent_reasoning_raw_content',
+      'agent_message_delta', 'agent_reasoning_delta', 'agent_reasoning_raw_content_delta'].includes(p.type)) {
+      const sameThread = p.thread_id === undefined || id(p.thread_id) && hash('session', p.thread_id) === s.own;
+      observeModeOutput(sameThread ? s.turns[tid] : null, at);
+      return;
+    }
     if (r.type === 'response_item') {
       if (['function_call_output', 'custom_tool_call_output'].includes(p.type)) {
+        observeModeOutput();
         for (const t of Object.values(s.turns)) t.legacy.toolSeen = true;
         return;
       }
       if (p.type === 'compaction') { invalidate(); return; }
       if (!['reasoning', 'function_call', 'custom_tool_call'].includes(p.type)
         && !(p.type === 'message' && p.role === 'assistant')) {
+        if (!(p.type === 'message' && ['user', 'system', 'developer'].includes(p.role))) observeModeOutput();
         if (p.type !== 'agent_message' && !(p.type === 'message' && ['user', 'system', 'developer'].includes(p.role)))
           for (const t of Object.values(s.turns)) t.legacy.windowBad = true;
         return;
@@ -595,22 +634,25 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
       const meta = p.internal_chat_message_metadata_passthrough;
       const target = id(meta?.turn_id) ? hash('turn', `${s.own}/${meta.turn_id}`) : null;
       const t = s.turns[target];
+      observeModeOutput(t, at);
       if (!t) {
         for (const a of Object.values(s.turns)) {
           a.legacy.windowBad = true;
-          a.modeOutputSeen = true;
-          if (a.modeInitializedAt !== null) a.modeInvalid = true;
         }
         return;
       }
-      t.modeOutputSeen = true;
-      if (t.modeInitializedAt !== null && (!integer(at) || at < t.modeInitializedAt)) t.modeInvalid = true;
       const l = t.legacy;
       if (!integer(at) || at < l.previous || l.toolSeen || (l.end !== null && at < l.end)) l.windowBad = true;
       else l.end = at;
       return;
     }
     if (r.type === 'event_msg' && p.type === 'token_count') { legacyCount(p, at); return; }
+    if (r.type === 'token_usage_record' || r.type === 'event_msg'
+        && p.type === 'item_completed' && p.item?.type !== 'UserMessage') {
+      const sameThread = id(p.thread_id) && hash('session', p.thread_id) === s.own;
+      observeModeOutput(sameThread ? s.turns[tid] : null,
+        r.type === 'token_usage_record' ? at : p.started_at_ms);
+    }
     if (!tid) {
       if (r.type === 'token_usage_record') for (const t of Object.values(s.turns)) t.modernSeen = true;
       if (r.type === 'event_msg' && p.type === 'item_completed')
@@ -681,11 +723,6 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
     }
     if (r.type === 'event_msg' && p.type === 'item_completed') {
       if (!id(p.thread_id) || hash('session', p.thread_id) !== s.own) { bad(t, 'identity'); return; }
-      if (p.item?.type !== 'UserMessage') {
-        t.modeOutputSeen = true;
-        if (t.modeInitializedAt !== null && (!integer(p.started_at_ms)
-            || p.started_at_ms < t.modeInitializedAt)) t.modeInvalid = true;
-      }
       if (!['Reasoning', 'AgentMessage'].includes(p.item?.type)) return;
       const a = p.started_at_ms, b = p.completed_at_ms;
       const l = t.legacy;
@@ -702,7 +739,6 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
       return;
     }
     if (r.type === 'token_usage_record') {
-      t.modeOutputSeen = true;
       t.modernSeen = true;
       if (!id(p.thread_id) || hash('session', p.thread_id) !== s.own || !id(p.response_id)) { bad(t, 'identity'); return; }
       const response = hash('response', p.response_id);

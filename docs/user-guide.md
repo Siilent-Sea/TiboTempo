@@ -237,7 +237,10 @@ changing model or speed between turns does not exclude the other turns.
 The excluded count covers all recognized models in the selected reporting
 window. An initial speed declaration recorded after a turn starts can still
 classify that turn when same-thread evidence establishes that it preceded the
-first output; a genuine mid-turn change or missing evidence remains excluded.
+first output. Earlier, unreadable or unattributed output prevents that inference,
+even when a later timing record looks valid. A genuine mid-turn change or missing
+evidence remains excluded. Replaying retained history can correct an earlier speed
+classification while preserving the turn's independently measured timing.
 
 After the initial dashboard loads, the app prepares all four shared reporting
 periods in Standard, Fast and Ultrafast in the background. Once ready, opening the

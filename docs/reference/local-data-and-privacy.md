@@ -113,11 +113,18 @@ Compressed-only histories and missing timing remain unavailable.
 Speed classification uses recorded declarations, never current preferences to
 fill historical gaps. An initial same-thread settings declaration may follow
 `task_started` while the only active turn is still waiting for its first output.
-It initializes that turn's mode only when no earlier tier or output was observed
-and the recorded first-token time also follows the declaration. Missing identity,
-concurrent turns, earlier or missing first-token evidence, and actual mode changes
-remain unknown or mixed. Parser-version replay rebuilds qualified historical
-rows from retained logs without changing stable turn identities or timing values.
+It initializes that turn's mode only when no earlier tier or output was observed,
+the intervening evidence is readable and attributable, and the recorded first-token
+time also follows the declaration. Legacy output, unreadable or oversized records,
+unattributed output and delayed earlier receipts prevent or revoke this inference
+for the affected turn. Independent timing measurements and later clean turns remain
+usable. Missing identity, concurrent turns, earlier or missing first-token evidence,
+and actual mode changes remain unknown or mixed. Timing parser v20 replays retained
+sources to repair earlier classifications without changing stable turn identities
+or timing values. Unavailable sources retain their previous measurements with
+incomplete parser provenance; they are not claimed as repaired. This classification
+also determines speed groups in eligible daily performance reports; their UTC
+calendar and sharing authorization remain unchanged.
 
 Page reads and daily-report requests renew a 60-second lease. Discovery is capped at 50,000 entries;
 scan passes target at most 32 MiB or 750 ms, checking between chunks of at most
