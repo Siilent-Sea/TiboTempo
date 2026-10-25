@@ -5,6 +5,7 @@ import { dirname, extname, join, relative, resolve, sep } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { init, parse } from "es-module-lexer";
+import { POSTGRES_SUITE_SHARDS } from "../apps/worker/scripts/ci-postgres-suite.mjs";
 
 import {
   checkReleaseWorkflowPolicy,
@@ -34,11 +35,22 @@ const EXPECTED_PATHS = Object.freeze([
 const START_POSTGRES = "node apps/worker/scripts/ci-postgres-container.mjs --export-socket-profile";
 const STOP_POSTGRES = "node apps/worker/scripts/ci-postgres-container.mjs --stop";
 const SUITE_SCRIPT = "apps/worker/scripts/ci-postgres-suite.mjs";
+const SHARD_COMMAND = `node ${SUITE_SCRIPT} --shard "$PG_SUITE_SHARD"`;
+const AGGREGATE_JOB = "postgres-17-complete";
+const AGGREGATE_CONTRACT = Object.freeze({
+  name: "PostgreSQL 17 suite",
+  "runs-on": "ubuntu-24.04",
+  "timeout-minutes": 45,
+  if: "always()",
+  needs: ["postgres-17-suite"],
+  env: { PG_SUITE_RESULT: "${{ needs.postgres-17-suite.result }}" },
+  steps: [{ name: "Require every canonical PostgreSQL shard to pass", run: 'test "$PG_SUITE_RESULT" = success' }],
+});
 const EDGE_SPEC = "apps/worker/postgres-test/edge-origin-e2e.spec.mjs";
 const TRANSFER_SPEC = "apps/worker/postgres-test/postgres-v12-transfer.spec.mjs";
 const TOOLCHAIN_NODE = "26.2.0";
 const IMAGE_NODE = "22.16.0";
-// Every job runs the repository toolchain. Only the PostgreSQL 17 suite also
+// Every execution job runs the repository toolchain. Only the PostgreSQL shards also
 // installs the Cloud Run image runtime, first, so the toolchain stays first on
 // PATH. The Cloud Run image runtime is allowed in this workflow only; see
 // scripts/check-release-workflow-policy.mjs.
@@ -47,13 +59,14 @@ const NODE_PLAN = Object.freeze({
   "cloud-run-check": Object.freeze([TOOLCHAIN_NODE]),
   "postgres-17-suite": Object.freeze([IMAGE_NODE, TOOLCHAIN_NODE]),
 });
-// The Worker gate checks out depth 1. The Cloud Run check runs the cutover
+// The Worker gate's vendored-kernel checks read pinned historical facades and
+// source commits. The Cloud Run check runs the cutover
 // seal check, which reads pinned commits (the restore-base generator commit
 // and the Cloudflare production line) as git objects and fails as an
 // environment gap without them. The PostgreSQL 17 suite runs the
 // READ-EXPANSION specs, which `git archive` their pinned base commit
-// (scripts/gcp-read-expansion-ab.mjs DEFAULT_BASE). Both need full history.
-const FETCH_DEPTH = Object.freeze({ "worker-gate": 1, "cloud-run-check": 0, "postgres-17-suite": 0 });
+// (scripts/gcp-read-expansion-ab.mjs DEFAULT_BASE). All three need full history.
+const FETCH_DEPTH = Object.freeze({ "worker-gate": 0, "cloud-run-check": 0, "postgres-17-suite": 0 });
 const INSTALL_COMMANDS = Object.freeze(["npm --prefix apps/worker ci", "npm --prefix apps/worker/cloud-run ci"]);
 // The components of gcp:production-tooling:local-check. The first is split: its
 // offline half runs inside the Cloud Run check and its PostgreSQL-backed spec in
@@ -187,6 +200,27 @@ async function loadWorkflow() {
 
 const runs = (job) => job.steps.filter((step) => typeof step.run === "string").map((step) => step.run.trim());
 
+function postgresShardFailures(workflow) {
+  const failures = [];
+  const job = workflow.jobs["postgres-17-suite"];
+  const expectedStrategy = { "fail-fast": false, matrix: { shard: [...POSTGRES_SUITE_SHARDS] } };
+  if (JSON.stringify(job?.strategy) !== JSON.stringify(expectedStrategy)) {
+    failures.push("PostgreSQL shards must cover the four canonical groups exactly once without fail-fast");
+  }
+  if (job?.name !== "PostgreSQL 17 shard (${{ matrix.shard }})"
+      || job?.env?.PG_SUITE_SHARD !== "${{ matrix.shard }}"
+      || job?.if !== undefined || job?.["continue-on-error"] !== undefined
+      || !Array.isArray(job?.steps)
+      || job.steps.some((step) => step["continue-on-error"] !== undefined)
+      || runs(job).filter((command) => command === SHARD_COMMAND).length !== 1) {
+    failures.push("PostgreSQL shards must run the closed selector without conditional or tolerated failures");
+  }
+  if (JSON.stringify(workflow.jobs[AGGREGATE_JOB]) !== JSON.stringify(AGGREGATE_CONTRACT)) {
+    failures.push("PostgreSQL suite must always require the successful result of every shard");
+  }
+  return failures;
+}
+
 // ---------------------------------------------------------------------------
 // Workflow contract
 // ---------------------------------------------------------------------------
@@ -227,6 +261,10 @@ test("hosted-backend is read-only: contents read, no secrets, no environments, p
   for (const [id, job] of Object.entries(workflow.jobs)) {
     assert.equal(job.permissions, undefined, `${id} inherits contents: read`);
     assert.equal(job.environment, undefined, `${id} has no environment`);
+    if (id === AGGREGATE_JOB) {
+      assert.deepEqual(job, AGGREGATE_CONTRACT, "the aggregate runs only a shell result check, with no checkout or actions");
+      continue;
+    }
     for (const step of job.steps) {
       if (step.uses === CHECKOUT) {
         assert.deepEqual(step.with, { "fetch-depth": FETCH_DEPTH[id], "persist-credentials": false },
@@ -260,7 +298,7 @@ test("every job that runs the cutover seal check checks out full history", async
   }
 });
 
-test("no run block interpolates GitHub expressions into a shell", async () => {
+test("no run block interpolates GitHub expressions into a shell; only closed shard routing and results enter env", async () => {
   const { text, workflow } = await loadWorkflow();
   assert.doesNotMatch(text, /\$\{\{\s*github\.event/u);
   for (const [id, job] of Object.entries(workflow.jobs)) {
@@ -270,21 +308,30 @@ test("no run block interpolates GitHub expressions into a shell", async () => {
     for (const step of job.steps) assert.equal(step.env, undefined, `${id} steps take no expression env`);
     for (const [name, value] of Object.entries(job.env ?? {})) {
       assert.equal(typeof value, "string", `${id} env ${name} is a quoted literal`);
+      if (id === "postgres-17-suite" && name === "PG_SUITE_SHARD") {
+        assert.equal(value, "${{ matrix.shard }}");
+        continue;
+      }
+      if (id === AGGREGATE_JOB && name === "PG_SUITE_RESULT") {
+        assert.equal(value, "${{ needs.postgres-17-suite.result }}");
+        continue;
+      }
       assert.doesNotMatch(value, /\$\{\{/u, `${id} env ${name} is static`);
     }
   }
 });
 
-test("three jobs run the Worker gate, the Cloud Run check and the routed PostgreSQL 17 suite", async () => {
+test("three execution jobs run the unchanged Worker and Cloud Run gates and all routed PostgreSQL shards", async () => {
   const { workflow } = await loadWorkflow();
-  assert.deepEqual(Object.keys(workflow.jobs), ["worker-gate", "cloud-run-check", "postgres-17-suite"]);
+  assert.deepEqual(Object.keys(workflow.jobs), ["worker-gate", "cloud-run-check", "postgres-17-suite", AGGREGATE_JOB]);
   const timeouts = { "worker-gate": 60, "cloud-run-check": 30, "postgres-17-suite": 45 };
   const gates = {
     "worker-gate": "npm --prefix apps/worker run check",
     "cloud-run-check": "npm --prefix apps/worker/cloud-run run check",
-    "postgres-17-suite": "node apps/worker/scripts/ci-postgres-suite.mjs",
+    "postgres-17-suite": SHARD_COMMAND,
   };
   for (const [id, job] of Object.entries(workflow.jobs)) {
+    if (id === AGGREGATE_JOB) continue; // Pinned independently as an always-running, fail-closed aggregate.
     assert.equal(job["runs-on"], "ubuntu-24.04", id);
     assert.equal(job["timeout-minutes"], timeouts[id], id);
     assert.equal(job.services, undefined, `${id} starts PostgreSQL through the reviewed script`);
@@ -325,6 +372,35 @@ test("three jobs run the Worker gate, the Cloud Run check and the routed Postgre
   assert.deepEqual(workflow.jobs["worker-gate"].env, { WRANGLER_SEND_METRICS: "false" });
 });
 
+test("all four canonical PostgreSQL shards and the fail-closed aggregate are mandatory", async () => {
+  const { workflow } = await loadWorkflow();
+  assert.deepEqual(POSTGRES_SUITE_SHARDS, ["vitest", "node-1", "node-2", "edge-e2e"]);
+  assert.deepEqual(postgresShardFailures(workflow), []);
+  for (const mutate of [
+    (copy) => copy.jobs["postgres-17-suite"].strategy.matrix.shard.pop(),
+    (copy) => copy.jobs["postgres-17-suite"].strategy.matrix.shard.push("node-1"),
+    (copy) => { copy.jobs["postgres-17-suite"].strategy.matrix.shard[0] = "unknown"; },
+    (copy) => { copy.jobs["postgres-17-suite"].strategy["fail-fast"] = true; },
+    (copy) => { copy.jobs["postgres-17-suite"]["continue-on-error"] = true; },
+    (copy) => { copy.jobs["postgres-17-suite"].if = "false"; },
+    (copy) => { copy.jobs["postgres-17-suite"].env.PG_SUITE_SHARD = "vitest"; },
+    (copy) => { delete copy.jobs[AGGREGATE_JOB]; },
+    (copy) => { delete copy.jobs[AGGREGATE_JOB].if; },
+    (copy) => { copy.jobs[AGGREGATE_JOB].needs = []; },
+    (copy) => { copy.jobs[AGGREGATE_JOB].env.PG_SUITE_RESULT = "success"; },
+    (copy) => { copy.jobs[AGGREGATE_JOB].steps[0].run = "true"; },
+    (copy) => { copy.jobs[AGGREGATE_JOB].steps[0]["continue-on-error"] = true; },
+  ]) {
+    const copy = structuredClone(workflow);
+    mutate(copy);
+    assert.ok(postgresShardFailures(copy).length > 0);
+  }
+  // The sole admitted aggregate predicate rejects every non-success outcome,
+  // including an absent matrix result, cancellation and skipped execution.
+  const aggregate = workflow.jobs[AGGREGATE_JOB];
+  assert.equal(aggregate.steps[0].run, 'test "$PG_SUITE_RESULT" = success');
+});
+
 test("the PostgreSQL 17 suite gets the container's loopback TCP pair, and only that job does", async () => {
   // Without the pair the journal-transfer spec's TCP tests skip, which the
   // suite reports as SILENTLY_SKIPPED; with a wrong port they fail to connect.
@@ -335,6 +411,7 @@ test("the PostgreSQL 17 suite gets the container's loopback TCP pair, and only t
   assert.deepEqual(workflow.jobs["postgres-17-suite"].env, {
     PG_TEST_TCP_HOST: "127.0.0.1",
     PG_TEST_TCP_PORT: publish[0][1],
+    PG_SUITE_SHARD: "${{ matrix.shard }}",
   });
   for (const id of ["worker-gate", "cloud-run-check"]) {
     assert.equal(Object.keys(workflow.jobs[id].env ?? {}).some((name) => name.startsWith("PG_TEST_")), false,
@@ -530,10 +607,14 @@ const stepAt = (job, predicate) => job.steps.findIndex((step) => predicate(step)
 const isSetupNode = (version) => (step) => step.uses === SETUP_NODE && step.with?.["node-version"] === version;
 const runMatches = (pattern) => (step) => typeof step.run === "string" && pattern.test(step.run);
 
-/** Every job installs all three lockfiles and ends with the repository toolchain active. */
+/** Every execution job installs all three lockfiles and ends with the repository toolchain active. */
 function toolchainFailures(workflow) {
   const failures = [];
   for (const [id, job] of Object.entries(workflow.jobs)) {
+    if (id === AGGREGATE_JOB) {
+      if (JSON.stringify(job) !== JSON.stringify(AGGREGATE_CONTRACT)) failures.push("unreviewed PostgreSQL aggregate");
+      continue;
+    }
     const plan = NODE_PLAN[id];
     if (plan === undefined) {
       failures.push(`${id} is not a reviewed job`);
@@ -641,7 +722,7 @@ function edgeRuntimeFailures(workflow, { suite, spec, transferSpec, goldenFiles 
     const name = stepAt(job, runMatches(/EDGE_E2E_NODE=/u));
     const toolchain = stepAt(job, isSetupNode(TOOLCHAIN_NODE));
     const rehearsal = stepAt(job, runMatches(/EDGE_E2E_REHEARSAL_NODE=/u));
-    const gate = stepAt(job, (step) => step.run?.trim() === `node ${SUITE_SCRIPT}`);
+    const gate = stepAt(job, (step) => step.run?.trim() === SHARD_COMMAND);
     if (!(image >= 0 && image < name && name < toolchain && toolchain < rehearsal && rehearsal < gate)) {
       failures.push("the image runtime, its naming step, the toolchain, the rehearsal runtime and the suite are out of order");
     }
@@ -708,7 +789,7 @@ async function loadContractInputs() {
   };
 }
 
-test("every job installs the root, Worker and Cloud Run lockfiles under the repository toolchain", async () => {
+test("every execution job installs the root, Worker and Cloud Run lockfiles under the repository toolchain", async () => {
   const { workflow } = await loadWorkflow();
   assert.deepEqual(toolchainFailures(workflow), []);
 });
@@ -769,9 +850,9 @@ test("the PostgreSQL 17 suite runs the edge end-to-end spec under Node.js 22.16.
   const job = workflow.jobs["postgres-17-suite"];
   assert.deepEqual(job.steps.filter(({ uses }) => uses === SETUP_NODE).map((step) => step.with["node-version"]),
     [IMAGE_NODE, TOOLCHAIN_NODE]);
-  // Still the suite's single gate, still no skips: the suite is not given an
-  // opt-out for the edge spec.
-  assert.equal(runs(job).filter((command) => command === `node ${SUITE_SCRIPT}`).length, 1);
+  // Every closed partition runs through the same zero-skip gate; the mandatory
+  // matrix includes the edge spec's partition exactly once.
+  assert.equal(runs(job).filter((command) => command === SHARD_COMMAND).length, 1);
   assert.equal(job.env.EDGE_E2E_NODE, undefined);
 });
 
@@ -898,7 +979,7 @@ test("hosted CI contract: an edge runtime that is unnamed, misplaced, drifted or
     job.steps.splice(stepAt(job, isSetupNode(IMAGE_NODE)), 0, tool);
   }).some((failure) => failure.includes("out of order")));
   assert.ok(mutate((job) => {
-    const [gate] = job.steps.splice(stepAt(job, (step) => step.run?.trim() === `node ${SUITE_SCRIPT}`), 1);
+    const [gate] = job.steps.splice(stepAt(job, (step) => step.run?.trim() === SHARD_COMMAND), 1);
     job.steps.splice(stepAt(job, isSetupNode(IMAGE_NODE)), 0, gate);
   }).some((failure) => failure.includes("out of order")), "suite before runtimes");
 
