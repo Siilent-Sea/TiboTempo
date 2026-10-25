@@ -239,6 +239,82 @@ test('mode is taken at task start and a post-completion toggle affects only late
   assert.equal(parsed[1].speed_mode, 'standard');
 });
 
+function initialSettingsFixture(serviceTier = 'priority') {
+  return [
+    record(0, 'session_meta', { id: 'synthetic-session' }),
+    event(0, 'task_started'),
+    event(500, 'thread_settings_applied', {
+      turn_id: undefined, thread_id: 'synthetic-session',
+      thread_settings: { service_tier: serviceTier },
+    }),
+    context(500),
+    item(1000, 'synthetic-turn', 800, 1000, 'Reasoning'),
+    usage(1000, 'synthetic-turn', 'synthetic-response', 100, 100),
+    event(2000, 'task_complete', { duration_ms: 2000, time_to_first_token_ms: 800 }),
+  ];
+}
+
+test('first same-thread settings before any output initialize a mode after task start', () => {
+  for (const [tier, expected] of [['priority', 'fast'], ['default', 'standard'], ['ultrafast', 'ultrafast']]) {
+    const rows = initialSettingsFixture(tier);
+    for (let split = 1; split < rows.length; split++) {
+      const prefix = parse(rows.slice(0, split));
+      const [row] = parse(rows.slice(split), structuredClone(prefix.parser.state())).result;
+      assert.equal(row.speed_mode, expected, `${tier} checkpoint ${split}`);
+      assert.equal(row.speed_mode_source, 'rollout_thread_settings');
+      assert.equal(row.ttft, 800);
+      assert.equal(row.sample_duration, 200);
+    }
+  }
+});
+
+test('late initialization requires thread identity, unique turn, and no preceding output or tier', () => {
+  for (const [label, mutate] of [
+    ['missing thread identity', rows => { delete rows[2].payload.thread_id; }],
+    ['another thread', rows => { rows[2].payload.thread_id = 'other-synthetic-session'; }],
+    ['concurrent turn', rows => rows.splice(2, 0, event(100, 'task_started', { turn_id: 'other-synthetic-turn' }))],
+    ['known previous mode', rows => rows.splice(1, 0, settings(-1, 'default'))],
+    ['explicit prior unknown', rows => rows.splice(1, 0, settings(-1, null))],
+    ['earlier attributed output', rows => rows.splice(2, 0, baselineOutput(200))],
+    ['earlier unattributed output', rows => rows.splice(2, 0, record(200, 'response_item', { type: 'reasoning' }))],
+    ['earlier usage', rows => rows.splice(2, 0, usage(200, 'synthetic-turn', 'earlier-response', 10, 10))],
+  ]) {
+    const rows = initialSettingsFixture(); mutate(rows);
+    const result = parse(rows).result;
+    assert.equal(result.length, 1);
+    assert.notEqual(result[0].speed_mode, 'fast', label);
+  }
+});
+
+test('late initial settings cannot override earlier or missing first-output evidence', () => {
+  for (const [label, mutate] of [
+    ['delayed earlier item', rows => { rows[4].payload.started_at_ms = BASE + 400; }],
+    ['earlier first token', rows => { rows.at(-1).payload.time_to_first_token_ms = 400; }],
+    ['missing first token', rows => { delete rows.at(-1).payload.time_to_first_token_ms; }],
+    ['unattributed delayed output', rows => rows.splice(4, 0, record(800, 'response_item', { type: 'reasoning' }))],
+  ]) {
+    const rows = initialSettingsFixture(); mutate(rows);
+    assert.equal(rowFor(rows).speed_mode, 'unknown', label);
+  }
+  const changed = initialSettingsFixture();
+  changed.splice(6, 0, settings(1500, 'default'));
+  assert.equal(rowFor(changed).speed_mode, 'mixed');
+  const repeated = initialSettingsFixture();
+  repeated.splice(4, 0, settings(600, 'priority'));
+  assert.equal(rowFor(repeated).speed_mode, 'fast');
+});
+
+test('older pending checkpoints cannot infer that late settings preceded all output', () => {
+  const rows = initialSettingsFixture();
+  const prefix = parse(rows.slice(0, 2));
+  const saved = structuredClone(prefix.parser.state());
+  for (const turn of Object.values(saved.turns)) {
+    delete turn.modeOutputSeen;
+    delete turn.modeInitializedAt;
+  }
+  assert.notEqual(parse(rows.slice(2), saved).result[0].speed_mode, 'fast');
+});
+
 test('per-turn context service tier overrides the thread setting at the task boundary', () => {
   const standard = rowFor(performanceFixture({
     serviceTier: 'standard', contextServiceTier: 'standard',

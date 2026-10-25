@@ -1,3 +1,4 @@
+import { validModelPerformanceTimeZone } from '../../src/application/index.js';
 import { parentPort, workerData, isMainThread } from 'node:worker_threads';
 import { createHash } from 'node:crypto';
 import { opendir, lstat, mkdir, realpath } from 'node:fs/promises';
@@ -5,7 +6,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { setImmediate as yieldTurn } from 'node:timers/promises';
 import { canonicalTelemetryPerformanceJson } from '@app-usagemonitor/telemetry-contract';
-import { MODEL_PERFORMANCE_MAX_WINDOWS } from './model-performance-snapshots.js';
+import { MODEL_PERFORMANCE_MAX_WINDOWS, modelPerformanceSnapshotKey } from './model-performance-snapshots.js';
 import { openTimingStore, ingestTimingFile, readTimingRows } from '../../src/platform/index.js';
 import {
   createModelPerformanceContext,
@@ -94,9 +95,10 @@ async function run() {
   parentPort.on('message', message => {
     if (message?.type === 'stop') stop();
     else if (message?.type === 'window' && ['1','7','30','all'].includes(message.period)
-      && Number.isSafeInteger(message.end) && message.end >= 0 && message.end <= Date.now()
+      && (message.end === null || Number.isSafeInteger(message.end) && message.end >= 0 && message.end <= Date.now())
+      && validModelPerformanceTimeZone(message.timeZone)
       && ['standard', 'fast', 'ultrafast'].includes(message.speedMode)
-      && message.requestKey === `${message.period}:${message.speedMode}:${message.end}`) {
+      && message.requestKey === `${modelPerformanceSnapshotKey(message.period, message.speedMode, message.timeZone)}${message.end === null ? '' : `:${message.end}`}`) {
       windows.set(message.requestKey, message); windowsChanged = true;
       while (windows.size > MODEL_PERFORMANCE_MAX_WINDOWS) windows.delete(windows.keys().next().value);
     } else if (message?.type === 'performance-day') {
@@ -156,10 +158,10 @@ async function run() {
     const now = Date.now();
     lastPublished = now; lastCollecting = collecting; windowsChanged = false;
     parentPort.postMessage({ type: 'snapshots', revision, values: [
-      ...['1', '7', '30', 'all'].flatMap(period => ['standard', 'fast', 'ultrafast'].map(speedMode => ({ period, speedMode, end: now }))), ...windows.values(),
-    ].map(({period, speedMode, end, requestKey}) => ({
-      ...(requestKey ? { requestKey } : {}),
-      ...context.project(rows, { period, speedMode, now: end, rolling: Boolean(requestKey), historyProgress: files === null ? null : {
+      ...['1', '7', '30', 'all'].flatMap(period => ['standard', 'fast', 'ultrafast'].map(speedMode => ({ period, speedMode, timeZone: 'UTC', end: now }))), ...windows.values(),
+    ].map(({period, speedMode, timeZone, end, requestKey}) => ({
+      ...(requestKey && end !== null ? { requestKey } : {}),
+      ...context.project(rows, { period, speedMode, timeZone, now: end ?? now, rolling: Boolean(requestKey) && end !== null, historyProgress: files === null ? null : {
         checked: Math.min(cursor, files.length), total: files.length,
       } }), updatedAt: new Date(now).toISOString(), collecting, stale: degraded || parserIncomplete,
     })) });

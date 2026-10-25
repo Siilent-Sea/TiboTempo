@@ -96,6 +96,7 @@ const PUBLIC_RELEASE_SOURCE_BASENAMES = new Set([
   "localization.js",
   "model-performance.css",
   "model-performance.js",
+  "performance-calendar.js",
   "model-catalog.generated.js",
   "privacy.html",
   "styles.css",

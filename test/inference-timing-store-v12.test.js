@@ -118,6 +118,36 @@ test('parser upgrades replay unchanged verified sources once without changing st
   }
 });
 
+test('parser upgrade reclassifies initial settings without changing retained timing or identities', async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'timing-mode-replay-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = join(root, 'source.jsonl'), directory = join(root, 'timing');
+  const rows = fixture();
+  rows[2].timestamp = new Date(BASE + 100).toISOString();
+  rows[3].payload.started_at_ms = BASE + 200;
+  rows.splice(2, 0, rec(100, 'event_msg', { type: 'thread_settings_applied',
+    thread_id: 'synthetic-session', thread_settings: { service_tier: 'priority' } }));
+  await writeFile(file, lines(rows), { mode: 0o600 });
+  const priorParser = (key, saved, emit) => createParser(key, saved, row => emit({
+    ...row, speed_mode: 'mixed', speed_mode_source: 'mixed',
+  }));
+  const prior = await openTimingStore(directory, { ...options, createParser: priorParser,
+    parserVersion: INFERENCE_TIMING_PARSER_VERSION - 1 });
+  await ingestTimingFile(prior, file);
+  const before = prior.db.prepare('SELECT * FROM turn').get();
+  prior.close();
+  const current = await openTimingStore(directory, { ...options, parserVersion: INFERENCE_TIMING_PARSER_VERSION });
+  try {
+    assert.equal(current.db.prepare('SELECT speed_mode FROM turn').get().speed_mode, 'mixed');
+    assert.equal((await ingestTimingFile(current, file)).replayed, true);
+    const after = current.db.prepare('SELECT * FROM turn').get();
+    assert.equal(after.speed_mode, 'fast');
+    assert.equal(after.speed_mode_source, 'rollout_thread_settings');
+    assert.deepEqual({ ...after, speed_mode: before.speed_mode, speed_mode_source: before.speed_mode_source }, { ...before });
+    assert.deepEqual(await ingestTimingFile(current, file), { bytes: 0, unchanged: true });
+  } finally { current.close(); }
+});
+
 test('bounded parser repair keeps last-good rows until the complete replay commits after restart', async t => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'timing-parser-staging-')));
   t.after(() => rm(root, { recursive: true, force: true }));

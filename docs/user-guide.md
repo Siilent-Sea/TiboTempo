@@ -215,6 +215,16 @@ and use the shared **Reporting period** above the page. The 0.1.24 desktop
 release includes this page, including on Windows x64. Local timing analysis is
 separate from activation of optional hosted performance telemetry.
 
+Daily and weekly performance bins default to the **System time zone**. Use the
+**System time zone / UTC** control to switch the calendar used for grouping and
+chart labels; the selected zone is shown beside the median caption. This
+preference is saved locally and is independent of interface language. Switching
+zones recalculates bins from individual measurements, not from daily medians.
+The shared rolling reporting window remains unchanged, so its first and last
+calendar bins can be partial. In Asia/Shanghai, a local day begins at midnight;
+in UTC mode it begins at 08:00 Beijing time. Community daily aggregates retain
+their UTC calendar.
+
 The page starts in **Standard** mode. Use the **Standard / Fast / Ultrafast** controls to show
 only the selected mode; counts, medians, bands and both charts use that same
 population. The choice lasts while the page is mounted, including period/model
@@ -222,6 +232,12 @@ changes and refreshes. Fast and Ultrafast can have few or no observations. Hollo
 have fewer than five measured turns, and those bins have no percentile bands.
 Unknown or mixed modes are excluded from all three views, with their excluded turn
 count shown. Older saved measurements without mode evidence stay unclassified.
+Classification applies to each completed turn, not an entire conversation:
+changing model or speed between turns does not exclude the other turns.
+The excluded count covers all recognized models in the selected reporting
+window. An initial speed declaration recorded after a turn starts can still
+classify that turn when same-thread evidence establishes that it preceded the
+first output; a genuine mid-turn change or missing evidence remains excluded.
 
 After the initial dashboard loads, the app prepares all four shared reporting
 periods in Standard, Fast and Ultrafast in the background. Once ready, opening the

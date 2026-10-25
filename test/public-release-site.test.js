@@ -1188,7 +1188,7 @@ test("checked-in public source satisfies the complete release contract", async (
   const result = await buildFixtureSite(
     releaseArgs(value, { source: PUBLIC_SOURCE }),
   );
-  assert.equal(result.fileCount, 39);
+  assert.equal(result.fileCount, 40);
   const manifest = JSON.parse(
     await readFile(join(value.output, "release-site-manifest.json"), "utf8"),
   );
@@ -1226,6 +1226,7 @@ test("checked-in public source satisfies the complete release contract", async (
       "model-performance.css",
       "model-performance.js",
       "model-visuals.js",
+      "performance-calendar.js",
       "privacy.html",
       "robots.txt",
       "sitemap.xml",

@@ -1,3 +1,4 @@
+import { validPerformanceTimeZone, systemPerformanceTimeZone, performanceCalendarDay, performanceCalendarBoundary, performanceCalendarBin } from "./performance-calendar.js";
 import { modelUsagePresentation, modelThemeIcon } from "./model-visuals.js";
 import { formatModelName } from "./ui-format.js";
 import {
@@ -45,8 +46,9 @@ export { reportingRequestPeriod } from "./dashboard-ui.js";
 
 /** A closed, bounded display contract: never pass arbitrary source text to DOM. */
 export function normalizeModelPerformance(value) {
-  if (!exact(value, ["schemaVersion", "method", "status", "collecting", "stale", "updatedAt", "period", "interval", "start", "end", "historyProgress", "speedMode", "excludedUnknownTurns", "models"])
-      || value.schemaVersion !== 5 || value.method !== 5
+  if (!exact(value, ["schemaVersion", "method", "status", "collecting", "stale", "updatedAt", "period", "interval", "start", "end", "historyProgress", "speedMode", "excludedUnknownTurns", "timeZone", "models"])
+      || value.schemaVersion !== 6 || value.method !== 5
+      || !validPerformanceTimeZone(value.timeZone)
       || !SPEED_MODES.includes(value.speedMode) || !count(value.excludedUnknownTurns)
       || !["ready", "loading", "unavailable"].includes(value.status)
       || typeof value.collecting !== "boolean" || typeof value.stale !== "boolean" || !PERIODS.includes(value.period)
@@ -57,7 +59,7 @@ export function normalizeModelPerformance(value) {
         && count(value.historyProgress.checked) && count(value.historyProgress.total)
         && value.historyProgress.checked <= value.historyProgress.total)
       || !Array.isArray(value.models) || value.models.length > 16) return null;
-  const step = value.interval === "week" ? 7 * DAY : DAY;
+  const step = value.interval === "week" ? 8 * DAY : 26 * 3_600_000;
   const seen = new Set();
   const validPoints = (points, maximum) => {
     if (!Array.isArray(points) || points.length > 2048) return false;
@@ -100,10 +102,10 @@ export function normalizeModelPerformance(value) {
 }
 
 /** Connect observed medians; missing bins use an honest dashed bridge. */
-export function performanceSegments(points, interval) {
-  const step = interval === "week" ? 7 * DAY : DAY;
+export function performanceSegments(points, interval, timeZone = "UTC") {
+  const step = interval === "week" ? 7 : 1;
   return points.slice(1).flatMap((point, index) => {
-    const previous = points[index], gap = point.at - previous.at;
+    const previous = points[index], gap = performanceCalendarDay(point.at, timeZone) - performanceCalendarDay(previous.at, timeZone);
     return [{ from: previous, to: point, dashed: gap > step }];
   });
 }
@@ -131,41 +133,44 @@ export function performanceYScale(values) {
   return { maximum, ticks, digits: Math.max(0, -Math.floor(Math.log10(step))) };
 }
 
-/** UTC calendar ticks, never fractional positions formatted as random dates. */
-export function performanceDateTicks({ start, end }) {
+/** Calendar-aligned ticks in the same time zone as the server's bins. */
+export function performanceDateTicks({ start, end }, timeZone = "UTC") {
   if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return [];
-  const days = (end - start) / DAY, ticks = [];
+  const firstDay = performanceCalendarDay(start, timeZone), lastDay = performanceCalendarDay(end, timeZone);
+  const days = lastDay - firstDay, ticks = [];
+  const add = day => {
+    const at = performanceCalendarBoundary(day, timeZone);
+    if (at >= start && at <= end && ticks.at(-1) !== at) ticks.push(at);
+  };
   if (days <= 40) {
-    const step = days <= 8 ? DAY : days <= 16 ? 2 * DAY : 7 * DAY;
-    const anchor = step === 7 * DAY ? 4 * DAY : 0; // Mondays.
-    for (let at = Math.ceil((start - anchor) / step) * step + anchor; at <= end; at += step) ticks.push(at);
+    const step = days <= 8 ? 1 : days <= 16 ? 2 : 7;
+    const anchor = step === 7 ? 4 : 0;
+    for (let day = Math.ceil((firstDay - anchor) / step) * step + anchor; day <= lastDay; day += step) add(day);
   } else {
-    const date = new Date(start);
+    const date = new Date(firstDay * DAY);
     let year = date.getUTCFullYear(), month = date.getUTCMonth();
     const monthStep = days <= 100 ? 0 : days <= 240 ? 1 : days <= 730 ? 3 : 12 * Math.ceil(days / (365 * 6));
     if (monthStep >= 12) { year = Math.floor(year / (monthStep / 12)) * (monthStep / 12); month = 0; }
     else if (monthStep) month = Math.floor(month / monthStep) * monthStep;
     for (let i = 0; i < 32; i++) {
-      const at = Date.UTC(year, month, 1);
-      if (at > end) break;
-      if (at >= start) ticks.push(at);
-      if (!monthStep) {
-        const mid = Date.UTC(year, month, 15);
-        if (mid >= start && mid <= end) ticks.push(mid);
-      }
+      const day = Date.UTC(year, month, 1) / DAY;
+      if (day > lastDay) break;
+      add(day);
+      if (!monthStep) add(Date.UTC(year, month, 15) / DAY);
       month += monthStep || 1;
     }
   }
   return ticks;
 }
 
-/** Snap to the calendar bin, including missing bins; never borrow a distant point. */
-export function performanceHoverBin(fraction, { start, end }, interval) {
-  const step = interval === 'week' ? 7 * DAY : DAY;
-  const anchor = interval === 'week' ? 4 * DAY : 0;
+/** Snap to the nearest calendar-bin boundary; never borrow a distant sample. */
+export function performanceHoverBin(fraction, { start, end }, interval, timeZone = "UTC") {
   const at = start + Math.max(0, Math.min(1, fraction)) * (end - start);
-  const first = Math.floor((start - anchor) / step), last = Math.floor((end - anchor) / step);
-  return Math.max(first, Math.min(last, Math.round((at - anchor) / step))) * step + anchor;
+  const step = interval === 'week' ? 7 : 1;
+  const first = performanceCalendarBin(start, interval, timeZone), last = performanceCalendarBin(end, interval, timeZone);
+  const day = performanceCalendarBin(at, interval, timeZone);
+  const left = performanceCalendarBoundary(day, timeZone), right = performanceCalendarBoundary(day + step, timeZone);
+  return performanceCalendarBoundary(Math.max(first, Math.min(last, at - left < right - at ? day : day + step)), timeZone);
 }
 
 export function mountModelPerformance(options = {}) {
@@ -186,6 +191,10 @@ export function mountModelPerformance(options = {}) {
   let reportingWindow = sharedReporting ? normalizeReportingWindow(options.reportingWindow) : null;
   let modelId = Object.hasOwn(MODEL_NAMES, saved.model) ? saved.model : null;
   let speedMode = "standard";
+  const detectedTimeZone = (options.systemTimeZone ?? systemPerformanceTimeZone)();
+  const localTimeZone = validPerformanceTimeZone(detectedTimeZone) ? detectedTimeZone : "UTC";
+  let timeZoneMode = saved.timeZoneMode === "utc" ? "utc" : "system";
+  const selectedTimeZone = () => timeZoneMode === "utc" ? "UTC" : localTimeZone;
   let payload = null, loading = false, failed = false, cancelled = false, request = 0, timer = null;
   let retainedWindowKey = null;
   let retainedWindowUnavailable = false;
@@ -216,15 +225,15 @@ export function mountModelPerformance(options = {}) {
     ? reportingRequestPeriod(reportingWindow?.period)
     : period;
   const requestEndAt = () => sharedReporting ? reportingWindow?.endAt ?? null : null;
-  let formatterLocale, numberFormat, integerFormat, dateFormat, fullDateFormat;
+  let formatterLocale, formatterTimeZone, numberFormat, integerFormat, dateFormat, fullDateFormat;
   function formatters() {
     const selectedLocale = locale();
-    if (formatterLocale !== selectedLocale) {
-      formatterLocale = selectedLocale;
+    if (formatterLocale !== selectedLocale || formatterTimeZone !== selectedTimeZone()) {
+      formatterLocale = selectedLocale; formatterTimeZone = selectedTimeZone();
       numberFormat = new Intl.NumberFormat(selectedLocale, { maximumFractionDigits: 1 });
       integerFormat = new Intl.NumberFormat(selectedLocale, { maximumFractionDigits: 0 });
-      dateFormat = new Intl.DateTimeFormat(selectedLocale, { month: "short", day: "numeric", timeZone: "UTC" });
-      fullDateFormat = new Intl.DateTimeFormat(selectedLocale, { dateStyle: "medium", timeZone: "UTC" });
+      dateFormat = new Intl.DateTimeFormat(selectedLocale, { month: "short", day: "numeric", timeZone: selectedTimeZone() });
+      fullDateFormat = new Intl.DateTimeFormat(selectedLocale, { dateStyle: "medium", timeZone: selectedTimeZone() });
     }
   }
   const number = (value) => { formatters(); return numberFormat.format(value); };
@@ -233,7 +242,7 @@ export function mountModelPerformance(options = {}) {
   const visible = () => !root.classList.contains("dashboard-page-inactive") && !documentRef.hidden;
   const remember = () => {
     try {
-      const preference = sharedReporting ? { model: modelId } : { period, model: modelId };
+      const preference = sharedReporting ? { model: modelId, timeZoneMode } : { period, model: modelId, timeZoneMode };
       windowRef.localStorage.setItem(storageKey, JSON.stringify(preference));
     } catch { /* Nonessential preference. */ }
   };
@@ -313,8 +322,8 @@ export function mountModelPerformance(options = {}) {
       svg.append(svgElement("line", { x1: plotLeft, x2: plotRight, y1: y(value), y2: y(value), class: "performance-grid" }),
         svgElement("text", { x: 42, y: y(value) + 4, "text-anchor": "end", class: "performance-axis" }, axisNumber.format(value)));
     }
-    const dateTicks = performanceDateTicks(domain);
-    const tickDate = new Intl.DateTimeFormat(locale(), { month: "short", ...(end - start > 730 * DAY ? { year: "numeric" } : { day: "numeric" }), timeZone: "UTC" });
+    const dateTicks = performanceDateTicks(domain, payload.timeZone);
+    const tickDate = new Intl.DateTimeFormat(locale(), { month: "short", ...(end - start > 730 * DAY ? { year: "numeric" } : { day: "numeric" }), timeZone: selectedTimeZone() });
     for (const at of dateTicks) {
       const px = x(at);
       svg.append(svgElement("line", { x1: px, x2: px, y1: 24, y2: 214, class: "performance-grid performance-date-grid" }),
@@ -342,7 +351,7 @@ export function mountModelPerformance(options = {}) {
         defs.append(gradient);
       }
       svg.append(defs);
-      for (const segment of performanceSegments(item.points, payload.interval)) {
+      for (const segment of performanceSegments(item.points, payload.interval, payload.timeZone)) {
         const a = segment.from, b = segment.to;
         if (!segment.dashed && a.p10 !== null && b.p10 !== null) {
           svg.append(svgElement("path", { d: band(a, b, "p10", "p90"), fill: `url(#performance-outer-${gradientSuffix})`, class: "performance-percentile-band performance-percentile-band-outer" }),
@@ -449,7 +458,7 @@ export function mountModelPerformance(options = {}) {
       const px = (event.clientX - bounds.left) * 800 / bounds.width;
       const py = (event.clientY - bounds.top) * 256 / bounds.height;
       if (px < plotLeft || px > plotRight || py < 24 || py > 214) { showInterval(null); return; }
-      showInterval(performanceHoverBin((px - plotLeft) / plotWidth, domain, payload.interval));
+      showInterval(performanceHoverBin((px - plotLeft) / plotWidth, domain, payload.interval, payload.timeZone));
     };
     svg.addEventListener("pointermove", sweep);
     svg.addEventListener("pointerdown", sweep);
@@ -508,6 +517,29 @@ export function mountModelPerformance(options = {}) {
     }
     modeControls.append(modes, element("p", "performance-mode-note", translate(`${speedMode}Note`)));
     root.append(modeControls);
+    const zoneControls = element("div", "performance-time-zone-controls");
+    const zones = element("div", "segmented-control performance-time-zones");
+    zones.setAttribute("role", "group"); zones.setAttribute("aria-label", translate("timeZone"));
+    for (const value of ["system", "utc"]) {
+      const button = element("button", value === timeZoneMode ? "active" : "", translate(value === "system" ? "systemTimeZone" : "utcTimeZone"));
+      button.type = "button"; button.setAttribute("aria-pressed", String(timeZoneMode === value));
+      button.dataset.performanceFocus = `time-zone-${value}`;
+      button.addEventListener("click", () => {
+        if (timeZoneMode === value) return;
+        timeZoneMode = value;
+        request++; scopeGeneration++;
+        cancelPending(); cancelPreloadWaits();
+        preloadPromise = null; preloadComplete = false; foregroundKey = null;
+        windowRef.clearTimeout(timer); timer = null;
+        retainedWindowKey = null; retainedWindowUnavailable = false;
+        payload = cachedPayload(selectedRequestPeriod());
+        loading = false; failed = false; cancelled = false; scopeUnavailable = false;
+        remember(); render(); refresh();
+      });
+      zones.append(button);
+    }
+    zoneControls.append(zones, element("p", "performance-mode-note", translate("timeZoneNote", { timeZone: selectedTimeZone() })));
+    root.append(zoneControls);
     if (payload?.excludedUnknownTurns) root.append(element("p", "performance-mode-note", translate("unknownMode", { count: number(payload.excludedUnknownTurns) })));
     const status = element("p", "performance-status"); status.setAttribute("role", "status");
     const progress = payload?.historyProgress;
@@ -578,7 +610,7 @@ export function mountModelPerformance(options = {}) {
     const selectedIcon = modelThemeIcon(documentRef, selectedPresentation.theme);
     if (selectedIcon) { selectedIcon.setAttribute("class", `allowance-model-icon performance-model-icon ${selectedPresentation.className}`); identity.append(selectedIcon); }
     identity.append(element("span", "", selectedName));
-    subheading.append(identity, element("span", "", translate(payload.interval))); panel.append(subheading);
+    subheading.append(identity, element("span", "", translate(payload.interval, { timeZone: payload.timeZone }))); panel.append(subheading);
     for (const metric of ["speed", "latency"]) {
       const card = element("article", "performance-card chart-card");
       const cardHeading = element("div", "performance-card-heading chart-card-header"), cardTitle = element("div");
@@ -614,7 +646,7 @@ export function mountModelPerformance(options = {}) {
     root.append(panel);
     restoreFocus();
   }
-  const cacheKeyFor = (value, mode = speedMode, window = reportingWindow) => `${mode}::${sharedReporting
+  const cacheKeyFor = (value, mode = speedMode, window = reportingWindow) => `${selectedTimeZone()}::${mode}::${sharedReporting
     ? `${window?.period ?? "waiting"}:${window?.startAt ?? ""}:${window?.endAt ?? ""}::${value}` : value}`;
   const cachedPayload = value => readyPeriods.get(cacheKeyFor(value))?.payload ?? null;
   const cacheFresh = entry => entry && Date.now() - entry.cachedAt < PERIOD_CACHE_TTL_MS;
@@ -678,7 +710,7 @@ export function mountModelPerformance(options = {}) {
     }
   };
   const presentResult = (value, result) => {
-    if (!result || value !== selectedRequestPeriod() || result.speedMode !== speedMode) return false;
+    if (!result || value !== selectedRequestPeriod() || result.speedMode !== speedMode || result.timeZone !== selectedTimeZone()) return false;
     if (result.status === "unavailable") readyPeriods.clear();
     if (result.status === "unavailable" && retainedWindowKey === reportingKey() && payload?.status === "ready") {
       // An unavailable new window withdraws live caches, but the previous
@@ -708,6 +740,7 @@ export function mountModelPerformance(options = {}) {
     const entry = readyPeriods.get(cacheKey);
     if (!force && cacheFresh(entry)) return Promise.resolve(entry.payload);
     const expectedMode = mode;
+    const expectedTimeZone = selectedTimeZone();
     const expectedWindow = sharedReporting ? window : null;
     const expectedEndAt = expectedWindow?.endAt ?? null;
     const expectedStartAt = expectedWindow?.startAt ?? null;
@@ -720,10 +753,10 @@ export function mountModelPerformance(options = {}) {
     const promise = (async () => {
       try {
         const result = normalizeModelPerformance(await client.modelPerformance(value, {
-          signal: controller.signal, speedMode: expectedMode,
+          signal: controller.signal, speedMode: expectedMode, timeZone: expectedTimeZone,
           ...(expectedEndAt ? { endAt: expectedEndAt } : {}),
         }));
-        if (!result || result.period !== value || result.speedMode !== expectedMode
+        if (!result || result.period !== value || result.speedMode !== expectedMode || result.timeZone !== expectedTimeZone
             || (expectedEndAt && result.end !== Date.parse(expectedEndAt))
             || (expectedStartAt !== null && result.start !== Date.parse(expectedStartAt))) {
           throw new Error("Invalid timing contract");

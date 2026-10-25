@@ -149,7 +149,10 @@ enforce their closed JSON shape and byte ceiling.
 `GET /api/local/timeline/window-breakdown` accepts only `from` and `to` as
 bounded base-ten safe integers. `GET /api/local/model-performance` requires
 exactly one `period` parameter with value `1`, `7`, `30`, or `all`, and optionally
-a canonical ISO `endAt` no later than the current time. An explicit end uses
+a canonical ISO `endAt` no later than the current time, a
+`speedMode=standard|fast|ultrafast` (default `standard`), and a validated IANA
+`timeZone` (default `UTC`). Calendar day and Monday-week bins use that zone,
+including daylight-saving transitions. An explicit end uses
 rolling 24-hour, 7-day or 30-day bounds; omitted ends preserve legacy calendar
 windows for 7/30-day consumers. Other query shapes are rejected. Health, desktop status, contribution diagnostics, diagnostic notes, the
 hosted-sign-in handoff, and model performance can answer without a completed
@@ -168,7 +171,7 @@ Codex accounting snapshot.
 | `GET` | `/api/local/overview` | Personal dashboard headline and evidence coverage |
 | `GET` | `/api/local/cache-drop-thread-links` | Optional, generation-bound local thread-name/parent lookup for the two recent cache-drop tables; requires `X-Usage-Monitor-Local: 1` and no foreign Origin |
 | `POST` | `/api/local/work-usage/query` | Read-only local project/worktree/thread reports; optional canonical ISO `endAt` pins the selected period and rejects older snapshot substitution; closed JSON, local header and Origin/Host checks; bounded cancellable snapshots with lightweight `touch` lease renewal, transient names and bounded project/task name search before pagination; retained read-only figures use a separate refresh job identity and durable anonymous snapshots |
-| `GET` | `/api/local/model-performance` | Independent device-local Codex timing aggregates for `period=1`, `period=7`, `period=30`, or `period=all`, optionally pinned by `endAt`; restores validated saved measurements before background work; reads renew a 60-second background-worker lease; schema 4/method 5 combines response speed and tool-free fallback estimates, preferring response timing per turn, with a fallback count and unchanged TTFT |
+| `GET` | `/api/local/model-performance` | Independent device-local Codex timing aggregates for `period=1`, `period=7`, `period=30`, or `period=all`, optionally pinned by `endAt`; restores validated saved measurements before background work; reads renew a 60-second background-worker lease; schema 6/method 5 includes `speedMode`, `timeZone`, and `excludedUnknownTurns`, and combines response speed and tool-free fallback estimates, preferring response timing per turn, with a fallback count and unchanged TTFT |
 | `GET` | `/api/local/gradient` | Quota-versus-cost gradient report data |
 | `GET` | `/api/local/weekly` | Weekly calibration report data |
 | `GET` | `/api/local/weekly-pace-outlook` | Privacy-safe weekly allowance pace projection bound to the current observed window |
@@ -670,7 +673,7 @@ module facades, but their message shapes are security- and resource-relevant:
 | Owner / source | Input boundary | Output boundary |
 |---|---|---|
 | [Replay-safe accounting rebuild child](../../src/replay-safe-accounting-rebuild-child.js) | Two owner-private temporary paths on argv: versioned JSON request and exclusive result target; parent-held stdin is the death watchdog | Canonical result file plus one bounded stdout envelope containing status and either byte count/SHA-256 or a fixed error code |
-| [Model performance worker](../../apps/local/model-performance-worker.js) | Fixed private state and Codex-home anchors, then bounded reporting-window requests or a `stop` message; starts only through a recent timing-page reader | Bounded timing aggregate snapshots for four periods across three speed modes and at most twelve pinned windows, or a fixed unavailable indication; original timing and independent tool-free supplement, no accounting/contribution data flow |
+| [Model performance worker](../../apps/local/model-performance-worker.js) | Fixed private state and Codex-home anchors, then bounded reporting-window requests or a `stop` message; starts only through a recent timing-page reader | Bounded timing aggregate snapshots for four periods across three speed modes and at most twelve requested calendar/window projections, or a fixed unavailable indication; original timing and independent tool-free supplement, no accounting/contribution data flow |
 | [Unified-index worker](../../src/local-unified-index-worker.js) | `workerData` with bounded lineage components, source paths/sizes, and maximum line bytes | Typed `batch` messages containing minimized events/boundaries/tools/snapshot keys, or one content-free `failed` code |
 | [Local-analysis extraction worker](../../src/local-analysis-extract-worker.js) | `workerData` with an owner-private shard path and bounded source byte-range tasks | One `{ok: true, result}` aggregate or `{ok: false, code}` fixed failure |
 
@@ -778,6 +781,12 @@ These are architectural import boundaries, not promises of third-party package
 stability. Their value is enforceable ownership: code outside an owner enters
 through a reviewed facade, while private implementation modules can change
 without becoming accidental cross-system APIs.
+
+The application facade exposes `validModelPerformanceTimeZone` for local route,
+worker-message, and saved-projection validation. It accepts bounded runtime-supported
+IANA zone names (including `UTC`) and rejects invalid names and numeric offset
+strings; consumers do not bypass the application boundary to import reporting
+implementation helpers.
 
 ## 7. Persisted and wire schema contracts
 

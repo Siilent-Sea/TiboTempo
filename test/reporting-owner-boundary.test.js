@@ -62,6 +62,7 @@ const REPORTING_PUBLIC_EXPORTS = Object.freeze([
   "unavailableUsageExplanation",
   "usageExplanationBounds",
   "usageExplanationCatalog",
+  "validModelPerformanceTimeZone",
   "validWeeklyPlanPopulations",
   "validateUsageExplanationFixedBounds",
   "validateUsageExplanationRequest",

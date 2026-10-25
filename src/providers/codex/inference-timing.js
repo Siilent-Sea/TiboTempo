@@ -4,7 +4,7 @@ import { createHmac } from 'node:crypto';
 
 export const METHOD = 2;
 // Parsing semantics can advance without changing stable timing HMAC identities.
-export const INFERENCE_TIMING_PARSER_VERSION = 18;
+export const INFERENCE_TIMING_PARSER_VERSION = 19;
 export const MAX_STATE_BYTES = 128 * 1024;
 const MAX_TIER_EVENTS = 512;
 const MAX_CONTEXT_HISTORY = 512;
@@ -220,6 +220,13 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
     turn.mode ??= 'unknown';
     turn.modeSource ??= 'unobserved';
     turn.modeMixed ??= false;
+    // Older pending checkpoints cannot prove that no output preceded a late
+    // initial declaration. A full parser-version replay can establish it.
+    turn.modeOutputSeen ??= true;
+    turn.modeInitializedAt ??= null;
+    if (typeof turn.modeOutputSeen !== 'boolean'
+        || turn.modeInitializedAt !== null && (!integer(turn.modeInitializedAt)
+          || turn.modeInitializedAt < turn.start)) turn.modeInvalid = true;
     // A pre-performance saved turn has no tier proof. Keep its existing TPS
     // state, but do not upgrade it to a mode-qualified row after restart.
     turn.modeInvalid ??= true;
@@ -419,16 +426,32 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
       return;
     }
     const normalized = modeFromRawTier(rawTier);
+    const active = Object.values(s.turns);
+    const firstDeclaration = !s.tier.invalid && s.tier.timeline.length === 0
+      && id(payload.thread_id) && hash('session', payload.thread_id) === s.own
+      && active.length === 1;
     if (s.tier.timeline.length >= MAX_TIER_EVENTS) {
       // A completed declaration is sufficient for future task-start lookup;
       // active turns already captured their mode. Keep the newest prior
       // declaration plus this event instead of poisoning all later rows.
       s.tier.timeline = s.tier.timeline.slice(-1);
     }
-    for (const turn of Object.values(s.turns)) {
+    for (const turn of active) {
       if (at < turn.start) {
         turn.modeInvalid = true;
         markModeEvidenceInvalid(s);
+      } else if (firstDeclaration && !turn.modeInvalid && !turn.modeMixed
+          && turn.mode === 'unknown' && turn.modeSource === 'unobserved'
+          && ['standard', 'fast', 'ultrafast'].includes(normalized.mode)
+          && !turn.modeOutputSeen && !turn.modernSeen && turn.responses === 0
+          && turn.legacy.observed === 0 && turn.legacy.first === null
+          && turn.legacy.end === null) {
+        // Codex may write its initial settings after task_started, before the
+        // first inference output. This is initialization, not a mode switch.
+        // Keep the declaration instant so delayed output/TTFT can disprove it.
+        turn.mode = normalized.mode;
+        turn.modeSource = normalized.modeSource;
+        turn.modeInitializedAt = at;
       } else if (at >= turn.start && normalized.mode !== turn.mode) {
         turn.modeMixed = true;
       }
@@ -572,7 +595,16 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
       const meta = p.internal_chat_message_metadata_passthrough;
       const target = id(meta?.turn_id) ? hash('turn', `${s.own}/${meta.turn_id}`) : null;
       const t = s.turns[target];
-      if (!t) { for (const a of Object.values(s.turns)) a.legacy.windowBad = true; return; }
+      if (!t) {
+        for (const a of Object.values(s.turns)) {
+          a.legacy.windowBad = true;
+          a.modeOutputSeen = true;
+          if (a.modeInitializedAt !== null) a.modeInvalid = true;
+        }
+        return;
+      }
+      t.modeOutputSeen = true;
+      if (t.modeInitializedAt !== null && (!integer(at) || at < t.modeInitializedAt)) t.modeInvalid = true;
       const l = t.legacy;
       if (!integer(at) || at < l.previous || l.toolSeen || (l.end !== null && at < l.end)) l.windowBad = true;
       else l.end = at;
@@ -616,6 +648,7 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
       s.turns[tid] = { start: at, model: startModel, effort: startEffort, mixed: false,
         modelObserved: modelKnownAtStart, stableModel: modelKnownAtStart ? startModel : null, modelStable: true,
         mode: mode.mode, modeSource: mode.source, modeMixed: false, modeInvalid: mode.invalid,
+        modeOutputSeen: false, modeInitializedAt: null,
         boundaryInvalid: false, turnDurationProof: true,
         attributionInvalid: !modelKnownAtStart && (s.contextHistoryInvalid || context?.invalid === true),
         ...(toolFree ? {
@@ -648,6 +681,11 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
     }
     if (r.type === 'event_msg' && p.type === 'item_completed') {
       if (!id(p.thread_id) || hash('session', p.thread_id) !== s.own) { bad(t, 'identity'); return; }
+      if (p.item?.type !== 'UserMessage') {
+        t.modeOutputSeen = true;
+        if (t.modeInitializedAt !== null && (!integer(p.started_at_ms)
+            || p.started_at_ms < t.modeInitializedAt)) t.modeInvalid = true;
+      }
       if (!['Reasoning', 'AgentMessage'].includes(p.item?.type)) return;
       const a = p.started_at_ms, b = p.completed_at_ms;
       const l = t.legacy;
@@ -664,6 +702,7 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
       return;
     }
     if (r.type === 'token_usage_record') {
+      t.modeOutputSeen = true;
       t.modernSeen = true;
       if (!id(p.thread_id) || hash('session', p.thread_id) !== s.own || !id(p.response_id)) { bad(t, 'identity'); return; }
       const response = hash('response', p.response_id);
@@ -703,6 +742,10 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
         && t.first === null && t.duration <= elapsed + 2000;
       const ttft = boundary && !p.error && !attributionInvalid && integer(p.time_to_first_token_ms)
         && p.time_to_first_token_ms <= elapsed ? p.time_to_first_token_ms : null;
+      // An absent or earlier first-token observation cannot prove that all
+      // measured inference followed this late initial declaration.
+      if (t.modeInitializedAt !== null
+          && (ttft === null || t.start + ttft < t.modeInitializedAt)) t.modeInvalid = true;
       const sampled = boundary && reconciled && !t.fatal && !attributionInvalid && !p.error
         && t.covered > 0 && t.duration > 0 && t.duration <= elapsed + 2000;
       const legacy = boundary && !t.modernSeen && !t.fatal && !attributionInvalid && !p.error

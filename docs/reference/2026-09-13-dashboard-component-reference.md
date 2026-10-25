@@ -117,6 +117,11 @@ actions share one wrapping row. A progress/error status keeps a secondary
 result timestamp; a ready status already contains that timestamp. Stale result
 warnings remain explicit. Each chart's subtitle owns its measured/total count
 and partial-coverage styling, without duplicate coverage cards above the tabs.
+Its calendar control defaults to the system time zone and retains an explicit
+UTC option. The selected zone owns day/week bins, date ticks and hover labels;
+switching zones clears the previous presentation until a matching projection
+is available. Cached measurements are separated by zone as well as period and
+speed mode, while the shared reporting interval keeps its exact bounds.
 
 ## Projects and threads controls and states
 

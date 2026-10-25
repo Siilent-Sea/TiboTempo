@@ -47,7 +47,9 @@ threads views prepare their selected and other fixed periods before the first
 visit. Their browser caches are bounded and memory-only; speculative browser
 requests pause when the app document is hidden. A measurement history pass that
 has already started can finish independently. Performance reuses the
-worker's existing three-period snapshots. Projects & threads uses related
+worker's bounded period/mode/time-zone snapshots. The performance page sends
+its system time zone by default and can select UTC; the companion recomputes
+calendar bins while preserving exact shared reporting-window bounds. Projects & threads uses related
 period queries anchored to the selected report, preserving generation checks
 and the two-report server capacity; cached display values do not authorize
 drill-down through an expired report. No additional log scan is required to

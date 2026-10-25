@@ -125,12 +125,18 @@ A version-3 supplement under `inference-timing-v2/source-<Codex-home digest>/too
 backfills single-response turns without tools, using the original sidecar's
 private correlation key. Its own cursor and pending state do not change original
 measurements or checkpoints. Joins require matching turn identity and original
-scalar evidence. The schema-4/method-5 display contract combines response speed and full-turn
+scalar evidence. The schema-6/method-5 display contract combines response speed and full-turn
 throughput in one Output speed distribution. Response timing takes precedence
 per turn; eligible tool-free throughput is used only as a fallback, including
 initial waiting. Percentiles are computed from individual samples, never merged
 from aggregate percentiles. The fallback count and bins identify that subset;
 TTFT and original stored measurements remain unchanged.
+The local projection groups those individual samples using an explicitly
+validated calendar time zone. The UI defaults to its system zone and offers
+UTC; local midnight and Monday boundaries account for daylight-saving changes.
+Zone-specific snapshots and cache keys prevent UTC and local aggregates from
+being reused as each other. The optional community performance stream keeps its
+existing UTC daily partition independently of this display preference.
 If the supplement cannot open or be read, the worker still serves the original
 measurements with an explicit stale state.
 Neither timing data nor failures enter accounting or contribution; no network

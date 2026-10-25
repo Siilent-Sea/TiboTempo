@@ -152,7 +152,7 @@ test("web-only scope accepts only committed public source and release controls",
   assert.equal(isAllowedWebReleasePath("apps/web/public/feature-tour.css"), true);
   for (const asset of [
     "cache-reuse-matrix.css", "cache-reuse-matrix.js",
-    "model-performance.css", "model-performance.js",
+    "model-performance.css", "model-performance.js", "performance-calendar.js",
   ]) assert.equal(isAllowedWebReleasePath(`apps/web/public/${asset}`), true);
   assert.equal(isAllowedWebReleasePath("apps/web/test/cache-reuse-matrix.test.mjs"), true);
   assert.equal(isAllowedWebReleasePath("apps/web/test/feature-insights.test.mjs"), true);

@@ -1,3 +1,4 @@
+import { validModelPerformanceTimeZone } from '../../src/application/index.js';
 import { createHash } from 'node:crypto';
 import { isAbsolute, join, resolve } from 'node:path';
 import { createValidatedSnapshotStore } from '../../src/platform/index.js';
@@ -6,7 +7,7 @@ export const MODEL_PERFORMANCE_PERIODS = Object.freeze(['1', '7', '30', 'all']);
 export const MODEL_PERFORMANCE_SPEED_MODES = Object.freeze(['standard', 'fast', 'ultrafast']);
 // The shared dashboard preloads one exact window for every period/mode pair.
 export const MODEL_PERFORMANCE_MAX_WINDOWS = MODEL_PERFORMANCE_PERIODS.length * MODEL_PERFORMANCE_SPEED_MODES.length;
-export const modelPerformanceSnapshotKey = (period, speedMode) => `${period}:${speedMode}`;
+export const modelPerformanceSnapshotKey = (period, speedMode, timeZone = 'UTC') => `${period}:${speedMode}:${timeZone}`;
 const DAY = 86_400_000;
 const MODEL_NAMES = Object.freeze({
   'gpt-6.1-sol': 'GPT-6.1 Sol',
@@ -25,9 +26,10 @@ const exact = (value, keys) => value !== null && typeof value === 'object' && !A
 // disk receipts so future or malformed projections cannot become saved state.
 export function isModelPerformanceSnapshot(value) {
   if (!exact(value, ['schemaVersion', 'method', 'status', 'collecting', 'stale', 'updatedAt',
-    'period', 'speedMode', 'excludedUnknownTurns', 'interval', 'start', 'end', 'historyProgress', 'models'])
-      || value.schemaVersion !== 5 || value.method !== 5 || value.status !== 'ready'
+    'period', 'speedMode', 'timeZone', 'excludedUnknownTurns', 'interval', 'start', 'end', 'historyProgress', 'models'])
+      || value.schemaVersion !== 6 || value.method !== 5 || value.status !== 'ready'
       || typeof value.collecting !== 'boolean' || typeof value.stale !== 'boolean'
+      || !validModelPerformanceTimeZone(value.timeZone)
       || !MODEL_PERFORMANCE_SPEED_MODES.includes(value.speedMode) || !count(value.excludedUnknownTurns)
       || !MODEL_PERFORMANCE_PERIODS.includes(value.period) || !['day', 'week'].includes(value.interval)
       || !timestamp(value.end) || !(value.start === null || timestamp(value.start) && value.start <= value.end)
@@ -38,7 +40,7 @@ export function isModelPerformanceSnapshot(value) {
         && count(value.historyProgress.checked) && count(value.historyProgress.total)
         && value.historyProgress.checked <= value.historyProgress.total)
       || !Array.isArray(value.models) || value.models.length > Object.keys(MODEL_NAMES).length) return false;
-  const step = value.interval === 'week' ? 7 * DAY : DAY;
+  const step = value.interval === 'week' ? 8 * DAY : 26 * 3_600_000;
   const validPoints = (points, maximum) => {
     if (!Array.isArray(points) || points.length > 2048) return false;
     let previous = -1, total = 0;
@@ -90,11 +92,11 @@ export function readModelPerformanceSnapshotEntry(value) {
   const { requestKey, ...snapshot } = value;
   if (!isModelPerformanceSnapshot(snapshot)) return null;
   if (Object.hasOwn(value, 'requestKey')) {
-    if (requestKey !== `${modelPerformanceSnapshotKey(snapshot.period, snapshot.speedMode)}:${snapshot.end}`
+    if (requestKey !== `${modelPerformanceSnapshotKey(snapshot.period, snapshot.speedMode, snapshot.timeZone)}:${snapshot.end}`
         || (snapshot.period !== 'all' && snapshot.start !== Math.max(0, snapshot.end - Number(snapshot.period) * DAY))) return null;
     return { key: requestKey, snapshot };
   }
-  return Date.parse(snapshot.updatedAt) === snapshot.end ? { key: modelPerformanceSnapshotKey(snapshot.period, snapshot.speedMode), snapshot } : null;
+  return Date.parse(snapshot.updatedAt) === snapshot.end ? { key: modelPerformanceSnapshotKey(snapshot.period, snapshot.speedMode, snapshot.timeZone), snapshot } : null;
 }
 
 export function modelPerformanceSourceScope(codexHome) {
@@ -110,9 +112,9 @@ export function createModelPerformanceSnapshotStore({ directory, codexHome, now 
   const source = modelPerformanceSourceScope(codexHome);
   const store = createValidatedSnapshotStore({
     snapshotFile: join(directory, 'model-performance-snapshot.json'),
-    // Earlier receipts combine speed modes. Rebuild from retained turn evidence;
-    // never relabel old aggregates as measurements for a single mode.
-    schemaVersion: 'local-model-performance-snapshot-v5',
+    // Earlier receipts do not identify their UTC calendar. Rebuild from retained
+    // turn evidence; never relabel old aggregates as local calendar measurements.
+    schemaVersion: 'local-model-performance-snapshot-v6',
     maximumBytes: 4 * 1024 * 1024,
     now,
     validate: value => {
@@ -122,7 +124,7 @@ export function createModelPerformanceSnapshotStore({ directory, codexHome, now 
       const entries = value.values.map(readModelPerformanceSnapshotEntry);
       return entries.every(entry => entry && isCompleteModelPerformanceSnapshot(entry.snapshot))
         && new Set(entries.map(entry => entry.key)).size === entries.length
-        && entries.filter(entry => entry.key !== modelPerformanceSnapshotKey(entry.snapshot.period, entry.snapshot.speedMode)).length <= MODEL_PERFORMANCE_MAX_WINDOWS;
+        && entries.filter(entry => entry.snapshot.timeZone !== 'UTC' || entry.key !== modelPerformanceSnapshotKey(entry.snapshot.period, entry.snapshot.speedMode, entry.snapshot.timeZone)).length <= MODEL_PERFORMANCE_MAX_WINDOWS;
     },
   });
   return {

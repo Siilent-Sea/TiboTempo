@@ -1,4 +1,5 @@
 import { createCacheReuseMatrix } from './cache-reuse-matrix.js';
+import { performanceCalendarBoundary, validPerformanceTimeZone } from './performance-calendar.js';
 import { mountModelPerformance } from './model-performance.js';
 import { formatModelName } from './ui-format.js';
 
@@ -25,22 +26,25 @@ export function exampleCacheImpact() {
   for(const key of Object.keys(models[0]))if(typeof models[0][key]==='number')all[key]=models.reduce((sum,m)=>sum+m[key],0);
   return {...all,status:'available',byModel:models};
 }
-export function exampleModelSpeeds(period='all', speedMode='standard') {
-  const end=Date.UTC(2026,8,15), days=period==='7'?7:30,start=end-(days-1)*86400000;
+export function exampleModelSpeeds(period='all', speedMode='standard', timeZone='UTC') {
+  if (!validPerformanceTimeZone(timeZone)) throw new RangeError('Unsupported time zone');
+  const lastDay=Date.UTC(2026,8,15)/86400000, days=period==='7'?7:30;
+  const boundary=day=>performanceCalendarBoundary(day,timeZone);
+  const end=boundary(lastDay),start=boundary(lastDay-days+1);
   // Fixed illustrative daily observations: uneven samples and independently varying latency.
   // Slice the same history for every period so changing the filter never changes a day's data.
   const activity=[42,67,31,85,56,12,7,49,104,73,38,61,19,9,54,88,126,46,72,14,5,65,97,43,112,58,21,8,76,51];
   const speeds=[62,58,71,47,53,79,66,60,39,51,68,57,74,82,63,48,44,59,70,76,64,55,41,67,50,61,78,69,56,65];
   const latency=[1.4,2.1,1.1,3.8,1.7,.9,1.6,2.3,4.9,2.6,1.3,1.8,1.2,.8,2.7,1.9,3.4,1.5,2.2,1.1,1.8,3.1,2.4,1.2,4.2,1.7,.9,1.4,2.8,1.6];
   if (!['standard','fast','ultrafast'].includes(speedMode)) throw new RangeError('Unsupported speed mode');
-  return {schemaVersion:5,method:5,speedMode,excludedUnknownTurns:0,status:'ready',collecting:false,stale:false,updatedAt:new Date(end+86400000-1).toISOString(),period,interval:'day',start,end,historyProgress:null,
+  return {schemaVersion:6,method:5,timeZone,speedMode,excludedUnknownTurns:0,status:'ready',collecting:false,stale:false,updatedAt:new Date(boundary(lastDay+1)-1).toISOString(),period,interval:'day',start,end,historyProgress:null,
     models:speedMode!=='standard'?[]:[
       ['gpt-6-astra','Astra'],['gpt-6-sol','GPT-6 Sol'],['gpt-6-luna','GPT-6 Luna'],
       ['gpt-5.6-terra','Terra'],['gpt-5.6-sol','Sol'],['gpt-5.6-luna','Luna'],
     ].map(([id,label],index)=>{
       const history=activity.map((count,i)=>{
         const j=(i+index*9)%30, n=Math.max(3,Math.round(count*(index ? .62 : 1)));
-        const at=end-(29-i)*86400000, median=speeds[j]+index*8;
+        const at=boundary(lastDay-29+i), median=speeds[j]+index*8;
         const spread=[.24,.37,.18,.43,.29,.21,.34][(i+index)%7];
         const speed={at,n,p10:median*(1-spread*1.6),p25:median*(1-spread*.7),median,p75:median*(1+spread),p90:median*(1+spread*1.9)};
         const mid=latency[(i+index*7)%30]*(index ? .85 : 1), measured=Math.max(2,n-1-i%4);
@@ -111,7 +115,7 @@ export function mountExampleInsights(doc,t,loadHostedCurve) {
   }
   const win=doc.defaultView;
   const localWindow={MutationObserver:win.MutationObserver,setTimeout:win.setTimeout.bind(win),clearTimeout:win.clearTimeout.bind(win),localStorage:{getItem:()=>null,setItem:()=>{}}};
-  const speed=mountModelPerformance({root:doc.querySelector('[data-speeds-demo]'),client:{modelPerformance:async (period,{speedMode})=>exampleModelSpeeds(period,speedMode)},t,locale,windowRef:localWindow});
+  const speed=mountModelPerformance({root:doc.querySelector('[data-speeds-demo]'),client:{modelPerformance:async (period,{speedMode,timeZone})=>exampleModelSpeeds(period,speedMode,timeZone)},t,locale,windowRef:localWindow});
   win.addEventListener('tibotattle:locale-change',()=>{matrix.render({impact});speed.render();});
 }
 

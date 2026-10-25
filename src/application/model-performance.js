@@ -1,5 +1,6 @@
 import { createParser, createToolFreeParser, digest, METHOD, TOOL_FREE_METHOD, MAX_STATE_BYTES, INFERENCE_TIMING_PARSER_VERSION } from '../providers/codex/logs.js';
 import { modelPerformanceProjection } from '../reporting/index.js';
+export { validModelPerformanceTimeZone } from '../reporting/index.js';
 
 // Composition contract: the application selects diagnostic semantics; the
 // companion supplies the private local storage adapter.
