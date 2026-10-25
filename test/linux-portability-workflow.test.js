@@ -149,7 +149,7 @@ test("Linux AMD64 image pins the reviewed native Node child, GUI, and Secret Ser
   assert.match(dockerfile, /curl --fail --silent --show-error --location --retry 3/u);
   assert.match(
     dockerfile,
-    /3d93fb0b9517fcd74107c628f61990bff60d3c2543694c28b26b1ef78b80def1/u,
+    /7e11ff34c837de9ffcdfad2a73be1905704a6c17eb6baf5763428f20e4975a79/u,
   );
   assert.match(dockerfile, /sha256sum --check --strict/u);
   assert.match(dockerfile, /unzip -q/u);

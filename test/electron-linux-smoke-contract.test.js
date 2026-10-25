@@ -473,7 +473,7 @@ test("Linux Electron smoke keeps the desktop boundary explicit", async () => {
   assert.match(dockerfile, /curl --fail --silent --show-error --location --retry 3/u);
   assert.match(
     dockerfile,
-    /660e31a4593317f512d92e43360a29269ab50e52cf2c3c0272e608171dfed0cd/u,
+    /9b26d2a0a526ba136d5d6a3b3fa6365c00c982480afff0aac291e2adf1641369/u,
   );
   assert.match(dockerfile, /sha256sum --check --strict/u);
   assert.match(dockerfile, /unzip -q/u);
