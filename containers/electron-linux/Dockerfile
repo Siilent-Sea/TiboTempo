@@ -73,15 +73,15 @@ RUN pnpm install --frozen-lockfile --ignore-scripts
 # checksum during the image build instead; the test phase then has no package-
 # manager or network work.
 RUN curl --fail --silent --show-error --location --retry 3 \
-    --output /tmp/electron-v43.5.0-linux-arm64.zip \
-    https://github.com/electron/electron/releases/download/v43.5.0/electron-v43.5.0-linux-arm64.zip \
+    --output /tmp/electron-v43.8.1-linux-arm64.zip \
+    https://github.com/electron/electron/releases/download/v43.8.1/electron-v43.8.1-linux-arm64.zip \
   && printf '%s  %s\n' \
-    660e31a4593317f512d92e43360a29269ab50e52cf2c3c0272e608171dfed0cd \
-    /tmp/electron-v43.5.0-linux-arm64.zip \
+    9b26d2a0a526ba136d5d6a3b3fa6365c00c982480afff0aac291e2adf1641369 \
+    /tmp/electron-v43.8.1-linux-arm64.zip \
     | sha256sum --check --strict \
-  && unzip -q /tmp/electron-v43.5.0-linux-arm64.zip -d /workspace/node_modules/electron/dist \
+  && unzip -q /tmp/electron-v43.8.1-linux-arm64.zip -d /workspace/node_modules/electron/dist \
   && printf 'electron' > /workspace/node_modules/electron/path.txt \
-  && rm -f /tmp/electron-v43.5.0-linux-arm64.zip
+  && rm -f /tmp/electron-v43.8.1-linux-arm64.zip
 
 COPY --chown=node:node apps/electron ./apps/electron
 COPY --chown=node:node native/macos-keychain/contract.js ./native/macos-keychain/contract.js

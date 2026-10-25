@@ -24,7 +24,7 @@ function packageName(key) {
 export function checkDependencyInputs({ lock, workspace, manifest, patch }) {
   assert.equal(manifest.devDependencies["electron-builder"], "26.15.7", "Stable builder pin changed");
   assert.equal(workspace.overrides[getOverride], "5.1.0", "Reviewed get override missing");
-  assert.equal(workspace.overrides[proxyOverride], "7.29.1", "Reviewed proxy dependency pin missing");
+  assert.equal(workspace.overrides[proxyOverride], "7.30.1", "Reviewed proxy dependency pin missing");
   assert.deepEqual(lock.overrides, workspace.overrides, "Lock and workspace overrides differ");
   assert.equal(workspace.patchedDependencies["app-builder-lib@26.15.7"], "config/patches/app-builder-lib@26.15.7.patch");
   assert.deepEqual(Object.keys(lock.patchedDependencies), ["app-builder-lib@26.15.7"], "Unexpected dependency patch");
