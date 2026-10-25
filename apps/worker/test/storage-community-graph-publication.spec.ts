@@ -415,17 +415,23 @@ describe('isolated allowance graph publication',()=>{
    .toMatchObject({state:pass===3?'published':'progress',ownersAdvanced:4});
   const owners=await readStorageCommunityOwnerPage(typed());expect(owners).toHaveLength(16);
   expect(owners.map(owner=>owner.participantId)).toEqual(participantIds);
-  // The source cohort is now stable; reuse only its real metadata roster.
-  // Both kernels still capture and validate a fresh scope for every owner.
+  // Both metrics use the same non-empty window, sharing only the real v1.1
+  // acquisition checkpoint. Capture fresh scopes and compute both results for
+  // every owner; the preceding case separately qualifies historical model days.
   for(const owner of owners){
    const fits=await captureStorageGraphScope(typed(),{owner,day:today(),metric:'fits',sourceId:namespace,sourceNamespace:namespace});
-   expect(await computeStorageGraphResult(bindings(),fits)).toMatchObject({state:'complete'});
-   const model=await captureStorageGraphScope(typed(),{owner,day:day(),metric:'model',sourceId:namespace,sourceNamespace:namespace});
-   expect(await computeStorageGraphResult(bindings(),model)).toMatchObject({state:'complete'});
+   const fitted=await computeStorageGraphResult(bindings(),fits);
+   expect(fitted).toMatchObject({state:'complete',reused:false,
+    result:{fits:[{participantId:owner.ownerDigest,planType:'pro'}]}});
+   if(fitted.state==='complete')expect(fitted.result.fits![0]!.capacityNanousd).toBeGreaterThan(0);
+   const model=await captureStorageGraphScope(typed(),{owner,day:today(),metric:'model',sourceId:namespace,sourceNamespace:namespace});
+   expect(await computeStorageGraphResult(bindings(),model)).toMatchObject({state:'complete',reused:false,
+    result:{composition:{status:'ready',quotaRowCount:9,usageEventCount:8,poolCount:1,
+     fit:{modelCostShares:{'gpt-5.6-sol':1},totalCostUsd:0.02}}}});
   }
   const modelMeter=createD1InvocationBudget(900),previewMeter=createD1InvocationBudget(900);
   expect(await publishStorageCommunityModelDay({...bindings(),source:modelMeter.wrap(typed()),target:modelMeter.wrap(b.STORAGE_ANALYTICS_DB)},
-   {day:day()})).toMatchObject({state:'published',memberCount:16});
+   {day:today()})).toMatchObject({state:'published',memberCount:16});
   expect(await publishStorageCommunityGraphPreview({...bindings(),source:previewMeter.wrap(typed()),target:previewMeter.wrap(b.STORAGE_ANALYTICS_DB)}))
    .toMatchObject({state:'published',memberCount:16});
   expect({owners:16,modelQueries:modelMeter.queriesUsed,previewQueries:previewMeter.queriesUsed}).toMatchInlineSnapshot(`
