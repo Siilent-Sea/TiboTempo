@@ -36,7 +36,9 @@ async function fixture() {
   await writeFile(join(root, ".gitignore"), ".release-build/\n");
   const publicSourceFiles = {
     "community.html": '<!doctype html><script type="module" src="./community.js"></script>\n',
-    "community.js": "console.log('community source');\n",
+    "community.js": 'import "./model-performance.js";\nconsole.log("community source");\n',
+    "model-performance.js": 'import { performanceCalendarDay } from "./performance-calendar.js";\nexport const modelPerformance = performanceCalendarDay;\n',
+    "performance-calendar.js": 'export const performanceCalendarDay = () => "2026-10-25";\n',
   };
   for (const [path, contents] of Object.entries(publicSourceFiles)) {
     await writeFile(join(publicSource, path), contents);
@@ -49,7 +51,7 @@ async function fixture() {
     "model-visuals.js": "export const modelVisuals = true;\n",
     "community-view.js": "export const communityView = true;\n",
     "community.html": '<!doctype html><script type="module" src="./community.js"></script>\n',
-    "community.js": 'import "./install-cta.js";\nconsole.log("community");\n',
+    "community.js": 'import "./install-cta.js";\nimport "./model-performance.js";\nconsole.log("community");\n',
     "dashboard-ui.js": "export const dashboardUi = true;\n",
     "docs.html": "<!doctype html><title>public docs</title>\n",
     "github.svg": "<svg></svg>\n",
@@ -84,7 +86,8 @@ async function fixture() {
     "feature-value.png": Buffer.from("reviewed feature still\n"),
     "feature-week.js": "export const featureWeek = true;\n",
     "model-performance.css": ".performance-card { color: green; }\n",
-    "model-performance.js": "export const modelPerformance = true;\n",
+    "model-performance.js": publicSourceFiles["model-performance.js"],
+    "performance-calendar.js": publicSourceFiles["performance-calendar.js"],
     "trends-horizon.js": "export const trendsHorizon = true;\n",
     "ui-format.js": "export const uiFormat = true;\n",
     "x.svg": "<svg></svg>\n",
@@ -135,6 +138,39 @@ async function updateManifestRow(source, path) {
   row.sha256 = createHash("sha256").update(contents).digest("hex");
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 }
+
+test("stages the reviewed performance calendar import while refusing unreviewed assets and local-only imports", async (t) => {
+  const value = await fixture();
+  t.after(() => rm(value.root, { recursive: true, force: true }));
+  const stage = () => stageProductionAssets({
+    repositoryRoot: value.root,
+    sourceDirectory: value.source,
+    destinationDirectory: value.destination,
+  });
+  await stage();
+  for (const path of ["model-performance.js", "performance-calendar.js"]) {
+    assert.deepEqual(await readFile(join(value.destination, path)), await readFile(join(value.publicSource, path)),
+      `${path} stages the exact committed source bytes`);
+  }
+  assert.match(await readFile(join(value.destination, "model-performance.js"), "utf8"),
+    /import \{ performanceCalendarDay \} from "\.\/performance-calendar\.js";/u);
+
+  const manifestPath = join(value.source, "release-site-manifest.json");
+  const originalManifest = await readFile(manifestPath, "utf8");
+  const manifest = JSON.parse(originalManifest);
+  const unreviewed = "performance-calendar-extra.js";
+  const bytes = Buffer.from("export const unreviewed = true;\n");
+  await writeFile(join(value.source, unreviewed), bytes);
+  manifest.files.push({ path: unreviewed, bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
+  await writeFile(manifestPath, JSON.stringify(manifest));
+  await assert.rejects(stage(), /unsafe or unsupported file entry/u);
+  await rm(join(value.source, unreviewed));
+  await writeFile(manifestPath, originalManifest);
+
+  await writeFile(join(value.source, "performance-calendar.js"), 'import "./data-client.js";\n');
+  await updateManifestRow(value.source, "performance-calendar.js");
+  await assert.rejects(stage(), /local-only route or control/u);
+});
 
 test("stages only verified generated public assets and maps the community entry to the site index", async (t) => {
   const value = await fixture();
