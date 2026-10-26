@@ -260,16 +260,23 @@ test("70 complete catalog days plus the whole preview stay under the storage cei
   assert.ok(absolute > total, "wider counts must cost bytes, or the two measurements are not measuring width");
 });
 
-test("September 29 admin history shares the reviewed 43-model catalog and preserves older coverage", () => {
-  assert.equal(ADMIN_MODEL_CONFIG.length, 43);
-  assert.equal(ADMIN_MODEL_HISTORY_CATALOG_VERSION, "reviewed-model-catalog-2026-09-29.1");
+test("September 29 admin history freezes its 43-model roster before the Terra catalog", () => {
+  assert.equal(ADMIN_MODEL_CONFIG.length, 44);
+  assert.equal(ADMIN_MODEL_HISTORY_CATALOG_VERSION, "reviewed-model-catalog-2026-10-26.1");
   assert.equal(SEPTEMBER29_ADMIN_MODEL_CONFIG.length, 43);
-  assert.deepEqual(SEPTEMBER29_ADMIN_MODEL_CONFIG, ADMIN_MODEL_CONFIG);
+  assert.deepEqual(SEPTEMBER29_ADMIN_MODEL_CONFIG, ADMIN_MODEL_CONFIG.slice(0, -1));
+  assert.equal(SEPTEMBER29_ADMIN_MODEL_CONFIG.some(({ modelId }) => modelId === "gpt-6.1-terra"), false);
   assert.equal(new Set(SEPTEMBER29_ADMIN_MODEL_CONFIG.map(model => model.modelId)).size, 43);
   const wire = { ...current(), catalogVersion: SEPTEMBER29_ADMIN_MODEL_HISTORY_CATALOG_VERSION,
     values: [["gpt-6.1-sol", 1234.5, 1], ["gpt-6-astra", 2000, 2]] };
   const result = expandAdminModelHistoryDay(wire);
   assert.equal(result.catalogVersion, wire.catalogVersion);
+  assert.equal(Object.hasOwn(result.byModel, "gpt-6.1-terra"), false);
+  const currentTerraWire = { ...wire, catalogVersion: ADMIN_MODEL_HISTORY_CATALOG_VERSION,
+    values: [["gpt-6.1-terra", 500, 1]] };
+  const currentTerra = expandAdminModelHistoryDay(currentTerraWire);
+  assert.deepEqual(currentTerra.byModel["gpt-6.1-terra"], { capacityUsd: 500, participantCount: 1 });
+  assert.deepEqual(browser.expandAdminModelHistoryDay(currentTerraWire), currentTerra);
   assert.deepEqual(result.byModel["gpt-6.1-sol"], { capacityUsd: 1234.5, participantCount: 1 });
   assert.deepEqual(browser.expandAdminModelHistoryDay(wire), result);
   const empty = expandAdminModelHistoryDay({ ...wire, values: [] });
@@ -285,6 +292,7 @@ test("September 29 admin history shares the reviewed 43-model catalog and preser
     { ...wire, values: [["gpt-6.1-sol", Infinity, 1]] },
     { ...wire, values: [["gpt-6.1-sol", 1, 1], ["gpt-6.1-sol", 2, 1]] },
     { ...wire, values: [["unreviewed-model", 1, 1]] },
+    { ...wire, values: [["gpt-6.1-terra", 500, 1]] },
     { ...wire, v1ParticipantCount: 0 },
   ]) {
     assert.equal(projectAdminModelHistoryDay(invalid), null);

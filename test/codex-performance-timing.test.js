@@ -148,8 +148,8 @@ function rowFor(rows) {
   return result[0];
 }
 
-test('GPT-6.1 Sol, GPT-6 Sol and Luna preserve observed timing and model identity across parser restart', () => {
-  for (const model of ['gpt-6.1-sol', 'gpt-6-sol', 'gpt-6-luna']) {
+test('reviewed GPT-6 models preserve observed timing and exact identity across parser restart', () => {
+  for (const model of ['gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-sol', 'gpt-6-luna']) {
     const rows = performanceFixture({ model });
     const before = parse(rows.slice(0, 6));
     const resumed = parse(rows.slice(6), JSON.parse(JSON.stringify(before.parser.state())));
@@ -169,6 +169,7 @@ test('GPT-6 model suffixes remain unknown and generation switches invalidate att
   for (const [previous, current] of [
     ['gpt-5.6-sol', 'gpt-6-sol'], ['gpt-5.6-luna', 'gpt-6-luna'],
     ['gpt-6-sol', 'gpt-6.1-sol'],
+    ['gpt-5.6-terra', 'gpt-6.1-terra'],
   ]) {
     const unknown = rowFor(performanceFixture({ model: `${current}-unreviewed` }));
     assert.equal(unknown.model, null);
@@ -180,6 +181,23 @@ test('GPT-6 model suffixes remain unknown and generation switches invalidate att
     assert.equal(mixed.duration, null);
     assert.equal(mixed.turn_duration, null);
     assert.equal(mixed.quality, 'mixed_model');
+  }
+});
+
+test('GPT-6.1 Terra recognition preserves unobserved speed at every parser checkpoint', () => {
+  const rows = performanceFixture({ model: 'gpt-6.1-terra', includeSetting: false });
+  const expected = rowFor(rows);
+  assert.equal(expected.model, 'gpt-6.1-terra');
+  assert.equal(expected.speed_mode, 'unknown');
+  assert.equal(expected.speed_mode_source, 'unobserved');
+  assert.equal(expected.sample_tokens, 200);
+  assert.equal(expected.sample_duration, 2000);
+  assert.equal(expected.turn_duration, 202000);
+  for (let split = 1; split < rows.length; split++) {
+    const prefix = parse(rows.slice(0, split));
+    const saved = JSON.parse(JSON.stringify(prefix.parser.state()));
+    const suffix = parse(rows.slice(split), saved, split);
+    assert.deepEqual([...prefix.result, ...suffix.result], [expected], `checkpoint ${split}`);
   }
 });
 

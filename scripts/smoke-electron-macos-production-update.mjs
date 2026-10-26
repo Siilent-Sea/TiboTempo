@@ -24,8 +24,11 @@ import { resolveMacOSProductionUpdatePredecessor } from './lib/electron-macos-qu
 export const ELECTRON_PRODUCTION_UPDATE_SCHEMA = 'tibotattle-signed-macos-production-update-v1';
 export const ELECTRON_PRODUCTION_UPDATE_SCHEMA_V2 = 'tibotattle-signed-macos-production-update-v2';
 export const ELECTRON_PRODUCTION_UPDATE_SCHEMA_V3 = 'tibotattle-signed-macos-production-update-v3';
+export const ELECTRON_PRODUCTION_UPDATE_SCHEMA_V4 = 'tibotattle-signed-macos-production-update-v4';
 const currentProductionUpdateRoute = input => ['tibotattle-production-electron-update-intake-v2',
-  'tibotattle-production-electron-update-intake-v3'].includes(input.schemaVersion);
+  'tibotattle-production-electron-update-intake-v3', 'tibotattle-production-electron-update-intake-v4'].includes(input.schemaVersion);
+const retainedProductionUpdateRoute = input => ['tibotattle-production-electron-update-intake-v3',
+  'tibotattle-production-electron-update-intake-v4'].includes(input.schemaVersion);
 const ELECTRON_020 = resolveMacOSProductionUpdatePredecessor({ schemaVersion: 'tibotattle-production-electron-update-intake-v1' });
 export const ELECTRON_020_SOURCE = ELECTRON_020.sourceRevision;
 export const ELECTRON_020_DMG = ELECTRON_020.dmgSha256;
@@ -111,7 +114,7 @@ async function bytes(path, limit = 1024 ** 3) {
   if (!s.isFile() || s.nlink !== 1 || s.uid !== process.getuid() || s.size < 1 || s.size > limit) fail('unsafe_file');
   return readFile(path);
 }
-// v3 seeds real predecessor ingestion provenance before any app launch. The
+// v3/v4 seed real predecessor ingestion provenance before any app launch. The
 // retired usage source exercises retained history; the metadata-only source
 // keeps ordinary local analysis available without adding usage or quota facts.
 export async function seedProductionUpdateRetainedNativeState(nativeRoot, codexHome, index, ingest) {
@@ -242,16 +245,18 @@ export async function waitForProductionUpdateSuccessor({ appPath, predecessorPid
     return select(observation.rows, executable, predecessorPid, predecessorProcesses)?.pid ?? null;
   }, 180000, 'updater_relaunch', { now, sleep });
 }
-// v3 only: the verified 026 reader can admit its exact live v11 while the
-// successor migrates a staging clone. The runner never opens a writable handle.
-export async function readProductionUpdateSuccessorState(stateRoot, predecessorIndex) {
+// v3's verified 026 reader admits live v11 while the successor migrates a
+// staging clone. v4's verified 028 reader already uses format 12. Both routes
+// require their exact format and intact metadata, through read-only handles.
+export async function readProductionUpdateSuccessorState(stateRoot, predecessorIndex, predecessorUserVersion = 11) {
+  if (![11, 12].includes(predecessorUserVersion)) fail('successor_state_schema');
   let database;
   try {
     database = predecessorIndex.openLocalUnifiedIndex(join(stateRoot, 'local-unified-index-v1.sqlite'), { readOnly: true });
   } catch (error) {
     if (error?.code !== 'local_unified_index_schema_newer') throw error;
     const compatibility = error.compatibility;
-    if (compatibility?.accessMode !== 'read' || compatibility.supportedUserVersion !== 11
+    if (predecessorUserVersion !== 11 || compatibility?.accessMode !== 'read' || compatibility.supportedUserVersion !== 11
       || compatibility.databaseUserVersion !== 12 || compatibility.formatUserVersion !== 12
       || compatibility.minimumReaderUserVersion !== 12 || compatibility.minimumWriterUserVersion !== 12
       || compatibility.requiredUserVersion !== 12) fail('successor_state_schema');
@@ -260,18 +265,18 @@ export async function readProductionUpdateSuccessorState(stateRoot, predecessorI
   }
   try {
     const compatibility = predecessorIndex.readLocalUnifiedIndexCompatibility(database);
-    if (compatibility.applicationId !== 1431131465 || compatibility.userVersion !== 11
-      || compatibility.formatUserVersion !== 11 || compatibility.minimumReaderUserVersion !== 11
-      || compatibility.minimumWriterUserVersion !== 11 || compatibility.metadataPresent !== true
+    if (compatibility.applicationId !== 1431131465 || compatibility.userVersion !== predecessorUserVersion
+      || compatibility.formatUserVersion !== predecessorUserVersion || compatibility.minimumReaderUserVersion !== predecessorUserVersion
+      || compatibility.minimumWriterUserVersion !== predecessorUserVersion || compatibility.metadataPresent !== true
       || compatibility.metadataPartial !== false || compatibility.metadataMalformed !== false
       || database.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()?.value !== 'local-unified-index-v2') {
       fail('successor_state_schema');
     }
     if (database.prepare('PRAGMA quick_check').get()?.quick_check !== 'ok') fail('successor_state_database_integrity');
-    return null;
+    return predecessorUserVersion === 12 ? readSignedReplacementState(stateRoot) : null;
   } finally { database.close(); }
 }
-export async function waitForProductionUpdateSuccessorState({ stateRoot, predecessorIndex, successorPid, successorFingerprint }, {
+export async function waitForProductionUpdateSuccessorState({ stateRoot, predecessorIndex, predecessorUserVersion = 11, successorPid, successorFingerprint }, {
   readProcesses = productionUpdateProcesses, readState = readProductionUpdateSuccessorState,
   now = Date.now, sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)), onStage = () => {},
 } = {}) {
@@ -290,7 +295,7 @@ export async function waitForProductionUpdateSuccessorState({ stateRoot, predece
   while (now() < deadline) {
     await assertIdentity();
     onStage('successor_state_read');
-    const state = await readState(stateRoot, predecessorIndex);
+    const state = await readState(stateRoot, predecessorIndex, predecessorUserVersion);
     await assertIdentity();
     if (now() >= deadline) fail('successor_state_timeout');
     if (state !== null) return state;
@@ -343,10 +348,10 @@ export async function withProductionUpdatePredecessorIndex(input, appPath, useIn
     }
     const index = await import(pathToFileURL(join(extracted, 'src', 'local-unified-index.js')).href);
     const required = ['openLocalUnifiedIndex', 'createUnifiedIndexWriter', 'outcomeOrdinal', 'reasoningEffortOrdinal'];
-    if (input.schemaVersion === 'tibotattle-production-electron-update-intake-v3') required.push('readLocalUnifiedIndexCompatibility');
+    if (retainedProductionUpdateRoute(input)) required.push('readLocalUnifiedIndexCompatibility');
     if (!required.every(name => typeof index[name] === 'function')) fail('predecessor_fixture_api');
     let ingest = null;
-    if (input.schemaVersion === 'tibotattle-production-electron-update-intake-v3') {
+    if (retainedProductionUpdateRoute(input)) {
       const source = await import(pathToFileURL(join(extracted, 'src', 'local-unified-index-ingest.js')).href);
       ingest = source.ingestLocalUnifiedIndexIncrement;
       if (typeof ingest !== 'function') fail('predecessor_fixture_api');
@@ -413,7 +418,8 @@ export async function runProductionUpdate(options) {
     input = validateProductionUpdateIntake(JSON.parse(await bytes(options.intakePath, 16384)));
     if (currentProductionUpdateRoute(input)) {
       const predecessor = resolveMacOSProductionUpdatePredecessor(input);
-      Object.assign(proof, { schemaVersion: input.schemaVersion === 'tibotattle-production-electron-update-intake-v3'
+      Object.assign(proof, { schemaVersion: input.schemaVersion === 'tibotattle-production-electron-update-intake-v4'
+        ? ELECTRON_PRODUCTION_UPDATE_SCHEMA_V4 : input.schemaVersion === 'tibotattle-production-electron-update-intake-v3'
         ? ELECTRON_PRODUCTION_UPDATE_SCHEMA_V3 : ELECTRON_PRODUCTION_UPDATE_SCHEMA_V2, predecessorVersion: predecessor.version,
         predecessorBundleVersion: predecessor.bundleVersion, predecessorBuildNumber: predecessor.buildNumber,
         predecessorSourceRevision: predecessor.sourceRevision, predecessorProcessesExitedNaturally: false });
@@ -455,7 +461,7 @@ export async function runProductionUpdate(options) {
     const { before, environment, stateRoot, settingsFile, sharing, predecessorIndex } = await withProductionUpdatePredecessorIndex(input, app, async (index, ingest) => {
       command('/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister', ['-f', app]);
       await mkdir(codex, { mode: 0o700 }); await mkdir(join(codex, 'sessions'), { mode: 0o700 });
-      const seeded = input.schemaVersion === 'tibotattle-production-electron-update-intake-v3'
+      const seeded = retainedProductionUpdateRoute(input)
         ? await seedProductionUpdateRetainedNativeState(native, codex, index, ingest)
         : await seedSignedReplacementNativeState(native, codex, index);
       for (const [key, kind, value] of [['tibotattle.language-preference.v1', '-string', 'es'],
@@ -474,7 +480,7 @@ export async function runProductionUpdate(options) {
       assertSignedReplacementContinuity(seeded, before, JSON.parse(await readFile(settingsFile)), sharing);
       await absent(join(stateRoot, 'accountless-device-binding-v1.json'));
       // The namespace's static dependencies remain loaded after owned scratch
-      // removal; the v3 readiness probe uses only its read-only public API.
+      // removal; the v3/v4 readiness probe uses only its read-only public API.
       return { before, environment, stateRoot, settingsFile, sharing, predecessorIndex: index };
     });
     // Invoke the ordinary Settings APIs; only the signed main process owns the updater/feed.
@@ -523,9 +529,11 @@ export async function runProductionUpdate(options) {
     for (const session of active.sessions) { try { session.close(); } catch {} } active = null;
     // The updater-created launch must preserve state before any controlled restart.
     let successorState;
-    if (input.schemaVersion === 'tibotattle-production-electron-update-intake-v3') {
+    if (retainedProductionUpdateRoute(input)) {
       stage = 'successor_state_readiness';
-      successorState = await waitForProductionUpdateSuccessorState({ stateRoot, predecessorIndex, successorPid: successor, successorFingerprint },
+      successorState = await waitForProductionUpdateSuccessorState({ stateRoot, predecessorIndex,
+        predecessorUserVersion: input.schemaVersion === 'tibotattle-production-electron-update-intake-v4' ? 12 : 11,
+        successorPid: successor, successorFingerprint },
         { onStage: value => { stage = value; } });
     } else {
       stage = 'successor_state_read';

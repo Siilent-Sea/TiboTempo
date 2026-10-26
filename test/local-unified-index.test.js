@@ -988,6 +988,61 @@ test("a model declaration separates recognized, unrecognized and never-observed"
   });
 });
 
+test("GPT-6.1 Terra stays distinct through full and restarted incremental ingestion", async () => {
+  for (const pipeline of ["full", "incremental"]) {
+    const name = "rollout-2026-07-25T00-00-00-terra.jsonl";
+    const prefix = [
+      sessionMeta("synthetic-terra-session"),
+      turnContext("2026-07-25T00:00:00.000Z", "gpt-6.1-terra"),
+      tokenCount("2026-07-25T00:00:01.000Z", usage(100, 10), usage(100, 10)),
+    ];
+    const suffix = [
+      threadSettings("2026-07-25T00:00:01.500Z", "priority"),
+      turnContext("2026-07-25T00:00:02.000Z", "gpt-5.6-terra"),
+      tokenCount("2026-07-25T00:00:03.000Z", usage(200, 20), usage(100, 10)),
+      turnContext("2026-07-25T00:00:04.000Z", "gpt-6.1-terra-unreviewed"),
+      tokenCount("2026-07-25T00:00:05.000Z", usage(250, 25), usage(50, 5)),
+      turnContext("2026-07-25T00:00:06.000Z", "gpt-6.1-terra"),
+      tokenCount("2026-07-25T00:00:07.000Z", usage(300, 30), usage(50, 5)),
+    ];
+    const { root, sessions } = await corpus({ [name]: pipeline === "full" ? [...prefix, ...suffix] : prefix });
+    const indexFile = join(root, "index.sqlite");
+    const ingest = () => ingestLocalUnifiedIndexIncrement({
+      codexHome: root, indexFile, secretFile: join(root, "salt"), contractVersion: CONTRACT,
+    });
+    const facts = () => {
+      const database = openLocalUnifiedIndex(indexFile, { readOnly: true });
+      try { return logicalProjection(database).usage.map(row => ({ ...row })); }
+      finally { database.close(); }
+    };
+    try {
+      if (pipeline === "full") await build(root);
+      else {
+        assert.equal((await ingest()).insertedUsageEvents, 1);
+        const first = facts();
+        assert.equal(first[0].model_id, "gpt-6.1-terra");
+        assert.equal(first[0].codex_speed_mode, "unknown");
+        await appendFile(join(sessions, name), `${suffix.join("\n")}\n`);
+        const resumed = await ingest();
+        assert.equal(resumed.sourcesResumed, 1);
+        assert.equal(resumed.insertedUsageEvents, 3);
+        assert.deepEqual(facts()[0], first[0], "later declarations cannot change the prior Terra event");
+      }
+      const rows = facts();
+      assert.deepEqual(rows.map(row => row.model_id), ["gpt-6.1-terra", "gpt-5.6-terra", "unknown", "gpt-6.1-terra"]);
+      assert.deepEqual(rows.map(row => row.codex_speed_mode), ["unknown", "fast", "fast", "fast"]);
+      assert.deepEqual(rows.map(row => row.tier_source), ["unobserved", ...Array(3).fill("rollout_thread_settings")]);
+      assert.deepEqual(rows.map(row => row.tokens_in_uncached), [100, 100, 50, 50]);
+      assert.deepEqual(rows.map(row => row.tokens_out_text), [10, 10, 5, 5]);
+      assert.equal(new Set(rows.map(row => row.event_key)).size, 4);
+      const repeated = await ingest();
+      assert.equal(repeated.insertedUsageEvents, 0);
+      assert.equal(repeated.totalUsageEvents, 4);
+      assert.deepEqual(facts(), rows, `${pipeline} retry is exactly once`);
+    } finally { await rm(root, { recursive: true }); }
+  }
+});
+
 test("sparse turn configuration means unchanged rather than missing", async () => {
   const sparseTurnContext = JSON.stringify({
     timestamp: "2026-07-25T00:00:02.000Z",
@@ -7020,14 +7075,88 @@ test("v20 reclassifies present guardian sources once while absent v19 facts and 
   }
 });
 
-test("v19 parser provenance variants remain qualified after the v20 upgrade", () => {
+test("v19 and v20 parser provenance variants remain qualified after the v21 upgrade", () => {
   for (const suffix of ["", "-partial", "-parent-model", "-parent-model-partial"]) {
     for (const assumption of ["", "-cache-write-zero"]) {
       assert.equal(isLocalUnifiedIndexBoundaryParserVersion(`unified-rollout-typed-v19${suffix}${assumption}`), true);
       assert.equal(isLocalUnifiedIndexBoundaryParserVersion(`unified-rollout-typed-v20${suffix}${assumption}`), true);
+      assert.equal(isLocalUnifiedIndexBoundaryParserVersion(`unified-rollout-typed-v21${suffix}${assumption}`), true);
     }
   }
-  assert.equal(isLocalUnifiedIndexBoundaryParserVersion("unified-rollout-typed-v21"), false);
+  assert.equal(isLocalUnifiedIndexBoundaryParserVersion("unified-rollout-typed-v22"), false);
+  assert.equal(isLocalUnifiedIndexBoundaryParserVersion("unified-rollout-typed-v20-unreviewed"), false);
+});
+
+test("v21 reclassifies present Terra sources once while absent v20 facts retain exact provenance", async () => {
+  const presentName = "rollout-2026-07-25T00-00-00-present-terra.jsonl";
+  const absentName = "rollout-2026-07-25T01-00-00-absent-terra.jsonl";
+  const { root, sessions } = await corpus({
+    [presentName]: [
+      sessionMeta("synthetic-present-terra"),
+      turnContext("2026-07-25T00:00:00.000Z", "gpt-6.1-terra"),
+      tokenCount("2026-07-25T00:00:01.000Z", usage(100, 10), usage(100, 10)),
+      threadSettings("2026-07-25T00:00:01.500Z", "priority"),
+      tokenCount("2026-07-25T00:00:02.000Z", usage(300, 30), usage(200, 20)),
+    ],
+    [absentName]: [
+      sessionMeta("synthetic-absent-terra"),
+      turnContext("2026-07-25T01:00:00.000Z", "gpt-6.1-terra"),
+      tokenCount("2026-07-25T01:00:01.000Z", usage(50, 5), usage(50, 5)),
+    ],
+  });
+  const indexFile = join(root, "index.sqlite");
+  const ingest = options => ingestLocalUnifiedIndexIncrement({
+    codexHome: root, indexFile, secretFile: join(root, "salt"), contractVersion: CONTRACT, ...options,
+  });
+  const facts = database => database.prepare(`SELECT hex(u.event_key) AS event_key,
+    u.observed_at_ms, m.model_id, m.recognition, t.codex_speed_mode, t.tier_source,
+    u.tokens_in_uncached, u.tokens_in_cache_read, u.tokens_in_cache_write,
+    u.tokens_out_text, u.tokens_out_reasoning, u.tokens_out_combined,
+    u.total_input_context, hex(u.source_local) AS source_local, u.source_offset,
+    u.source_ordinal, p.parser_version
+    FROM usage_event u JOIN model m ON m.id = u.model_id
+    JOIN tier_semantics t ON t.id = u.tier_id JOIN parser_version p ON p.id = u.parser_version_id
+    ORDER BY u.observed_at_ms`).all().map(row => ({ ...row }));
+  try {
+    await ingest();
+    const prior = openLocalUnifiedIndex(indexFile, { readOnly: false });
+    prior.exec(`INSERT INTO model(model_id,recognition) VALUES('unknown','unrecognized') ON CONFLICT DO NOTHING;
+      UPDATE usage_event SET model_id=(SELECT id FROM model WHERE model_id='unknown');
+      UPDATE parser_version SET parser_version=replace(parser_version,'unified-rollout-typed-v21','unified-rollout-typed-v20');`);
+    const before = facts(prior);
+    assert.equal(before.length, 3);
+    assert.ok(before.every(row => row.model_id === "unknown" && row.parser_version === "unified-rollout-typed-v20"));
+    prior.close();
+    await rm(join(sessions, absentName));
+    const sourceBefore = await readFile(join(sessions, presentName));
+    const controller = new AbortController();
+    await assert.rejects(ingest({ signal: controller.signal, onProgress: () => controller.abort() }),
+      error => error?.code === "local_unified_index_aborted");
+    const cancelled = openLocalUnifiedIndex(indexFile, { readOnly: true });
+    try { assert.deepEqual(facts(cancelled), before, "cancelled reparse preserves the published v20 generation"); }
+    finally { cancelled.close(); }
+    const upgraded = await ingest();
+    assert.equal(upgraded.sourcesReparsedForParserVersion, 1);
+    assert.equal(upgraded.totalUsageEvents, 3);
+    const current = openLocalUnifiedIndex(indexFile, { readOnly: true });
+    let after;
+    try {
+      after = facts(current);
+      assert.deepEqual(after, before.map((row, index) => index < 2 ? {
+        ...row, model_id: "gpt-6.1-terra", recognition: "recognized", parser_version: LOCAL_UNIFIED_INDEX_PARSER_VERSION,
+      } : row));
+      assert.equal(after.reduce((sum, row) => sum + row.tokens_in_uncached, 0), 350);
+      assert.equal(after.reduce((sum, row) => sum + row.tokens_out_text, 0), 35);
+      assert.equal(current.prepare("PRAGMA user_version").get().user_version, LOCAL_UNIFIED_INDEX_USER_VERSION);
+    } finally { current.close(); }
+    const repeated = await ingest();
+    assert.equal(repeated.sourcesReparsedForParserVersion, 0);
+    assert.equal(repeated.insertedUsageEvents, 0);
+    assert.equal(repeated.totalUsageEvents, 3);
+    const settled = openLocalUnifiedIndex(indexFile, { readOnly: true });
+    try { assert.deepEqual(facts(settled), after); } finally { settled.close(); }
+    assert.deepEqual(await readFile(join(sessions, presentName)), sourceBefore);
+  } finally { await rm(root, { recursive: true }); }
 });
 
 test("a parser-version bump heals unchanged content and dependent lineage quarantines exactly once", async () => {

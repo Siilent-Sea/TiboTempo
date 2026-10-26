@@ -61,6 +61,37 @@ test('GPT-6.1 Sol keeps its own timing population and refuses unreviewed identit
     ['gpt-6.1-sol', 'GPT-6.1 Sol', 1, 400], ['gpt-6-sol', 'GPT-6 Sol', 1, 200],
   ]);
 });
+test('GPT-6.1 Terra has a distinct validated population without relabeling unknown speed or suffixes', () => {
+  const rows = [
+    row({ model: 'gpt-5.6-terra', sample_tokens: 100 }),
+    row({ model: 'gpt-6.1-terra', sample_tokens: 200 }),
+    row({ model: 'gpt-6.1-terra', speed_mode: 'fast', sample_tokens: 300 }),
+    row({ model: 'gpt-6.1-terra', speed_mode: 'unknown', sample_tokens: 400 }),
+    row({ model: 'gpt-6.1-terra-unreviewed', sample_tokens: 99999 }),
+  ];
+  const standard = modelPerformanceProjection(rows, { now: NOW });
+  const fast = modelPerformanceProjection(rows, { now: NOW, speedMode: 'fast' });
+  assert.equal(isModelPerformanceSnapshot(standard), true);
+  assert.equal(isModelPerformanceSnapshot(fast), true);
+  assert.equal(standard.models.length, 2);
+  assert.equal(standard.excludedUnknownTurns, 1);
+  const prior = standard.models.find(model => model.id === 'gpt-5.6-terra');
+  const current = standard.models.find(model => model.id === 'gpt-6.1-terra');
+  assert.equal(prior.label, 'Terra');
+  assert.equal(prior.speed[0].points[0].median, 100);
+  assert.equal(current.label, 'GPT-6.1 Terra');
+  assert.equal(current.turns, 1);
+  assert.equal(current.speed[0].points[0].median, 200);
+  assert.equal(fast.models.length, 1);
+  assert.equal(fast.models[0].id, 'gpt-6.1-terra');
+  assert.equal(fast.models[0].turns, 1);
+  assert.equal(fast.models[0].speed[0].points[0].median, 300);
+  for (const patch of [{ label: 'Terra' }, { id: 'gpt-6.1-terra-unreviewed' }]) {
+    const invalid = structuredClone(standard);
+    Object.assign(invalid.models.find(model => model.id === 'gpt-6.1-terra'), patch);
+    assert.equal(isModelPerformanceSnapshot(invalid), false);
+  }
+});
 test('Windows supplemental timing store avoids the primary guard ancestors', () => {
   const timingRoot = join('/state', 'inference-timing-v2');
   const directory = join(timingRoot, 'source-0123456789abcdef');

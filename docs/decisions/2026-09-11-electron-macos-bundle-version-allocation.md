@@ -112,3 +112,12 @@ the 2026-10-03 client date in America/New_York. It identifies the exact candidat
 and its receipts; it must not substitute for the Apple bundle version.
 Allocation enables candidate preparation and does not establish a signed or
 notarized artifact, installed qualification, updater delivery, or publication.
+
+## 2026-10-26 amendment: 0.1.29 Terra successor allocation
+
+Allocate stable `0.1.29` → `1037` for both Mac architectures, following published
+`0.1.28` → `1036` and preserving every earlier allocation. The independent
+provenance build is `2026102601`, selected for the 2026-10-26 client date in
+America/New_York. It identifies the source candidate and artifact receipts;
+it never substitutes for the Apple bundle version. Allocation is source
+preparation only, not signed-artifact, installed-update, or publication proof.

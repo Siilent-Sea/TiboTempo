@@ -37,7 +37,7 @@ test('future successor derives from package version and reviewed allocation with
 });
 
 for (const [version, bundleVersion, buildNumber] of [['0.1.27', '1035', '2026100301'],
-  ['0.1.28', '1036', '2026100901']]) test(`${version} admission binds reviewed allocation and independent provenance on both Mac architectures`, () => {
+  ['0.1.28', '1036', '2026100901'], ['0.1.29', '1037', '2026102601']]) test(`${version} admission binds reviewed allocation and independent provenance on both Mac architectures`, () => {
   for (const target of ['darwin-arm64', 'darwin-x64']) {
     const selected = { ...identity, target, version, bundleVersion, buildNumber };
     const selectedContext = { ...context(selected), packageVersion: version, sourceVersion: version,
@@ -163,6 +163,7 @@ test('all six actual workflow admissions accept a synthetic future release and r
 for (const [schemaVersion, version, bundleVersion, buildNumber] of [
   ['tibotattle-production-electron-update-intake-v2', '0.1.27', '1035', '2026100301'],
   ['tibotattle-production-electron-update-intake-v3', '0.1.28', '1036', '2026100901'],
+  ['tibotattle-production-electron-update-intake-v4', '0.1.29', '1037', '2026102601'],
 ]) test(`both production-update workflow admissions bind the closed ${schemaVersion} route`, async t => {
   const fixture = await repository({ version, bundleVersion });
   t.after(() => rm(fixture.root, { recursive: true, force: true }));

@@ -19,10 +19,56 @@ export const ADMIN_MODEL_CONFIG = Object.freeze(REVIEWED_MODEL_CATALOG
     pricingStatus: model.pricingStatus,
   })));
 
-// The current reviewed catalog already contains the September 29 publication.
-// Reuse its immutable configuration rather than appending its 43rd model twice.
+// Freeze the exact September 29 publication before extending the current
+// catalog. Historical coverage and labels cannot inherit later identities.
 export const SEPTEMBER29_ADMIN_MODEL_HISTORY_CATALOG_VERSION = "reviewed-model-catalog-2026-09-29.1";
-export const SEPTEMBER29_ADMIN_MODEL_CONFIG = ADMIN_MODEL_CONFIG;
+export const SEPTEMBER29_ADMIN_MODEL_CONFIG = Object.freeze([
+  ["codex-auto-review", "Codex Auto-review", "primary", "assumed_alias"],
+  ["gpt-4-turbo-2024-04-09", "GPT-4 Turbo (2024-04-09)", "primary", "published"],
+  ["gpt-4.1", "GPT-4.1", "primary", "published"],
+  ["gpt-4.1-mini", "GPT-4.1 Mini", "primary", "published"],
+  ["gpt-4.1-nano", "GPT-4.1 Nano", "primary", "published"],
+  ["gpt-4o", "GPT-4o", "primary", "published"],
+  ["gpt-4o-2024-05-13", "GPT-4o (2024-05-13)", "primary", "published"],
+  ["gpt-4o-mini", "GPT-4o Mini", "primary", "published"],
+  ["gpt-5", "GPT-5", "primary", "published"],
+  ["gpt-5-codex", "GPT-5 Codex", "primary", "published"],
+  ["gpt-5-mini", "GPT-5 Mini", "primary", "published"],
+  ["gpt-5-nano", "GPT-5 Nano", "primary", "published"],
+  ["gpt-5-pro", "GPT-5 Pro", "primary", "published"],
+  ["gpt-5.1", "GPT-5.1", "primary", "published"],
+  ["gpt-5.1-codex", "GPT-5.1 Codex", "primary", "published"],
+  ["gpt-5.1-codex-mini", "GPT-5.1 Codex Mini", "primary", "published"],
+  ["gpt-5.2", "GPT-5.2", "primary", "published"],
+  ["gpt-5.2-codex", "GPT-5.2 Codex", "primary", "published"],
+  ["gpt-5.2-pro", "GPT-5.2 Pro", "primary", "published"],
+  ["gpt-5.3-codex", "GPT-5.3 Codex", "primary", "published"],
+  ["gpt-5.3-codex-spark", "GPT-5.3 Codex Spark", "spark", "unpriced"],
+  ["gpt-5.4", "GPT-5.4", "primary", "published"],
+  ["gpt-5.4-mini", "GPT-5.4 Mini", "primary", "published"],
+  ["gpt-5.4-nano", "GPT-5.4 Nano", "primary", "published"],
+  ["gpt-5.4-pro", "GPT-5.4 Pro", "primary", "published"],
+  ["gpt-5.5", "GPT-5.5", "primary", "published"],
+  ["gpt-5.5-codex", "GPT-5.5 Codex", "primary", "assumed_alias"],
+  ["gpt-5.5-pro", "GPT-5.5 Pro", "primary", "published"],
+  ["gpt-5.6-luna", "GPT-5.6 Luna", "primary", "published"],
+  ["gpt-5.6-sol", "GPT-5.6 Sol", "primary", "published"],
+  ["gpt-5.6-sol-wm", "GPT-5.6 Sol Work Mode", "primary", "assumed_alias"],
+  ["gpt-5.6-terra", "GPT-5.6 Terra", "primary", "published"],
+  ["gpt-6-astra", "GPT-6 Astra", "primary", "published"],
+  ["o1", "o1", "primary", "published"],
+  ["o1-pro", "o1 Pro", "primary", "published"],
+  ["o3", "o3", "primary", "published"],
+  ["o3-mini", "o3 Mini", "primary", "published"],
+  ["o3-pro", "o3 Pro", "primary", "published"],
+  ["o4-mini", "o4 Mini", "primary", "published"],
+  ["gpt-6-sol", "GPT-6 Sol", "primary", "published"],
+  ["gpt-6-luna", "GPT-6 Luna", "primary", "published"],
+  ["gpt-6.1-astra", "GPT-6.1 Astra (forecast)", "primary", "unpriced"],
+  ["gpt-6.1-sol", "GPT-6.1 Sol", "primary", "published"],
+].map(([modelId, label, allowanceTrack, pricingStatus]) => Object.freeze({
+  modelId, label, allowanceTrack, pricingStatus,
+})));
 const adminHistorySeptember29Ids = Object.freeze(SEPTEMBER29_ADMIN_MODEL_CONFIG
   .filter((model) => model.allowanceTrack === "primary")
   .map((model) => model.modelId));

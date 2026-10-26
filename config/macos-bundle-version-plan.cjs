@@ -47,6 +47,9 @@ const SIGNED_MACOS_BUNDLE_VERSION_PLAN = Object.freeze({
   // Replacement includes new source and dependency fixes; never reuse 0.1.27
   // artifacts or receipts. Timestamp provenance remains independently bound.
   "0.1.28": Object.freeze({ stable: "1036" }),
+  // GPT-6.1 Terra successor; provenance build 2026102601 is independent.
+  // Allocation alone does not establish signed or installed release evidence.
+  "0.1.29": Object.freeze({ stable: "1037" }),
 });
 
 module.exports = { SIGNED_MACOS_BUNDLE_VERSION_PLAN };

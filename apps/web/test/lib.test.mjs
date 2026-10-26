@@ -9934,6 +9934,31 @@ test("local accounting preserves distinct subscription and API Ultrafast dimensi
   assert.equal(Object.hasOwn(result.accounting.byApiServiceTier, "private_canary"), false);
 });
 
+test("GPT-6.1 Terra preserves its identity and published Fast ratio without inventing an Ultrafast rate", () => {
+  const result = normalizeDashboardPayload({ mode: "real_local_evidence", accounting: {
+    modelUsage: ["gpt-6.1-terra", "gpt-5.6-terra"].map((model, index) => ({
+      model, allowanceTrack: "primary", pricingStatus: "priced", events: 1,
+      totalTokens: 120, apiPriceEquivalentUsd: index + 1,
+      components: { input_uncached_tokens: 100, output_text_tokens: 20 },
+    })),
+    speedWeighting: {
+      fast: { "gpt-6.1-terra": { events: 1, apiPriceEquivalentUsd: 2 } },
+      standard: { "gpt-5.6-terra": { events: 1, apiPriceEquivalentUsd: 1 } },
+    },
+    fastMode: {
+      appliedMultipliers: { "gpt-6.1-terra": 999, "ultrafast:gpt-6.1-terra": 999 },
+    },
+  } });
+  assert.deepEqual(result.accounting.modelUsage.map(row => [row.model, row.apiPriceEquivalentUsd]),
+    [["gpt-6.1-terra", 1], ["gpt-5.6-terra", 2]]);
+  assert.deepEqual(result.accounting.speedWeighting.fast["gpt-6.1-terra"],
+    { events: 1, apiPriceEquivalentUsd: 2 });
+  assert.equal(result.accounting.fastMode.multipliers["gpt-6.1-terra"], 2);
+  assert.equal(result.accounting.fastMode.appliedMultipliers["gpt-6.1-terra"], 2);
+  assert.equal(Object.hasOwn(result.accounting.fastMode.ultrafastMultipliers, "gpt-6.1-terra"), false);
+  assert.equal(Object.hasOwn(result.accounting.fastMode.appliedMultipliers, "ultrafast:gpt-6.1-terra"), false);
+});
+
 
 test("local model usage retains mixed primary and separate auto-review rows and the raw API quote", () => {
   const common = {

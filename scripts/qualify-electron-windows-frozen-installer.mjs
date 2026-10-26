@@ -13,8 +13,8 @@ import { runWindowsSignedInstalled, assertWindowsSignedInstalledPath,
   readWindowsSignedInstalledEvidence, digestWindowsSignedInstalledFile,
   verifyWindowsSignedInstalledSignature } from './smoke-electron-windows-signed-installed.mjs';
 import { runWindowsNsisLifecycleProgram } from './smoke-electron-windows-nsis-lifecycle.mjs';
-import { WINDOWS_FINAL_UPGRADE_PREDECESSOR_FILE, parseWindowsFinalUpgradeMode,
-  validateWindowsFinalUpgradePredecessorManifest, resolveWindowsFinalUpgradeSuccessor, runWindowsFinalUpgrade } from './smoke-electron-windows-final-upgrade.mjs';
+import { windowsFinalUpgradePredecessorFile, parseWindowsFinalUpgradeMode,
+  validateWindowsFinalUpgradePredecessorManifest, validateWindowsFinalUpgradePair, runWindowsFinalUpgrade } from './smoke-electron-windows-final-upgrade.mjs';
 
 const env = process.env;
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -109,18 +109,20 @@ async function main() {
     assert.equal(receipt.sourceCandidateSha256, candidateComparison.sha256);
     console.log('WINDOWS_FROZEN_INSTALLED_QUALIFIED'); return;
   }
-  resolveWindowsFinalUpgradeSuccessor(candidate);
+  validateWindowsFinalUpgradePair(predecessorIntake, candidate);
+  const predecessorTag = `v${predecessorIntake.version}`;
+  const predecessorFile = windowsFinalUpgradePredecessorFile(predecessorIntake);
   const predecessorRoot = join(scratch, 'predecessor'); await mkdir(predecessorRoot);
   // Read-only immutable GitHub release verification is separate from native
   // Authenticode. No stable feed, caller URL, rebuild or signature replacement.
-  program('gh', ['release', 'verify', 'v0.1.26', '--repo', 'adamallcock/tibotattle'], 60000);
-  program('gh', ['release', 'download', 'v0.1.26', '--repo', 'adamallcock/tibotattle',
+  program('gh', ['release', 'verify', predecessorTag, '--repo', 'adamallcock/tibotattle'], 60000);
+  program('gh', ['release', 'download', predecessorTag, '--repo', 'adamallcock/tibotattle',
     '--pattern', 'release-manifest.json', '--dir', predecessorRoot], 60000);
   const predecessorManifestPath = join(predecessorRoot, 'release-manifest.json');
   validateWindowsFinalUpgradePredecessorManifest(await readWindowsSignedInstalledEvidence(predecessorManifestPath, 64 * 1024), predecessorIntake);
-  program('gh', ['release', 'download', 'v0.1.26', '--repo', 'adamallcock/tibotattle',
-    '--pattern', WINDOWS_FINAL_UPGRADE_PREDECESSOR_FILE, '--dir', predecessorRoot], 180000);
-  const oldInstaller = join(predecessorRoot, WINDOWS_FINAL_UPGRADE_PREDECESSOR_FILE);
+  program('gh', ['release', 'download', predecessorTag, '--repo', 'adamallcock/tibotattle',
+    '--pattern', predecessorFile, '--dir', predecessorRoot], 180000);
+  const oldInstaller = join(predecessorRoot, predecessorFile);
   assert.equal(await digestWindowsSignedInstalledFile(oldInstaller), predecessorIntake.installerSha256);
   const predecessor = await reference(oldInstaller, { expectedSource: predecessorIntake.sourceRevision,
     expectedVersion: predecessorIntake.version, scratch: join(predecessorRoot, 'extracted'), root: join(predecessorRoot, 'reference') });

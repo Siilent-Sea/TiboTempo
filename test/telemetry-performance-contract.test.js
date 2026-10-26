@@ -179,6 +179,25 @@ test("performance daily cohorts preserve the closed measurement shape", () => {
   assert.equal(unavailable.completionHistogram.min, 1000);
 });
 
+test("Terra performance cohorts agree across runtime and schema without admitting aliases or another provider", () => {
+  const schemas = telemetryPerformanceJsonSchemas();
+  const ajv = new Ajv({ strict: false, allErrors: true });
+  ajv.addSchema(schemas["performance-histogram.schema.json"]);
+  const validate = ajv.compile(schemas["performance-record.schema.json"]);
+  const record = performanceRecord({ day: "2026-10-26", modelId: "gpt-6.1-terra", reasoningEffort: "max" });
+  assert.equal(parseTelemetryPerformanceRecord(record), record);
+  assert.deepEqual(browser.parseTelemetryPerformanceRecord(record), record);
+  assert.equal(validate(record), true);
+  for (const invalid of [
+    { ...record, modelId: "gpt-6.1-terra-preview" },
+    { ...record, provider: "anthropic_claude_code" },
+  ]) {
+    expectInvalid(invalid, "Terra performance boundary");
+    assert.throws(() => browser.parseTelemetryPerformanceRecord(invalid));
+    assert.equal(validate(invalid), false);
+  }
+});
+
 test("performance validation rejects privacy, version, bounds, and relation violations", () => {
   const extra = performanceRecord();
   extra.extra = 1;

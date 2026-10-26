@@ -8,7 +8,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { linuxAppImageIdentity } from './build-linux-updater-rehearsal.mjs';
 import { readLinuxPackagedAsarManifest } from './smoke-electron-linux-packaged.mjs';
-import { LINUX_FINAL_INPUT, LINUX_FINAL_PREDECESSOR, LINUX_FINAL_FEED, linuxFinalFailure as fail,
+import { LINUX_FINAL_INPUT, resolveLinuxFinalPredecessor, LINUX_FINAL_FEED, linuxFinalFailure as fail,
   preflightLinuxFinalIntake, linuxFinalArtifactName, validateLinuxFinalPackageRun,
   validateLinuxFinalPackageReceipt, validateLinuxFinalPair, sha256 } from './lib/linux-final-artifact-intake.mjs';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -114,6 +114,7 @@ export async function reserveLinuxFinalDirectory(root) {
 }
 export async function acquireLinuxFinalArtifacts(intake, { root = ROOT, token = process.env.GITHUB_TOKEN } = {}) {
   if (typeof token !== 'string' || !token.length) fail('GITHUB_AUTH_REQUIRED');
+  const predecessor = resolveLinuxFinalPredecessor(intake);
   const directory = await reserveLinuxFinalDirectory(root);
   const run = await api(`actions/runs/${intake.packageRunId}`, token);
   validateLinuxFinalPackageRun(run, intake);
@@ -138,29 +139,30 @@ export async function acquireLinuxFinalArtifacts(intake, { root = ROOT, token = 
   const candidate = join(extracted, files[0]);
   if ((await fingerprintLinuxFinalFile(candidate)).sha256 !== intake.artifactSha256) fail('FINAL_BYTES_INVALID');
   await copyFile(candidate, join(directory, 'next.AppImage'), constants.COPYFILE_EXCL);
-  await download(`https://github.com/${REPO}/releases/download/v0.1.26/release-manifest.json`, join(directory, 'predecessor-manifest.json'), { maximum: 131072 });
+  await download(`https://github.com/${REPO}/releases/download/v${predecessor.version}/release-manifest.json`, join(directory, 'predecessor-manifest.json'), { maximum: 131072 });
   const manifest = await fingerprintLinuxFinalFile(join(directory, 'predecessor-manifest.json'), 131072, true);
-  if (manifest.sha256 !== LINUX_FINAL_PREDECESSOR.manifestSha256) fail('PREDECESSOR_INVALID');
-  const entry = JSON.parse(manifest.contents).artifacts.find(row => row.fileName === LINUX_FINAL_PREDECESSOR.file);
-  if (entry?.sha256 !== LINUX_FINAL_PREDECESSOR.sha256 || entry.bytes !== LINUX_FINAL_PREDECESSOR.bytes
-    || entry.source?.commit !== LINUX_FINAL_PREDECESSOR.sourceRevision) fail('PREDECESSOR_INVALID');
-  await download(`https://github.com/${REPO}/releases/download/v0.1.26/${LINUX_FINAL_PREDECESSOR.file}`, join(directory, 'current.AppImage'));
-  if ((await fingerprintLinuxFinalFile(join(directory, 'current.AppImage'))).sha256 !== LINUX_FINAL_PREDECESSOR.sha256) fail('PREDECESSOR_INVALID');
+  if (manifest.sha256 !== predecessor.manifestSha256) fail('PREDECESSOR_INVALID');
+  const entry = JSON.parse(manifest.contents).artifacts.find(row => row.fileName === predecessor.file);
+  if (entry?.sha256 !== predecessor.sha256 || entry.bytes !== predecessor.bytes
+    || entry.source?.commit !== predecessor.sourceRevision) fail('PREDECESSOR_INVALID');
+  await download(`https://github.com/${REPO}/releases/download/v${predecessor.version}/${predecessor.file}`, join(directory, 'current.AppImage'));
+  if ((await fingerprintLinuxFinalFile(join(directory, 'current.AppImage'))).sha256 !== predecessor.sha256) fail('PREDECESSOR_INVALID');
   await writeNew(join(directory, 'intake.json'), intake);
   await writeNew(join(directory, 'package-receipt.json'), receipt);
   return { status: 'acquired', published: false, rebuilt: false };
 }
 export async function prepareLinuxFinalArtifacts(intake, { root = ROOT } = {}) {
   if (process.platform !== 'linux' || process.arch !== 'x64' || process.version !== 'v26.2.0') fail('NATIVE_HOST_REQUIRED');
+  const predecessor = resolveLinuxFinalPredecessor(intake);
   const directory = join(root, LINUX_FINAL_INPUT), images = {};
   const source = await fingerprintLinuxFinalFile(join(directory, 'package/production-source-candidate.json'), 131072, true);
   const receiptFile = await fingerprintLinuxFinalFile(join(directory, 'package/linux-production-package-receipt.json'), 131072, true);
   if (receiptFile.sha256 !== intake.packageReceiptSha256) fail('PACKAGE_RECEIPT_CHANGED');
   const receipt = validateLinuxFinalPackageReceipt(JSON.parse(receiptFile.contents), intake, source.contents);
-  if ((await fingerprintLinuxFinalFile(join(directory, 'predecessor-manifest.json'), 131072)).sha256 !== LINUX_FINAL_PREDECESSOR.manifestSha256) fail('PREDECESSOR_INVALID');
+  if ((await fingerprintLinuxFinalFile(join(directory, 'predecessor-manifest.json'), 131072)).sha256 !== predecessor.manifestSha256) fail('PREDECESSOR_INVALID');
   for (const role of ['current', 'next']) {
     const path = join(directory, `${role}.AppImage`);
-    const expected = role === 'current' ? LINUX_FINAL_PREDECESSOR : { ...receipt.artifact, version: intake.version, sourceRevision: intake.sourceRevision };
+    const expected = role === 'current' ? predecessor : { ...receipt.artifact, version: intake.version, sourceRevision: intake.sourceRevision };
     const initial = await fingerprintLinuxFinalFile(path), image = await linuxAppImageIdentity(path);
     if (image.sha256 !== expected.sha256 || image.bytes !== expected.bytes || initial.sha256 !== image.sha256) fail('FINAL_BYTES_INVALID');
     await chmod(path, 0o700);
@@ -179,7 +181,7 @@ export async function prepareLinuxFinalArtifacts(intake, { root = ROOT } = {}) {
       ...image, asarSha256: asar.sha256, executableSha256: executable.sha256 };
   }
   const pair = validateLinuxFinalPair({ schemaVersion: 'tibotattle-linux-final-artifact-pair-v1', intake,
-    predecessorManifestSha256: LINUX_FINAL_PREDECESSOR.manifestSha256, images }, intake.runnerRevision);
+    predecessorManifestSha256: predecessor.manifestSha256, images }, intake.runnerRevision);
   await writeNew(join(directory, 'pair.json'), pair);
   return { status: 'prepared', artifactSha256: images.next.sha256, published: false, rebuilt: false };
 }

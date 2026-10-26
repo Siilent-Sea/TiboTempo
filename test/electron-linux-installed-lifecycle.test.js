@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { productionElectronCandidatePlan } from '../scripts/package-electron-production.mjs';
-import { LINUX_FINAL_SCHEMA, LINUX_FINAL_SCHEMA_V2, LINUX_FINAL_PREDECESSOR, validateLinuxFinalIntake, parseLinuxFinalIntake,
+import { LINUX_FINAL_SCHEMA, LINUX_FINAL_SCHEMA_V2, LINUX_FINAL_SCHEMA_V3, LINUX_FINAL_PREDECESSOR, LINUX_FINAL_PREDECESSOR_V2, resolveLinuxFinalPredecessor, validateLinuxFinalIntake, parseLinuxFinalIntake,
   validateLinuxFinalPackageRun, validateLinuxFinalPackageReceipt, validateLinuxFinalPair, linuxFinalArtifactName } from '../scripts/lib/linux-final-artifact-intake.mjs';
 import { selectLinuxFinalFuseMount, linuxFinalSandboxStatus, linuxFinalFeedRequestPath, assertLinuxFinalProcessTreeGone, assertLinuxFinalChecksumRejection,
   linuxFinalTemporary, assertLinuxFinalOwnedPolicy, linuxFinalFailureDetails, runLinuxFinalNormalJourney,
@@ -30,9 +30,10 @@ function fixture({ schemaVersion = LINUX_FINAL_SCHEMA, version = '0.1.27', build
     sourceRevision: revision, version, buildNumber, target: 'linux-x64',
     sourceCandidateSha256: intake.sourceCandidateSha256, appUpdate: {}, artifact, manifest: {},
     signingRequired: false, published: false, nativeRuntimeQualification: 'separate_evidence_required' };
+  const predecessor = resolveLinuxFinalPredecessor(intake);
   const pair = { schemaVersion: 'tibotattle-linux-final-artifact-pair-v1', intake,
-    predecessorManifestSha256: LINUX_FINAL_PREDECESSOR.manifestSha256,
-    images: { current: { file: 'current.AppImage', ...Object.fromEntries(['version', 'sourceRevision', 'bytes', 'sha256'].map(k => [k, LINUX_FINAL_PREDECESSOR[k]])),
+    predecessorManifestSha256: predecessor.manifestSha256,
+    images: { current: { file: 'current.AppImage', ...Object.fromEntries(['version', 'sourceRevision', 'bytes', 'sha256'].map(k => [k, predecessor[k]])),
       sha512: artifact.sha512, asarSha256: '2'.repeat(64), executableSha256: '3'.repeat(64) },
       next: { ...artifact, file: 'next.AppImage', version: intake.version, sourceRevision: revision,
         asarSha256: intake.asarSha256, executableSha256: intake.executableSha256 } } };
@@ -69,6 +70,38 @@ test('replacement intake v2 binds only 028 and never relabels historical source 
   const changed = structuredClone(current.pair); changed.images.next.version = '0.1.27';
   assert.throws(() => validateLinuxFinalPair(changed, runner));
   assert.equal(validateLinuxFinalIntake(historical.intake), historical.intake);
+});
+
+test('029 intake v3 binds the published 028 AppImage and refuses mixed historical pairs', async () => {
+  const manifestBytes = await readFile(new URL('./fixtures/releases/v0.1.28/release-manifest.json', import.meta.url));
+  assert.equal(hash(manifestBytes), LINUX_FINAL_PREDECESSOR_V2.manifestSha256);
+  const manifest = JSON.parse(manifestBytes);
+  const artifact = manifest.artifacts.find(row => row.platform === 'linux');
+  assert.equal(manifest.commit, LINUX_FINAL_PREDECESSOR_V2.sourceRevision);
+  for (const [field, value] of Object.entries({ fileName: LINUX_FINAL_PREDECESSOR_V2.file,
+    version: LINUX_FINAL_PREDECESSOR_V2.version, sha256: LINUX_FINAL_PREDECESSOR_V2.sha256, bytes: LINUX_FINAL_PREDECESSOR_V2.bytes })) {
+    assert.equal(artifact[field], value);
+  }
+  const current = fixture({ schemaVersion: LINUX_FINAL_SCHEMA_V3, version: '0.1.29', buildNumber: '2026102601' });
+  assert.equal(validateLinuxFinalIntake(current.intake), current.intake);
+  assert.equal(resolveLinuxFinalPredecessor(current.intake), LINUX_FINAL_PREDECESSOR_V2);
+  assert.equal(resolveLinuxFinalPredecessor(fixture().intake), LINUX_FINAL_PREDECESSOR);
+  assert.equal(resolveLinuxFinalPredecessor(fixture({ schemaVersion: LINUX_FINAL_SCHEMA_V2, version: '0.1.28', buildNumber: '2026100901' }).intake), LINUX_FINAL_PREDECESSOR);
+  validateLinuxFinalPackageReceipt(current.receipt, current.intake, current.sourceBytes);
+  validateLinuxFinalPair(current.pair, runner);
+  for (const patch of [{ schemaVersion: LINUX_FINAL_SCHEMA }, { schemaVersion: LINUX_FINAL_SCHEMA_V2 },
+    { schemaVersion: 'toString' }, { version: '0.1.28' }, { version: '0.1.30' },
+    { buildNumber: '2026100901' }, { buildNumber: '2026102602' }, { buildNumber: 2026102601 }]) {
+    assert.throws(() => validateLinuxFinalIntake({ ...current.intake, ...patch }));
+  }
+  for (const prior of [fixture(), fixture({ schemaVersion: LINUX_FINAL_SCHEMA_V2, version: '0.1.28', buildNumber: '2026100901' })]) {
+    assert.throws(() => validateLinuxFinalPair({ ...current.pair, predecessorManifestSha256: prior.pair.predecessorManifestSha256,
+      images: { ...current.pair.images, current: prior.pair.images.current } }, runner));
+    assert.throws(() => validateLinuxFinalPair({ ...prior.pair, predecessorManifestSha256: current.pair.predecessorManifestSha256,
+      images: { ...prior.pair.images, current: current.pair.images.current } }, runner));
+    assert.throws(() => validateLinuxFinalPackageReceipt(prior.receipt, current.intake, prior.sourceBytes));
+    validateLinuxFinalPair(prior.pair, runner);
+  }
 });
 
 test('only the exact successful same-repository manual packaging workflow is admitted', () => {

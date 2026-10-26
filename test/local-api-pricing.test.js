@@ -99,8 +99,12 @@ test("Sol and Luna event pricing counts cache writes and reasoning once and pres
   }
 });
 
-test("Sol 6.1 and Astra Ultrafast preserve exact event-time token accounting", () => {
+test("Sol 6.1, Terra 6.1 and Astra Ultrafast preserve exact event-time token accounting", () => {
   const expected = [
+    ["gpt-6.1-terra", "standard", "0.695", "1.14"],
+    ["gpt-6.1-terra", "batch", "0.3475", "0.57"],
+    ["gpt-6.1-terra", "flex", "0.3475", "0.57"],
+    ["gpt-6.1-terra", "priority", "1.39", "2.28"],
     ["gpt-6.1-sol", "standard", "1.39", "2.28"],
     ["gpt-6.1-sol", "batch", "0.695", "1.14"],
     ["gpt-6.1-sol", "flex", "0.695", "1.14"],
@@ -108,8 +112,9 @@ test("Sol 6.1 and Astra Ultrafast preserve exact event-time token accounting", (
     ["gpt-6-astra", "ultrafast", "42", "69"],
   ];
   for (const [model, apiServiceTier, short, long] of expected) {
+    const launchDate = model === "gpt-6.1-terra" ? "2026-10-26" : "2026-09-29";
     const event = {
-      timestamp: "2026-09-29T00:00:00.000Z", model,
+      timestamp: `${launchDate}T00:00:00.000Z`, model,
       totalInputContextTokens: 272_000, raw: { input_tokens: 999_999 },
       components: { input_uncached_tokens: 100_000, input_cache_read_tokens: 100_000,
         input_cache_write_tokens: 72_000, output_text_tokens: 40_000, output_reasoning_tokens: 60_000 },
@@ -123,7 +128,8 @@ test("Sol 6.1 and Astra Ultrafast preserve exact event-time token accounting", (
       { apiServiceTier }).totalUsd, long, `${model}/${apiServiceTier}/long`);
     assert.equal(priceCodexUsageEvent(event, { apiServiceTier,
       priceEpochBasis: "current_price_sensitivity" }).totalUsd, short);
-    const beforeLaunch = priceCodexUsageEvent({ ...event, timestamp: "2026-09-28T23:59:59.999Z" },
+    const beforeLaunch = priceCodexUsageEvent({ ...event,
+      timestamp: new Date(Date.parse(event.timestamp) - 1).toISOString() },
       { apiServiceTier });
     assert.equal(beforeLaunch.totalUsd, "0");
     assert.equal(beforeLaunch.coverageStatus, "unpriced");
@@ -136,10 +142,10 @@ test("Sol 6.1 and Astra Ultrafast preserve exact event-time token accounting", (
 });
 
 test("unpublished Ultrafast pairs never borrow Standard prices or Astra's multiplier", () => {
-  for (const model of ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol"]) {
+  for (const model of ["gpt-6.1-terra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol"]) {
     for (const totalInputContextTokens of [272_000, 272_001]) {
       const result = priceCodexUsageEvent({
-        timestamp: "2026-09-29T12:00:00.000Z", model, totalInputContextTokens,
+        timestamp: "2026-10-26T12:00:00.000Z", model, totalInputContextTokens,
         components: { input_uncached_tokens: 1_000_000, output_text_tokens: 1_000_000 },
       }, { apiServiceTier: "ultrafast" });
       assert.equal(result.totalUsd, "0", `${model}/${totalInputContextTokens}`);
@@ -151,8 +157,12 @@ test("unpublished Ultrafast pairs never borrow Standard prices or Astra's multip
   }
 });
 
-test("context-dependent Sol 6.1 and Astra rates require observed input context", () => {
+test("context-dependent Terra 6.1, Sol 6.1 and Astra rates require observed input context", () => {
   const prices = [
+    ["gpt-6.1-terra", "standard", "0.005", "0.0075"],
+    ["gpt-6.1-terra", "batch", "0.0025", "0.00375"],
+    ["gpt-6.1-terra", "flex", "0.0025", "0.00375"],
+    ["gpt-6.1-terra", "priority", "0.01", "0.015"],
     ["gpt-6.1-sol", "standard", "0.01", "0.015"],
     ["gpt-6.1-sol", "batch", "0.005", "0.0075"],
     ["gpt-6.1-sol", "flex", "0.005", "0.0075"],
@@ -163,7 +173,8 @@ test("context-dependent Sol 6.1 and Astra rates require observed input context",
   ];
   for (const [model, apiServiceTier, short, long] of prices) {
     const event = {
-      timestamp: "2026-09-29T00:00:00.000Z", model, totalInputContextTokens: null,
+      timestamp: model === "gpt-6.1-terra" ? "2026-10-26T00:00:00.000Z" : "2026-09-29T00:00:00.000Z",
+      model, totalInputContextTokens: null,
       components: { input_uncached_tokens: null, input_cache_read_tokens: null,
         input_cache_write_tokens: null, output_text_tokens: 600, output_reasoning_tokens: 400 },
     };
