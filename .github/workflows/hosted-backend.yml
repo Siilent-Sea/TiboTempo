@@ -4,6 +4,9 @@ name: Hosted backend
 # check with the offline production-tooling checks, and every
 # apps/worker/postgres-test spec against PostgreSQL 17 in its routed
 # environment profile, including the edge end-to-end spec.
+# The canonical Worker check is partitioned into two native whole-file Vitest
+# shards, analytics (with its vendor prerequisite), and all remaining commands
+# in their canonical order. Worker gate requires every partition to pass.
 #
 # PostgreSQL 17 is the official postgres image pinned by digest in
 # apps/worker/scripts/ci-postgres-container.mjs, run as the runner uid with a
@@ -95,11 +98,20 @@ concurrency:
 
 jobs:
   worker-gate:
-    name: Worker gate
+    name: Worker shard (${{ matrix.shard }})
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - vitest-1
+          - vitest-2
+          - analytics
+          - checks
     env:
       WRANGLER_SEND_METRICS: "false"
+      WORKER_SUITE_SHARD: "${{ matrix.shard }}"
     steps:
       - name: Check out the selected revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -138,8 +150,8 @@ jobs:
       - name: Start PostgreSQL 17 and export the SOCKET profile
         run: node apps/worker/scripts/ci-postgres-container.mjs --export-socket-profile
 
-      - name: Check this workflow's contract, migration numbering and PostgreSQL suite routing
-        run: node --test test/hosted-backend-workflow.test.js apps/worker/scripts/migration-numbering.check.mjs apps/worker/scripts/ci-postgres-suite.check.mjs
+      - name: Check this workflow's contract, migration numbering and suite routing
+        run: node --test test/hosted-backend-workflow.test.js apps/worker/scripts/migration-numbering.check.mjs apps/worker/scripts/ci-postgres-suite.check.mjs apps/worker/scripts/ci-worker-suite.check.mjs
 
       # deploy:dry and staging:check stage production assets from a generated
       # public release site. Build one locally from the checked-out source with a
@@ -181,12 +193,25 @@ jobs:
             --support-url https://tibotattle.com/docs.html \
             --social-image "$social_card" > /dev/null
 
-      - name: Run the Worker gate
-        run: npm --prefix apps/worker run check
+      - name: Run the canonical Worker partition
+        run: node apps/worker/scripts/ci-worker-suite.mjs --shard "$WORKER_SUITE_SHARD"
 
       - name: Stop PostgreSQL 17
         if: always()
         run: node apps/worker/scripts/ci-postgres-container.mjs --stop
+
+  worker-complete:
+    name: Worker gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    if: always()
+    needs:
+      - worker-gate
+    env:
+      WORKER_SUITE_RESULT: "${{ needs.worker-gate.result }}"
+    steps:
+      - name: Require every canonical Worker partition to pass
+        run: test "$WORKER_SUITE_RESULT" = success
 
   cloud-run-check:
     name: Cloud Run check

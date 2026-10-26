@@ -6,6 +6,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { init, parse } from "es-module-lexer";
 import { POSTGRES_SUITE_SHARDS } from "../apps/worker/scripts/ci-postgres-suite.mjs";
+import { WORKER_SUITE_SHARDS } from "../apps/worker/scripts/ci-worker-suite.mjs";
 
 import {
   checkReleaseWorkflowPolicy,
@@ -45,6 +46,21 @@ const AGGREGATE_CONTRACT = Object.freeze({
   needs: ["postgres-17-suite"],
   env: { PG_SUITE_RESULT: "${{ needs.postgres-17-suite.result }}" },
   steps: [{ name: "Require every canonical PostgreSQL shard to pass", run: 'test "$PG_SUITE_RESULT" = success' }],
+});
+const WORKER_SHARD_COMMAND = 'node apps/worker/scripts/ci-worker-suite.mjs --shard "$WORKER_SUITE_SHARD"';
+const WORKER_AGGREGATE_JOB = "worker-complete";
+const WORKER_AGGREGATE_CONTRACT = Object.freeze({
+  name: "Worker gate",
+  "runs-on": "ubuntu-24.04",
+  "timeout-minutes": 60,
+  if: "always()",
+  needs: ["worker-gate"],
+  env: { WORKER_SUITE_RESULT: "${{ needs.worker-gate.result }}" },
+  steps: [{ name: "Require every canonical Worker partition to pass", run: 'test "$WORKER_SUITE_RESULT" = success' }],
+});
+const AGGREGATES = Object.freeze({
+  [AGGREGATE_JOB]: AGGREGATE_CONTRACT,
+  [WORKER_AGGREGATE_JOB]: WORKER_AGGREGATE_CONTRACT,
 });
 const EDGE_SPEC = "apps/worker/postgres-test/edge-origin-e2e.spec.mjs";
 const TRANSFER_SPEC = "apps/worker/postgres-test/postgres-v12-transfer.spec.mjs";
@@ -221,6 +237,28 @@ function postgresShardFailures(workflow) {
   return failures;
 }
 
+function workerShardFailures(workflow) {
+  const failures = [];
+  const job = workflow.jobs["worker-gate"];
+  const expectedStrategy = { "fail-fast": false, matrix: { shard: [...WORKER_SUITE_SHARDS] } };
+  if (JSON.stringify(job?.strategy) !== JSON.stringify(expectedStrategy)) {
+    failures.push("Worker partitions must cover the four canonical routes exactly once without fail-fast");
+  }
+  if (job?.name !== "Worker shard (${{ matrix.shard }})"
+      || job?.env?.WORKER_SUITE_SHARD !== "${{ matrix.shard }}"
+      || job?.if !== undefined || job?.["continue-on-error"] !== undefined
+      || !Array.isArray(job?.steps)
+      || job.steps.some((step) => step["continue-on-error"] !== undefined
+        || (step.if !== undefined && !(step.if === "always()" && step.run === STOP_POSTGRES)))
+      || runs(job).filter((command) => command === WORKER_SHARD_COMMAND).length !== 1) {
+    failures.push("Worker partitions must run the closed selector without conditional or tolerated failures");
+  }
+  if (JSON.stringify(workflow.jobs[WORKER_AGGREGATE_JOB]) !== JSON.stringify(WORKER_AGGREGATE_CONTRACT)) {
+    failures.push("Worker gate must always require the successful result of every partition");
+  }
+  return failures;
+}
+
 // ---------------------------------------------------------------------------
 // Workflow contract
 // ---------------------------------------------------------------------------
@@ -261,8 +299,8 @@ test("hosted-backend is read-only: contents read, no secrets, no environments, p
   for (const [id, job] of Object.entries(workflow.jobs)) {
     assert.equal(job.permissions, undefined, `${id} inherits contents: read`);
     assert.equal(job.environment, undefined, `${id} has no environment`);
-    if (id === AGGREGATE_JOB) {
-      assert.deepEqual(job, AGGREGATE_CONTRACT, "the aggregate runs only a shell result check, with no checkout or actions");
+    if (Object.hasOwn(AGGREGATES, id)) {
+      assert.deepEqual(job, AGGREGATES[id], "the aggregate runs only a shell result check, with no checkout or actions");
       continue;
     }
     for (const step of job.steps) {
@@ -316,22 +354,30 @@ test("no run block interpolates GitHub expressions into a shell; only closed sha
         assert.equal(value, "${{ needs.postgres-17-suite.result }}");
         continue;
       }
+      if (id === "worker-gate" && name === "WORKER_SUITE_SHARD") {
+        assert.equal(value, "${{ matrix.shard }}");
+        continue;
+      }
+      if (id === WORKER_AGGREGATE_JOB && name === "WORKER_SUITE_RESULT") {
+        assert.equal(value, "${{ needs.worker-gate.result }}");
+        continue;
+      }
       assert.doesNotMatch(value, /\$\{\{/u, `${id} env ${name} is static`);
     }
   }
 });
 
-test("three execution jobs run the unchanged Worker and Cloud Run gates and all routed PostgreSQL shards", async () => {
+test("execution jobs run every Worker and PostgreSQL partition and the unchanged Cloud Run gate", async () => {
   const { workflow } = await loadWorkflow();
-  assert.deepEqual(Object.keys(workflow.jobs), ["worker-gate", "cloud-run-check", "postgres-17-suite", AGGREGATE_JOB]);
+  assert.deepEqual(Object.keys(workflow.jobs), ["worker-gate", WORKER_AGGREGATE_JOB, "cloud-run-check", "postgres-17-suite", AGGREGATE_JOB]);
   const timeouts = { "worker-gate": 60, "cloud-run-check": 30, "postgres-17-suite": 45 };
   const gates = {
-    "worker-gate": "npm --prefix apps/worker run check",
+    "worker-gate": WORKER_SHARD_COMMAND,
     "cloud-run-check": "npm --prefix apps/worker/cloud-run run check",
     "postgres-17-suite": SHARD_COMMAND,
   };
   for (const [id, job] of Object.entries(workflow.jobs)) {
-    if (id === AGGREGATE_JOB) continue; // Pinned independently as an always-running, fail-closed aggregate.
+    if (Object.hasOwn(AGGREGATES, id)) continue; // Pinned independently as always-running, fail-closed aggregates.
     assert.equal(job["runs-on"], "ubuntu-24.04", id);
     assert.equal(job["timeout-minutes"], timeouts[id], id);
     assert.equal(job.services, undefined, `${id} starts PostgreSQL through the reviewed script`);
@@ -364,12 +410,45 @@ test("three execution jobs run the unchanged Worker and Cloud Run gates and all 
     "test/hosted-backend-workflow.test.js",
     "apps/worker/scripts/migration-numbering.check.mjs",
     "apps/worker/scripts/ci-postgres-suite.check.mjs",
+    "apps/worker/scripts/ci-worker-suite.check.mjs",
   ].join(" "));
   const site = worker.findIndex((command) => command.includes("node scripts/build-public-release-site.js"));
   assert.ok(guard >= 0 && site > guard && worker.indexOf(gates["worker-gate"]) > site);
   assert.match(worker[site], /--output "\$GITHUB_WORKSPACE\/\.release-build\/public-release-site"/u);
   assert.match(worker[site], /--social-image "\$social_card"/u);
-  assert.deepEqual(workflow.jobs["worker-gate"].env, { WRANGLER_SEND_METRICS: "false" });
+  assert.deepEqual(workflow.jobs["worker-gate"].env, { WRANGLER_SEND_METRICS: "false", WORKER_SUITE_SHARD: "${{ matrix.shard }}" });
+});
+
+test("all four canonical Worker partitions and the fail-closed Worker gate aggregate are mandatory", async () => {
+  const { workflow } = await loadWorkflow();
+  assert.deepEqual(WORKER_SUITE_SHARDS, ["vitest-1", "vitest-2", "analytics", "checks"]);
+  assert.deepEqual(workerShardFailures(workflow), []);
+  for (const mutate of [
+    (copy) => copy.jobs["worker-gate"].strategy.matrix.shard.pop(),
+    (copy) => copy.jobs["worker-gate"].strategy.matrix.shard.push("vitest-1"),
+    (copy) => { copy.jobs["worker-gate"].strategy.matrix.shard[0] = "unknown"; },
+    (copy) => { copy.jobs["worker-gate"].strategy["fail-fast"] = true; },
+    (copy) => { copy.jobs["worker-gate"]["continue-on-error"] = true; },
+    (copy) => { copy.jobs["worker-gate"].if = "false"; },
+    (copy) => { copy.jobs["worker-gate"].env.WORKER_SUITE_SHARD = "vitest-1"; },
+    (copy) => { copy.jobs["worker-gate"].steps.find((step) => step.run === WORKER_SHARD_COMMAND).if = "false"; },
+    (copy) => { copy.jobs["worker-gate"].steps.find((step) => step.run === WORKER_SHARD_COMMAND)["continue-on-error"] = true; },
+    (copy) => { copy.jobs["worker-gate"].steps.find((step) => step.run === WORKER_SHARD_COMMAND).run += " || true"; },
+    (copy) => { delete copy.jobs[WORKER_AGGREGATE_JOB]; },
+    (copy) => { delete copy.jobs[WORKER_AGGREGATE_JOB].if; },
+    (copy) => { copy.jobs[WORKER_AGGREGATE_JOB].name = "Worker incomplete"; },
+    (copy) => { copy.jobs[WORKER_AGGREGATE_JOB].needs = []; },
+    (copy) => { copy.jobs[WORKER_AGGREGATE_JOB].env.WORKER_SUITE_RESULT = "success"; },
+    (copy) => { copy.jobs[WORKER_AGGREGATE_JOB].steps[0].run = "true"; },
+    (copy) => { copy.jobs[WORKER_AGGREGATE_JOB].steps[0]["continue-on-error"] = true; },
+  ]) {
+    const copy = structuredClone(workflow);
+    mutate(copy);
+    assert.ok(workerShardFailures(copy).length > 0);
+  }
+  // Success is the sole accepted matrix result; skipped, cancelled, failed and
+  // absent results cannot satisfy the existing required check name.
+  assert.equal(workflow.jobs[WORKER_AGGREGATE_JOB].steps[0].run, 'test "$WORKER_SUITE_RESULT" = success');
 });
 
 test("all four canonical PostgreSQL shards and the fail-closed aggregate are mandatory", async () => {
@@ -611,8 +690,8 @@ const runMatches = (pattern) => (step) => typeof step.run === "string" && patter
 function toolchainFailures(workflow) {
   const failures = [];
   for (const [id, job] of Object.entries(workflow.jobs)) {
-    if (id === AGGREGATE_JOB) {
-      if (JSON.stringify(job) !== JSON.stringify(AGGREGATE_CONTRACT)) failures.push("unreviewed PostgreSQL aggregate");
+    if (Object.hasOwn(AGGREGATES, id)) {
+      if (JSON.stringify(job) !== JSON.stringify(AGGREGATES[id])) failures.push(`unreviewed ${id} aggregate`);
       continue;
     }
     const plan = NODE_PLAN[id];
