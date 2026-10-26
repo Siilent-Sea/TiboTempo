@@ -219,11 +219,33 @@ describe("source patch daily-fold-trusted-state", () => {
 
   it("returns exactly the checked fold's state after every record, past the top-K", () => {
     let checked = createV11DailyProjectionValues(day), trusted = createV11DailyProjectionValues(day);
-    for (const record of records(900)) {
+    // Group early repeats without changing first appearances or dropping any
+    // records: the checked oracle need not repeatedly validate a nearly full
+    // state before all cells arrive. Keep the last 200 shuffled records in
+    // their original order to exercise updates and overflow at full capacity.
+    const input = records(900), groups = new Map<string, unknown[]>();
+    const keyOf = (record: unknown) => {
+      const { provider, modelId } = record as { provider: string; modelId: string };
+      return JSON.stringify([provider, modelId]);
+    };
+    for (const record of input.slice(0, 700)) {
+      const key = keyOf(record), group = groups.get(key) ?? [];
+      group.push(record); groups.set(key, group);
+    }
+    const ordered = [...groups.values()].flat().concat(input.slice(700)), originals = new Set(input);
+    expect(ordered).toHaveLength(900);
+    expect(new Set(ordered).size).toBe(900);
+    expect(ordered.every((record) => originals.has(record))).toBe(true);
+    expect([...new Set(ordered.map(keyOf))]).toEqual([...new Set(input.map(keyOf))]);
+    expect(ordered.slice(700)).toEqual(input.slice(700));
+    let overflowComparisons = 0;
+    for (const record of ordered) {
       checked = foldV11DailyProjectionValues(checked, [record]);
       trusted = foldV11DailyProjectionValuesTrusted(trusted, [record]);
       expect(JSON.stringify(trusted)).toBe(JSON.stringify(checked));
+      if (checked.omitted.usageEvents > 0) overflowComparisons += 1;
     }
+    expect(overflowComparisons).toBeGreaterThanOrEqual(200);
     expect(checked.cells).toHaveLength(MAX_V11_DAILY_MODEL_CELLS);
     expect(checked.omitted.usageEvents).toBeGreaterThan(0);
     validateV11DailyProjectionValues(trusted);
