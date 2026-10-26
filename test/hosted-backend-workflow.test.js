@@ -48,6 +48,12 @@ const AGGREGATE_CONTRACT = Object.freeze({
   steps: [{ name: "Require every canonical PostgreSQL shard to pass", run: 'test "$PG_SUITE_RESULT" = success' }],
 });
 const WORKER_SHARD_COMMAND = 'node apps/worker/scripts/ci-worker-suite.mjs --shard "$WORKER_SUITE_SHARD"';
+const WORKER_ZSH_STEP = Object.freeze({
+  name: "Install zsh for the production-tier caller checks",
+  if: "matrix.shard == 'checks'",
+  run: "set -euo pipefail\nsudo apt-get update\nsudo apt-get install --yes --no-install-recommends zsh\nzsh --version\n",
+});
+const isWorkerZshStep = (step) => JSON.stringify(step) === JSON.stringify(WORKER_ZSH_STEP);
 const WORKER_AGGREGATE_JOB = "worker-complete";
 const WORKER_AGGREGATE_CONTRACT = Object.freeze({
   name: "Worker gate",
@@ -249,9 +255,13 @@ function workerShardFailures(workflow) {
       || job?.if !== undefined || job?.["continue-on-error"] !== undefined
       || !Array.isArray(job?.steps)
       || job.steps.some((step) => step["continue-on-error"] !== undefined
-        || (step.if !== undefined && !(step.if === "always()" && step.run === STOP_POSTGRES)))
+        || (step.if !== undefined && !(step.if === "always()" && step.run === STOP_POSTGRES) && !isWorkerZshStep(step)))
       || runs(job).filter((command) => command === WORKER_SHARD_COMMAND).length !== 1) {
     failures.push("Worker partitions must run the closed selector without conditional or tolerated failures");
+  }
+  const zshSteps = job?.steps?.filter(isWorkerZshStep) ?? [];
+  if (zshSteps.length !== 1 || job.steps.indexOf(zshSteps[0]) >= job.steps.findIndex((step) => step.run === WORKER_SHARD_COMMAND)) {
+    failures.push("Worker checks must install and verify zsh before running the canonical partition");
   }
   if (JSON.stringify(workflow.jobs[WORKER_AGGREGATE_JOB]) !== JSON.stringify(WORKER_AGGREGATE_CONTRACT)) {
     failures.push("Worker gate must always require the successful result of every partition");
@@ -399,7 +409,8 @@ test("execution jobs run every Worker and PostgreSQL partition and the unchanged
 
     const last = job.steps.at(-1);
     assert.deepEqual([last.if, last.run?.trim()], ["always()", STOP_POSTGRES], `${id} always stops PostgreSQL`);
-    assert.equal(job.steps.filter((step) => step.if !== undefined).length, 1, `${id} has one conditional step`);
+    assert.equal(job.steps.filter((step) => step.if !== undefined).length, id === "worker-gate" ? 2 : 1,
+      `${id} has only its reviewed conditional prerequisite and cleanup steps`);
   }
   const worker = runs(workflow.jobs["worker-gate"]);
   // This contract test runs in CI too, so a change that only a local root
@@ -417,6 +428,28 @@ test("execution jobs run every Worker and PostgreSQL partition and the unchanged
   assert.match(worker[site], /--output "\$GITHUB_WORKSPACE\/\.release-build\/public-release-site"/u);
   assert.match(worker[site], /--social-image "\$social_card"/u);
   assert.deepEqual(workflow.jobs["worker-gate"].env, { WRANGLER_SEND_METRICS: "false", WORKER_SUITE_SHARD: "${{ matrix.shard }}" });
+});
+
+test("the Worker checks route requires a working zsh before its production-tier caller tests", async () => {
+  const { workflow } = await loadWorkflow();
+  assert.deepEqual(workerShardFailures(workflow), []);
+  for (const mutate of [
+    (steps, index) => steps.splice(index, 1),
+    (steps, index) => steps.push(structuredClone(steps[index])),
+    (steps, index) => { steps[index].if = "matrix.shard == 'analytics'"; },
+    (steps, index) => { delete steps[index].if; },
+    (steps, index) => { steps[index]["continue-on-error"] = true; },
+    (steps, index) => { steps[index].run = steps[index].run.replace("set -euo pipefail\n", ""); },
+    (steps, index) => { steps[index].run = steps[index].run.replace("sudo apt-get update\n", ""); },
+    (steps, index) => { steps[index].run = steps[index].run.replace(" zsh\n", " zsh || true\n"); },
+    (steps, index) => { steps[index].run = steps[index].run.replace("zsh --version\n", ""); },
+    (steps, index) => steps.push(...steps.splice(index, 1)),
+  ]) {
+    const copy = structuredClone(workflow);
+    const steps = copy.jobs["worker-gate"].steps;
+    mutate(steps, steps.findIndex(isWorkerZshStep));
+    assert.ok(workerShardFailures(copy).length > 0);
+  }
 });
 
 test("all four canonical Worker partitions and the fail-closed Worker gate aggregate are mandatory", async () => {

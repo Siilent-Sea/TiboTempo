@@ -127,6 +127,16 @@ jobs:
           check-latest: false
           package-manager-cache: false
 
+      # gcp:fastpath:scripts-check executes the maintained production-tier
+      # caller's zsh functions, including its signal and cleanup behavior.
+      - name: Install zsh for the production-tier caller checks
+        if: matrix.shard == 'checks'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends zsh
+          zsh --version
+
       # gcp:fastpath:scripts-check, run by the Worker gate, imports Cloud Run host
       # modules, so this job needs the Cloud Run lockfile as well.
       - name: Install locked root, Worker and Cloud Run dependencies
