@@ -36,32 +36,80 @@ function add(bins, at, value) {
   if (!bins.has(at)) bins.set(at, []);
   bins.get(at).push(value);
 }
-export function modelPerformanceProjection(rows, { period = 'all', speedMode = 'standard', now = Date.now(), historyProgress = null, rolling = false } = {}) {
+// The local display calendar is independent of UTC telemetry publication.
+export function validModelPerformanceTimeZone(value) {
+  if (typeof value !== 'string' || !/^[A-Za-z][A-Za-z0-9_+/-]{0,99}$/u.test(value)) return false;
+  try { new Intl.DateTimeFormat('en-US', { timeZone: value }).format(0); return true; }
+  catch { return false; }
+}
+
+function calendar(timeZone) {
+  if (timeZone === 'UTC') return {
+    dayStart(at, offset = 0) { return Math.floor(at / DAY) * DAY + offset * DAY; },
+    binStart(at, interval) {
+      const size = interval === 'week' ? 7 * DAY : DAY;
+      const anchor = interval === 'week' ? 4 * DAY : 0;
+      return Math.floor((at - anchor) / size) * size + anchor;
+    },
+  };
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone, year: 'numeric', month: 'numeric', day: 'numeric',
+  });
+  const civil = at => {
+    const parts = Object.fromEntries(formatter.formatToParts(at)
+      .filter(part => ['year', 'month', 'day'].includes(part.type))
+      .map(part => [part.type, Number(part.value)]));
+    return Date.UTC(parts.year, parts.month - 1, parts.day);
+  };
+  const starts = new Map();
+  const midnight = day => {
+    if (starts.has(day)) return starts.get(day);
+    // Locate the first instant of this civil date. Unlike a fixed UTC offset,
+    // this handles 23/25-hour dates and zones whose clocks jump at midnight.
+    let low = day - 2 * DAY, high = day + 2 * DAY;
+    while (high - low > 1) {
+      const middle = Math.floor((low + high) / 2);
+      if (civil(middle) < day) low = middle;
+      else high = middle;
+    }
+    starts.set(day, high);
+    return high;
+  };
+  return {
+    dayStart(at, offset = 0) { return midnight(civil(at) + offset * DAY); },
+    binStart(at, interval) {
+      const day = civil(at);
+      return midnight(interval === 'week'
+        ? day - ((new Date(day).getUTCDay() + 6) % 7) * DAY : day);
+    },
+  };
+}
+
+export function modelPerformanceProjection(rows, { period = 'all', speedMode = 'standard', timeZone = 'UTC', now = Date.now(), historyProgress = null, rolling = false } = {}) {
   if (!['1', '7', '30', 'all'].includes(period) || !SPEED_MODES.includes(speedMode) || !count(now) || !Array.isArray(rows) || rows.length > 100000
-      || !progress(historyProgress) || typeof rolling !== 'boolean')
+      || !progress(historyProgress) || typeof rolling !== 'boolean' || !validModelPerformanceTimeZone(timeZone))
     throw new Error('invalid_timing_projection');
+  const dates = calendar(timeZone);
   const known = rows.filter(r => r && LABELS.has(r.model) && count(r.at) && r.at <= now);
   const selected = known.filter(r => r.speed_mode === speedMode);
   const windowStart = period === 'all' ? 0
     : rolling || period === '1' ? Math.max(0, now - Number(period) * DAY)
-    : Math.floor(now / DAY) * DAY - (Number(period) - 1) * DAY;
+    : Math.max(0, dates.dayStart(now, 1 - Number(period)));
   const excludedUnknownTurns = known.filter(r => !SPEED_MODES.includes(r.speed_mode)
     && r.at >= windowStart).length;
   const end = now;
   const start = period === 'all' ? (selected.length ? selected.reduce((min, r) => Math.min(min, r.at), now) : null)
     : rolling || period === '1' ? Math.max(0, now - Number(period) * DAY)
-    : Math.floor(now / DAY) * DAY - (Number(period) - 1) * DAY;
+    : Math.max(0, dates.dayStart(now, 1 - Number(period)));
   const interval = period === 'all' && start !== null && end - start > 366 * DAY ? 'week' : 'day';
-  const size = interval === 'week' ? 7 * DAY : DAY;
-  // Align weeks to Monday UTC; daily bins to midnight UTC.
-  const anchor = interval === 'week' ? 4 * DAY : 0;
+  // Align bins to the requested civil calendar; UTC remains the API default.
   const groups = new Map();
   for (const r of selected) {
     if (r.at < start) continue;
     if (!groups.has(r.model)) groups.set(r.model, { id: r.model, label: LABELS.get(r.model),
       turns: 0, speedTurns: 0, ttftTurns: 0, timedResponses: 0, toolFreeTurns: 0,
       speed: new Map(), latency: new Map(), toolFree: new Map() });
-    const m = groups.get(r.model), at = Math.floor((r.at - anchor) / size) * size + anchor;
+    const m = groups.get(r.model), at = dates.binStart(r.at, interval);
     m.turns++;
     if (['receipt', 'legacy'].includes(r.sample_method) && positive(r.sample_tokens)
       && positive(r.sample_duration) && positive(r.sample_responses)
@@ -77,8 +125,8 @@ export function modelPerformanceProjection(rows, { period = 'all', speedMode = '
     }
     if (count(r.ttft)) { m.ttftTurns++; add(m.latency, at, r.ttft / 1000); }
   }
-  return { schemaVersion: 5, method: 5, status: 'ready', collecting: false, stale: false,
-    updatedAt: new Date(now).toISOString(), period, speedMode, excludedUnknownTurns, interval, start, end, historyProgress,
+  return { schemaVersion: 6, method: 5, status: 'ready', collecting: false, stale: false,
+    updatedAt: new Date(now).toISOString(), period, speedMode, timeZone, excludedUnknownTurns, interval, start, end, historyProgress,
     models: [...LABELS.keys()].filter(id => groups.has(id)).map(id => {
       const { speed, latency, toolFree, ...m } = groups.get(id);
       return { ...m, speed: [{ method: 'speed', points: points(speed) }],

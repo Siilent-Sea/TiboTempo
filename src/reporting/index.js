@@ -32,4 +32,4 @@ export {
   projectUsageExplanation,
   unavailableUsageExplanation,
 } from "./usage-explainer.js";
-export { modelPerformanceProjection } from './model-performance.js';
+export { modelPerformanceProjection, validModelPerformanceTimeZone } from './model-performance.js';

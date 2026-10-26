@@ -1,3 +1,4 @@
+import { validModelPerformanceTimeZone } from '../../src/application/index.js';
 import {
   createTelemetryPerformanceClient,
   createTelemetryPerformanceScheduler,
@@ -5240,11 +5241,14 @@ function createPreparedLocalCompanionServer({
         const period = url.searchParams.get("period");
         const endAt = url.searchParams.get("endAt");
         const speedMode = url.searchParams.get("speedMode") ?? "standard";
+        const timeZone = url.searchParams.get("timeZone") ?? "UTC";
         const end = endAt === null ? null : Date.parse(endAt);
         if (url.searchParams.getAll("period").length !== 1
             || url.searchParams.getAll("endAt").length > 1
+            || url.searchParams.getAll("timeZone").length > 1
+            || !validModelPerformanceTimeZone(timeZone)
             || url.searchParams.getAll("speedMode").length > 1
-            || entries.some(([key]) => !["period", "endAt", "speedMode"].includes(key))
+            || entries.some(([key]) => !["period", "endAt", "speedMode", "timeZone"].includes(key))
             || !["standard", "fast", "ultrafast"].includes(speedMode)
             || !["1", "7", "30", "all"].includes(period)
             || (endAt !== null && (!Number.isSafeInteger(end) || end < 0
@@ -5253,7 +5257,7 @@ function createPreparedLocalCompanionServer({
           return;
         }
         try {
-          send(response, 200, await readModelPerformance(period, { speedMode, ...(endAt === null ? {} : { endAt }) }));
+          send(response, 200, await readModelPerformance(period, { speedMode, timeZone, ...(endAt === null ? {} : { endAt }) }));
         } catch {
           sendError(response, 503, "model_performance_unavailable");
         }

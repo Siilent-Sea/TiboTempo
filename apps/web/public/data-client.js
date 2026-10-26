@@ -16,6 +16,8 @@
  * responses, but never silently turn a failure into real-looking data.
  */
 
+import { validPerformanceTimeZone } from "./performance-calendar.js";
+
 import {
   codexCacheReasoningConfiguration,
   REVIEWED_CODEX_MODEL_IDS,
@@ -6668,10 +6670,14 @@ export class LocalCompanionClient {
     return normalizeDashboardPayload({}, fragments);
   }
 
-  modelPerformance(period = "all", { signal, endAt, speedMode = "standard" } = {}) {
+  modelPerformance(period = "all", { signal, endAt, speedMode = "standard", timeZone } = {}) {
     if (!["1", "7", "30", "all"].includes(period)) throw new RangeError("Unsupported display period");
     if (!["standard", "fast", "ultrafast"].includes(speedMode)) throw new RangeError("Unsupported speed mode");
     const query = new URLSearchParams({ period, speedMode });
+    if (timeZone !== undefined) {
+      if (!validPerformanceTimeZone(timeZone)) throw new RangeError("Unsupported time zone");
+      query.set("timeZone", timeZone);
+    }
     if (endAt !== undefined) {
       const end = Date.parse(endAt);
       if (typeof endAt !== "string" || !Number.isSafeInteger(end) || end < 0

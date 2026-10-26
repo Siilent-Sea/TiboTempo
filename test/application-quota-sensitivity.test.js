@@ -68,6 +68,7 @@ const APPLICATION_PUBLIC_EXPORTS = [
   "selectProductionParticipantIdentity",
   "selectProductionClaudeCallbackBackend",
   "usageExplanationCatalog",
+  "validModelPerformanceTimeZone",
 ].sort();
 const PRODUCTION_EXTENSIONS = new Set([
   ".js",

@@ -104,6 +104,12 @@ const REGISTRY_PINS = Object.freeze([
   // Kernel 18: classify shared proof reads in the existing correction-source
   // statement family. Query results, vendor and prices remain unchanged.
   "5f808f13dccf3aa6eb919bb56d7ca9b57b1ea2e474fc1bb5847102a73c78a5fd",
+  // Kernel 19: reuse v1.2 pair eligibility across the occurrence expansion.
+  // Query results, bounds, vendor, prices and orchestration method are unchanged.
+  "e32ccedf43fac51b487a9ab444608acf9a4070f2cd786b7f409741826784f1ff",
+  // Kernel 20: fast closed-shape validation with the historical comparison as
+  // fallback. Accepted states, arithmetic, prices and method are unchanged.
+  "3d19c89d3e6da520bed8b08d9e497747d390a64f34eff9137fefbf918b0f67e4",
 ]);
 const ENTRY_KEYS = ["computeClosureSha256", "kernelId", "methodVersion", "priceRegistrySha256", "priceRegistryVersion",
   "productionCommit", "vendorManifestSha256"];

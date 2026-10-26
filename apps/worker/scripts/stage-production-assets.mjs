@@ -77,6 +77,7 @@ const PUBLIC_RELEASE_ASSET_BASENAMES = Object.freeze([
   "model-performance.css",
   "model-performance.js",
   "model-visuals.js",
+  "performance-calendar.js",
   "privacy.html",
   "robots.txt",
   "sitemap.xml",

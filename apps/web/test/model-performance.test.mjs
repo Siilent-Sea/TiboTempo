@@ -8,7 +8,7 @@ const point = (at = 2 * DAY, n = 5) => ({ at, n,
   p10: n < 5 ? null : 30, p25: n < 5 ? null : 40, median: 50,
   p75: n < 5 ? null : 60, p90: n < 5 ? null : 70 });
 function payload() {
-  return { schemaVersion: 5, method: 5, speedMode: 'standard', excludedUnknownTurns: 0, status: 'ready', collecting: false, stale: false, updatedAt: '2026-09-09T12:00:00.000Z', period: 'all', interval: 'day', start: DAY, end: 9 * DAY, historyProgress: null,
+  return { schemaVersion: 6, method: 5, timeZone: 'UTC', speedMode: 'standard', excludedUnknownTurns: 0, status: 'ready', collecting: false, stale: false, updatedAt: '2026-09-09T12:00:00.000Z', period: 'all', interval: 'day', start: DAY, end: 9 * DAY, historyProgress: null,
     models: [{ id: 'gpt-5.6-sol', label: 'Sol', turns: 20, speedTurns: 10, ttftTurns: 15, timedResponses: 45, toolFreeTurns: 0, toolFree: [],
       speed: [{ method: 'speed', points: [point(), point(3 * DAY)] }], ttft: [point(), point(3 * DAY), point(4 * DAY)] }] };
 }
@@ -207,7 +207,7 @@ function focusHarness() {
     clearTimeout: id => { timers.delete(id); timerDelays.delete(id); },
     MutationObserver: class { constructor(callback) { visibilityObserver = callback; } observe() {} disconnect() {} },
   };
-  return { root, documentRef, windowRef, show: () => { inactive = false; },
+  return { root, documentRef, windowRef, systemTimeZone: () => 'UTC', show: () => { inactive = false; },
     navigate: (shown) => { inactive = !shown; visibilityObserver?.(); },
     find: key => root.all().find(node => node.dataset.performanceFocus === key),
     timerIds: () => [...timers.keys()], timerDelay: id => timerDelays.get(id),
@@ -1188,4 +1188,135 @@ test('client rejects unsupported modes, preserves endAt, and page rejects a wron
   assert.equal(hasPanel(dom), false);
   assert.ok(dom.find('retry'));
   controller.destroy();
+});
+
+const stamp = value => Date.parse(value);
+test('zoned date ticks and hover use local midnight across Beijing and fractional-offset days', () => {
+  for (const [zone, midnight] of [
+    ['Asia/Shanghai', '2026-10-24T16:00:00.000Z'],
+    ['Asia/Kathmandu', '2026-10-24T18:15:00.000Z'],
+    ['Australia/Adelaide', '2026-10-24T13:30:00.000Z'],
+  ]) {
+    const start = stamp(midnight), domain = { start, end: start + 2 * DAY };
+    assert.deepEqual(performanceDateTicks(domain, zone), [start, start + DAY, start + 2 * DAY]);
+    assert.equal(performanceHoverBin(0, domain, 'day', zone), start);
+    assert.equal(performanceHoverBin(.5, domain, 'day', zone), start + DAY);
+    assert.equal(new Intl.DateTimeFormat('en-GB', { timeZone: zone, day: 'numeric' }).format(start), '25');
+  }
+});
+
+test('DST transitions do not invent missing days, midnight gaps work, and weekly bins stay on Monday', () => {
+  for (const dates of [
+    ['2026-03-08T05:00:00.000Z', '2026-03-09T04:00:00.000Z', '2026-03-10T04:00:00.000Z'],
+    ['2026-11-01T04:00:00.000Z', '2026-11-02T05:00:00.000Z', '2026-11-03T05:00:00.000Z'],
+  ]) {
+    const instants = dates.map(stamp), domain = { start: instants[0], end: instants[2] };
+    assert.deepEqual(performanceDateTicks(domain, 'America/New_York'), instants);
+    assert.deepEqual(performanceSegments(instants.map(at => point(at)), 'day', 'America/New_York').map(s => s.dashed), [false, false]);
+    const fraction = (instants[1] - domain.start) / (domain.end - domain.start);
+    assert.equal(performanceHoverBin(fraction, domain, 'day', 'America/New_York'), instants[1]);
+  }
+  const weekly = ['2026-10-26T04:00:00.000Z', '2026-11-02T05:00:00.000Z'].map(stamp);
+  assert.equal(performanceSegments(weekly.map(at => point(at)), 'week', 'America/New_York')[0].dashed, false);
+  assert.equal(performanceHoverBin(1, { start: weekly[0], end: weekly[1] }, 'week', 'America/New_York'), weekly[1]);
+  assert.deepEqual(performanceDateTicks({ start: stamp('2018-11-04T03:00:00.000Z'), end: stamp('2018-11-05T02:00:00.000Z') }, 'America/Sao_Paulo'),
+    [stamp('2018-11-04T03:00:00.000Z'), stamp('2018-11-05T02:00:00.000Z')], 'a nonexistent midnight starts at the first real instant that day');
+});
+
+test('the DTO and client require valid explicit time-zone evidence and retain local request bounds', async () => {
+  for (const timeZone of [null, '', 'not/a-zone', 'UTC&path=x', '../private', 'a'.repeat(101)]) {
+    assert.equal(normalizeModelPerformance({ ...payload(), timeZone }), null);
+    const client = new LocalCompanionClient({ fetchImpl: () => { throw new Error('must not fetch'); } });
+    assert.throws(() => client.modelPerformance('7', { timeZone }), RangeError);
+  }
+  const legacy = payload(); delete legacy.timeZone; legacy.schemaVersion = 5;
+  assert.equal(normalizeModelPerformance(legacy), null, 'UTC v5 must not masquerade as local-day results');
+  const calls = [], client = new LocalCompanionClient({ fetchImpl: async (...args) => {
+    calls.push(args); return { ok: true, status: 200, json: async () => payload() };
+  } });
+  await client.modelPerformance('7', { timeZone: 'Asia/Shanghai', speedMode: 'fast', endAt: '2026-10-25T04:00:00.000Z' });
+  const query = new URL(calls[0][0], 'http://localhost').searchParams;
+  assert.equal(query.get('timeZone'), 'Asia/Shanghai');
+  assert.equal(query.get('endAt'), '2026-10-25T04:00:00.000Z');
+});
+
+function zonedPayload(period, timeZone, speedMode = 'standard') {
+  const data = modePayload(period, speedMode, { timeZone, start: stamp('2026-10-23T00:00:00.000Z'), end: stamp('2026-10-25T12:00:00.000Z'), updatedAt: '2026-10-25T12:00:00.000Z' });
+  const at = stamp(timeZone === 'UTC' ? '2026-10-25T00:00:00.000Z' : '2026-10-24T16:00:00.000Z');
+  data.models[0].speed[0].points = [point(at)]; data.models[0].ttft = [point(at)];
+  return data;
+}
+
+test('system time zone is the default independently of language; UTC is persisted and caches never relabel measurements', async () => {
+  const dom = focusHarness(), utc = Promise.withResolvers(); let stored = null;
+  dom.windowRef.localStorage.setItem = (_key, value) => { stored = JSON.parse(value); };
+  const { calls, client } = performanceClient((period, { timeZone, speedMode }) => timeZone === 'UTC'
+    ? utc.promise : zonedPayload(period, timeZone, speedMode));
+  let language = 'zh-CN';
+  const controller = mountModelPerformance({ ...dom, systemTimeZone: () => 'Asia/Shanghai', client,
+    locale: () => language, t: (key, values) => translate(key, values, language) });
+  dom.show(); await controller.refresh(); await settle();
+  assert.equal(calls[0].options.timeZone, 'Asia/Shanghai');
+  assert.equal(dom.find('time-zone-system').attributes['aria-pressed'], 'true');
+  assert.ok(dom.root.all().some(node => node.textContent === '每日中位数 · Asia/Shanghai'));
+  assert.ok(dom.root.all().some(node => node.attributes?.['aria-label']?.includes('2026年10月25日')));
+  language = 'en-US'; controller.render();
+  assert.ok(dom.root.all().some(node => node.textContent === 'Daily medians · Asia/Shanghai'));
+  dom.find('time-zone-utc').focus(); dom.find('time-zone-utc').listeners.click();
+  assert.equal(hasPanel(dom), false, 'UTC cannot relabel cached local-day data while pending');
+  assert.equal(dom.documentRef.activeElement, dom.find('time-zone-utc'));
+  assert.equal(calls.at(-1).options.timeZone, 'UTC');
+  assert.equal(stored.timeZoneMode, 'utc');
+  utc.resolve(zonedPayload('all', 'UTC')); await settle(); await settle();
+  assert.ok(dom.root.all().some(node => node.textContent === 'Daily medians · UTC'));
+  dom.find('time-zone-system').listeners.click();
+  assert.ok(hasPanel(dom), 'switching back immediately restores only its own local-day cache');
+  assert.equal(stored.timeZoneMode, 'system');
+  controller.destroy();
+  const restored = focusHarness();
+  restored.windowRef.localStorage.getItem = () => JSON.stringify({ timeZoneMode: 'utc' });
+  const restoredCalls = performanceClient((period, { timeZone }) => zonedPayload(period, timeZone));
+  const second = mountModelPerformance({ ...restored, systemTimeZone: () => 'Asia/Shanghai', client: restoredCalls.client, t: (key, values) => translate(key, values, 'en-US') });
+  restored.show(); await second.refresh();
+  assert.equal(restoredCalls.calls[0].options.timeZone, 'UTC');
+  assert.equal(restored.find('time-zone-utc').attributes['aria-pressed'], 'true');
+  second.destroy();
+});
+
+test('time-zone changes fence late responses and reject a mismatched server projection', async () => {
+  const dom = focusHarness(), late = Promise.withResolvers();
+  const { calls, client } = performanceClient((period, { timeZone }) => timeZone === 'Asia/Shanghai'
+    ? late.promise : zonedPayload(period, 'UTC'));
+  const controller = mountModelPerformance({ ...dom, systemTimeZone: () => 'Asia/Shanghai', client, t: (key, values) => translate(key, values, 'en-US') });
+  dom.show(); const initial = controller.refresh();
+  dom.find('time-zone-utc').listeners.click(); await settle();
+  assert.equal(calls[0].options.signal.aborted, true);
+  late.resolve(zonedPayload('all', 'Asia/Shanghai')); await initial; await settle();
+  assert.ok(dom.root.all().some(node => node.textContent === 'Daily medians · UTC'));
+  assert.equal(dom.root.all().some(node => node.textContent === 'Daily medians · Asia/Shanghai'), false);
+  controller.destroy();
+  const mismatch = focusHarness();
+  const invalid = mountModelPerformance({ ...mismatch, systemTimeZone: () => 'Asia/Shanghai', client: { modelPerformance: async () => zonedPayload('all', 'UTC') }, t: (key, values) => translate(key, values, 'en-US') });
+  mismatch.show(); await invalid.refresh();
+  assert.equal(hasPanel(mismatch), false); assert.ok(mismatch.find('retry'));
+  invalid.destroy();
+});
+
+test('frontend date geometry and DTO validation agree with backend calendar projections', async () => {
+  const { modelPerformanceProjection } = await import('../../../src/reporting/index.js');
+  for (const [timeZone, instant] of [
+    ['UTC', '2026-10-25T12:00:00.000Z'], ['Asia/Shanghai', '2026-10-25T12:00:00.000Z'],
+    ['Asia/Kathmandu', '2026-10-25T12:00:00.000Z'], ['America/New_York', '2026-11-03T12:00:00.000Z'],
+    ['Australia/Lord_Howe', '2026-10-06T12:00:00.000Z'], ['America/Santiago', '2026-09-08T12:00:00.000Z'],
+  ]) {
+    const now = stamp(instant);
+    const rows = Array.from({ length: 100 }, (_, i) => ({ at: now - i * 3_600_000, model: 'gpt-6-astra', speed_mode: 'fast',
+      ttft: 1000, sample_method: 'receipt', sample_tokens: 100, sample_duration: 1000, sample_responses: 1, sample_total_responses: 1 }));
+    const result = modelPerformanceProjection(rows, { timeZone, now, speedMode: 'fast', period: '7', rolling: true });
+    assert.ok(normalizeModelPerformance(result));
+    for (const { at } of result.models[0].ttft) {
+      const fraction = (at - result.start) / (result.end - result.start);
+      assert.equal(performanceHoverBin(fraction, result, 'day', timeZone), at, timeZone);
+    }
+  }
 });

@@ -118,6 +118,10 @@ export const LOCAL_COMPANION_STATIC_FILES = Object.freeze({
     file: "model-performance.js",
     type: "text/javascript; charset=utf-8",
   }),
+  "/performance-calendar.js": Object.freeze({
+    file: "performance-calendar.js",
+    type: "text/javascript; charset=utf-8",
+  }),
   "/model-performance.css": Object.freeze({
     file: "model-performance.css",
     type: "text/css; charset=utf-8",

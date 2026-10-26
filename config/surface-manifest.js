@@ -46,6 +46,7 @@ const SHARED_WEB_FILES = Object.freeze([
   "apps/web/public/model-performance.css",
   "apps/web/public/model-performance.js",
   "apps/web/public/model-visuals.js",
+  "apps/web/public/performance-calendar.js",
   "apps/web/public/navigation.js",
   "apps/web/public/reporting-period.js",
   "apps/web/public/styles.css",

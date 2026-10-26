@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createCodexPerformanceTimingParser } from '../src/providers/codex/logs.js';
+import { ROLLOUT_LINE_BYTES } from '../src/platform/index.js';
+import { modelPerformanceProjection } from '../src/reporting/index.js';
+import { projectTelemetryPerformanceDay } from '../src/contribution/index.js';
 
 const BASE = Date.parse('2026-09-01T12:00:00.000Z');
 const KEY = Buffer.alloc(32, 7);
@@ -128,11 +131,13 @@ function baselineLegacyFixture() {
     baselineOutput(202000), baselineCount(202000, 1200, 100), rows[8]];
 }
 
-function parse(rows, saved = null) {
+function parse(rows, saved = null, offset = 0) {
   const result = [];
   const parser = createCodexPerformanceTimingParser(KEY, saved, row => result.push(row));
   rows.forEach((row, index) => {
-    parser.line(Buffer.from(JSON.stringify(row)), index + 1, false);
+    const bytes = Buffer.isBuffer(row) ? row : Buffer.from(JSON.stringify(row));
+    parser.line(bytes.subarray(0, ROLLOUT_LINE_BYTES), offset + index + 1,
+      bytes.length > ROLLOUT_LINE_BYTES);
   });
   return { result, parser };
 }
@@ -237,6 +242,288 @@ test('mode is taken at task start and a post-completion toggle affects only late
   assert.equal(parsed[0].speed_mode, 'fast');
   assert.equal(parsed[0].speed_mode_source, 'rollout_thread_settings');
   assert.equal(parsed[1].speed_mode, 'standard');
+});
+
+function initialSettingsFixture(serviceTier = 'priority') {
+  return [
+    record(0, 'session_meta', { id: 'synthetic-session' }),
+    event(0, 'task_started'),
+    event(500, 'thread_settings_applied', {
+      turn_id: undefined, thread_id: 'synthetic-session',
+      thread_settings: { service_tier: serviceTier },
+    }),
+    context(500),
+    item(1000, 'synthetic-turn', 800, 1000, 'Reasoning'),
+    usage(1000, 'synthetic-turn', 'synthetic-response', 100, 100),
+    event(2000, 'task_complete', { duration_ms: 2000, time_to_first_token_ms: 800 }),
+  ];
+}
+
+test('first same-thread settings before any output initialize a mode after task start', () => {
+  for (const [tier, expected] of [['priority', 'fast'], ['default', 'standard'], ['ultrafast', 'ultrafast']]) {
+    const rows = initialSettingsFixture(tier);
+    for (let split = 1; split < rows.length; split++) {
+      const prefix = parse(rows.slice(0, split));
+      const [row] = parse(rows.slice(split), structuredClone(prefix.parser.state())).result;
+      assert.equal(row.speed_mode, expected, `${tier} checkpoint ${split}`);
+      assert.equal(row.speed_mode_source, 'rollout_thread_settings');
+      assert.equal(row.ttft, 800);
+      assert.equal(row.sample_duration, 200);
+    }
+  }
+});
+
+test('late initialization requires thread identity, unique turn, and no preceding output or tier', () => {
+  for (const [label, mutate] of [
+    ['missing thread identity', rows => { delete rows[2].payload.thread_id; }],
+    ['another thread', rows => { rows[2].payload.thread_id = 'other-synthetic-session'; }],
+    ['concurrent turn', rows => rows.splice(2, 0, event(100, 'task_started', { turn_id: 'other-synthetic-turn' }))],
+    ['known previous mode', rows => rows.splice(1, 0, settings(-1, 'default'))],
+    ['explicit prior unknown', rows => rows.splice(1, 0, settings(-1, null))],
+    ['earlier attributed output', rows => rows.splice(2, 0, baselineOutput(200))],
+    ['earlier unattributed output', rows => rows.splice(2, 0, record(200, 'response_item', { type: 'reasoning' }))],
+    ['earlier usage', rows => rows.splice(2, 0, usage(200, 'synthetic-turn', 'earlier-response', 10, 10))],
+  ]) {
+    const rows = initialSettingsFixture(); mutate(rows);
+    const result = parse(rows).result;
+    assert.equal(result.length, 1);
+    assert.notEqual(result[0].speed_mode, 'fast', label);
+  }
+});
+
+test('late initial settings cannot override earlier or missing first-output evidence', () => {
+  for (const [label, mutate] of [
+    ['delayed earlier item', rows => { rows[4].payload.started_at_ms = BASE + 400; }],
+    ['earlier first token', rows => { rows.at(-1).payload.time_to_first_token_ms = 400; }],
+    ['missing first token', rows => { delete rows.at(-1).payload.time_to_first_token_ms; }],
+    ['unattributed delayed output', rows => rows.splice(4, 0, record(800, 'response_item', { type: 'reasoning' }))],
+  ]) {
+    const rows = initialSettingsFixture(); mutate(rows);
+    assert.equal(rowFor(rows).speed_mode, 'unknown', label);
+  }
+  const changed = initialSettingsFixture();
+  changed.splice(6, 0, settings(1500, 'default'));
+  assert.equal(rowFor(changed).speed_mode, 'mixed');
+  const repeated = initialSettingsFixture();
+  repeated.splice(4, 0, settings(600, 'priority'));
+  assert.equal(rowFor(repeated).speed_mode, 'fast');
+});
+
+test('ambiguous output cannot initialize or retain a late named speed mode across checkpoints', async t => {
+  const cases = [
+    ['legacy assistant message', at => event(at, 'agent_message', { turn_id: undefined })],
+    ['legacy reasoning', at => event(at, 'agent_reasoning', { turn_id: undefined })],
+    ['legacy raw reasoning', at => event(at, 'agent_reasoning_raw_content', { turn_id: undefined })],
+    ...['agent_message_delta', 'agent_reasoning_delta', 'agent_reasoning_raw_content_delta']
+      .map(type => [type, at => event(at, type, { turn_id: undefined })]),
+    ...['agent_message', 'agent_reasoning', 'agent_reasoning_raw_content'].map(type => [
+      `malformed ${type}`, () => Buffer.from(`{"type":"event_msg","payload":{"type":"${type}",`),
+    ]),
+    ...['AgentMessage', 'Reasoning'].flatMap(type => [
+      [`${type} missing turn`, at => item(at, undefined, 100, 200, type), 200],
+      [`${type} orphan turn`, at => item(at, 'synthetic-orphan', 100, 200, type), 200],
+    ]),
+    ['completed item wrong thread', at => {
+      const row = item(at, 'synthetic-turn', 100, 200, 'AgentMessage');
+      row.payload.thread_id = 'synthetic-other-session';
+      return row;
+    }, null],
+    ['malformed completed item', () => Buffer.from('{"type":"event_msg","payload":{"type":"item_completed",'), 200],
+    ['malformed unclassified record', () => Buffer.from('{"synthetic":')],
+    ['missing record type', at => record(at, undefined, { type: 'agent_message' })],
+    ['null record type', at => record(at, null, { type: 'agent_message' })],
+    ['missing event type', at => record(at, 'event_msg', {})],
+    ['malformed event type', at => record(at, 'event_msg', { type: {} })],
+    ...['response_item', 'token_usage_record', 'event_msg'].flatMap(type => [
+      [`${type} null payload`, at => record(at, type, null)],
+      [`${type} array payload`, at => record(at, type, [])],
+    ]),
+    ['compacted record', at => record(at, 'compacted', {}), 200],
+    ['response compaction', at => record(at, 'response_item', { type: 'compaction' }), 200],
+    ['tool result', at => record(at, 'response_item', { type: 'function_call_output' })],
+    ['oversized assistant response', at => record(at, 'response_item', {
+      type: 'message', role: 'assistant',
+      internal_chat_message_metadata_passthrough: { turn_id: 'synthetic-turn' },
+      content: [{ type: 'output_text', text: 'x'.repeat(ROLLOUT_LINE_BYTES + 1) }],
+    })],
+    ['earlier attributed receipt', at => usage(Math.min(at, 400), 'synthetic-turn', 'synthetic-earlier', 10, 10)],
+    ['receipt missing turn', at => usage(at, undefined, 'synthetic-unattributed', 10, 10)],
+    ['receipt orphan turn', at => usage(at, 'synthetic-orphan', 'synthetic-unattributed', 10, 10)],
+    ['receipt wrong thread', at => {
+      const row = usage(at, 'synthetic-turn', 'synthetic-unattributed', 10, 10);
+      row.payload.thread_id = 'synthetic-other-session';
+      return row;
+    }, null],
+    ['legacy count without baseline', at => baselineCount(at, 10, 10)],
+    ['ambiguous legacy count', at => event(at, 'token_count', { info: {} })],
+  ];
+  for (const [label, evidence, sampleDuration = 400] of cases) {
+    for (const phase of ['before', 'delayed']) {
+      await t.test(`${label}: ${phase} initial declaration`, () => {
+        for (const [tier, mode] of [['priority', 'fast'], ['default', 'standard'], ['ultrafast', 'ultrafast']]) {
+          const rows = initialSettingsFixture(tier);
+          const firstContext = rows.splice(3, 1)[0];
+          firstContext.timestamp = new Date(BASE).toISOString();
+          rows.splice(1, 0, firstContext);
+          rows.splice(6, 0,
+            item(2000, 'synthetic-turn', 1800, 2000, 'AgentMessage'),
+            usage(2000, 'synthetic-turn', 'synthetic-second', 100, 200));
+          rows.at(-1).timestamp = new Date(BASE + 3000).toISOString();
+          rows.at(-1).payload.duration_ms = 3000;
+          if (label === 'earlier attributed receipt') {
+            for (const row of rows.filter(row => row.type === 'token_usage_record')) {
+              row.payload.turn_token_usage.output_tokens += 10;
+              row.payload.turn_token_usage.reasoning_output_tokens += 5;
+            }
+          }
+          rows.splice(phase === 'before' ? 3 : 4, 0, evidence(phase === 'before' ? 200 : 600));
+          rows.push(
+            context(4000, 'synthetic-clean-turn'),
+            event(4000, 'task_started', { turn_id: 'synthetic-clean-turn' }),
+            item(5000, 'synthetic-clean-turn', 4800, 5000, 'Reasoning'),
+            usage(5000, 'synthetic-clean-turn', 'synthetic-clean-response', 100, 100),
+            event(6000, 'task_complete', {
+              turn_id: 'synthetic-clean-turn', duration_ms: 2000, time_to_first_token_ms: 800,
+            }),
+          );
+          const expected = parse(rows).result;
+          assert.equal(expected.length, 2);
+          const [ambiguous, clean] = expected;
+          assert.ok(['unknown', 'mixed'].includes(ambiguous.speed_mode), `${tier}: no named speed cohort`);
+          if (phase === 'delayed') {
+            assert.equal(ambiguous.speed_mode, 'unknown');
+            assert.equal(ambiguous.speed_mode_source, 'unobserved');
+          }
+          assert.equal(ambiguous.ttft, 800, 'independent first-token timing is retained');
+          assert.equal(ambiguous.turn_duration, 3000, 'independent completion timing is retained');
+          assert.equal(ambiguous.sample_duration, sampleDuration, 'retain independently qualified receipt windows');
+          assert.equal(ambiguous.sample_tokens, sampleDuration === null ? null : sampleDuration / 2);
+          assert.equal(ambiguous.sample_method, sampleDuration === null ? null : 'receipt');
+          assert.equal(clean.speed_mode, mode, 'uncertain earlier output does not poison the next clean turn');
+          assert.equal(clean.speed_mode_source, 'rollout_thread_settings');
+          assert.equal(clean.sample_duration, 200);
+          assert.equal(clean.quality, 'complete');
+          for (let split = 1; split < rows.length; split++) {
+            const prefix = parse(rows.slice(0, split));
+            const saved = JSON.parse(JSON.stringify(prefix.parser.state()));
+            const suffix = parse(rows.slice(split), saved, split);
+            assert.deepEqual([...prefix.result, ...suffix.result], expected, `${tier} checkpoint ${split}`);
+          }
+          const knownAtStart = rows.slice();
+          const settingIndex = knownAtStart.findIndex(row => row.payload?.type === 'thread_settings_applied');
+          const priorSetting = knownAtStart.splice(settingIndex, 1)[0];
+          knownAtStart.splice(1, 0, { ...priorSetting, timestamp: new Date(BASE - 1).toISOString() });
+          const knownRows = parse(knownAtStart).result;
+          assert.equal(knownRows[0].speed_mode, mode, 'output uncertainty does not revoke a mode known at task start');
+          assert.deepEqual(knownRows.map((row, index) => ({ ...row,
+            speed_mode: expected[index].speed_mode, speed_mode_source: expected[index].speed_mode_source,
+          })), expected, 'changing only mode proof preserves every independent measurement');
+          const local = modelPerformanceProjection(expected, {
+            period: 'all', speedMode: mode, now: BASE + 7000,
+          });
+          assert.equal(local.models.reduce((sum, model) => sum + model.turns, 0), 1);
+          assert.equal(local.models.reduce((sum, model) => sum + model.speedTurns, 0), 1);
+          assert.equal(local.models.reduce((sum, model) => sum + model.ttftTurns, 0), 1);
+          const reports = projectTelemetryPerformanceDay(expected, {
+            day: '2026-09-01', provider: 'openai_codex', now: BASE + 7000,
+          });
+          assert.equal(reports.filter(report => report.speedMode === mode)
+            .reduce((sum, report) => sum + report.turns, 0), 1);
+          const uncertain = reports.filter(report => ['unknown', 'mixed'].includes(report.speedMode));
+          assert.equal(uncertain.reduce((sum, report) => sum + report.turns, 0), 1);
+          assert.equal(uncertain.reduce((sum, report) => sum + report.speedTurns, 0), sampleDuration === null ? 0 : 1);
+          assert.equal(uncertain.reduce((sum, report) => sum + report.ttftTurns, 0), 1);
+          assert.equal(uncertain.reduce((sum, report) => sum + report.completionTurns, 0), 1);
+        }
+      });
+    }
+  }
+});
+
+test('known input and unchanged usage do not block initial mode attribution across checkpoints', () => {
+  const cases = [
+    ...['user', 'system', 'developer'].map(role => [role, at => record(at, 'response_item', { type: 'message', role })]),
+    ['completed user input', at => item(at, 'synthetic-turn', 100, 200, 'UserMessage')],
+    ['legacy user input', at => event(at, 'user_message')],
+    ['initial zero usage', at => baselineCount(at, 0, 0)],
+    ['repeated zero usage delta', at => baselineCount(at, 100, 10), true],
+    ['quota-only snapshot', at => event(at, 'token_count', { info: null })],
+  ];
+  for (const [label, evidence, needsBaseline] of cases) {
+    for (const [tier, mode] of [['priority', 'fast'], ['default', 'standard'], ['ultrafast', 'ultrafast']]) {
+      const rows = initialSettingsFixture(tier);
+      rows.splice(4, 0, evidence(600));
+      rows.splice(2, 0, evidence(200));
+      if (needsBaseline) rows.splice(1, 0, baselineCount(-1, 100, 10));
+      const expected = parse(rows).result;
+      assert.equal(expected.length, 1);
+      assert.equal(expected[0].speed_mode, mode, label);
+      assert.equal(expected[0].speed_mode_source, 'rollout_thread_settings', label);
+      assert.equal(expected[0].sample_duration, 200, label);
+      assert.equal(expected[0].ttft, 800, label);
+      assert.equal(expected[0].turn_duration, 2000, label);
+      for (let split = 1; split < rows.length; split++) {
+        const prefix = parse(rows.slice(0, split));
+        const saved = JSON.parse(JSON.stringify(prefix.parser.state()));
+        const suffix = parse(rows.slice(split), saved, split);
+        assert.deepEqual([...prefix.result, ...suffix.result], expected, `${label}: ${tier} checkpoint ${split}`);
+      }
+    }
+  }
+});
+
+test('nonzero legacy counts retain a late mode only with matched, nonconflicting evidence', () => {
+  const count = (at, total = 110, last = 10, identity = {}) => {
+    const row = baselineCount(at, total, last);
+    Object.assign(row.payload, { thread_id: 'synthetic-session', ...identity });
+    return row;
+  };
+  const cases = [
+    ['matched after declaration', () => [count(600)], 'fast'],
+    ['matched unique turn without explicit IDs', () => [count(600, 110, 10, {
+      turn_id: undefined, thread_id: undefined,
+    })], 'fast'],
+    ['repeated matched snapshot', () => [count(600), count(700)], 'fast'],
+    ['delayed earlier snapshot', () => [count(400)], 'unknown'],
+    ['unknown snapshot time', () => [{ ...count(600), timestamp: undefined }], 'unknown'],
+    ['counter reset', () => [count(600, 90)], 'unknown'],
+    ['unmatched last usage', () => [count(600, 110, 8)], 'unknown'],
+    ['conflicting turn identity', () => [count(600, 110, 10, { turn_id: 'synthetic-other-turn' })], 'unknown'],
+    ['conflicting thread identity', () => [count(600, 110, 10, { thread_id: 'synthetic-other-session' })], 'unknown'],
+  ];
+  for (const [label, evidence, mode] of cases) {
+    const rows = initialSettingsFixture();
+    const firstContext = rows.splice(3, 1)[0];
+    firstContext.timestamp = new Date(BASE).toISOString();
+    rows.splice(1, 0, baselineCount(-1, 100, 10), firstContext);
+    rows.splice(5, 0, ...evidence());
+    const expected = parse(rows).result;
+    assert.equal(expected.length, 1);
+    assert.equal(expected[0].speed_mode, mode, label);
+    assert.equal(expected[0].speed_mode_source, mode === 'fast' ? 'rollout_thread_settings' : 'unobserved', label);
+    assert.equal(expected[0].sample_duration, 200, label);
+    assert.equal(expected[0].sample_tokens, 100, label);
+    assert.equal(expected[0].ttft, 800, label);
+    assert.equal(expected[0].turn_duration, 2000, label);
+    assert.equal(expected[0].quality, 'complete', label);
+    for (let split = 1; split < rows.length; split++) {
+      const prefix = parse(rows.slice(0, split));
+      const saved = JSON.parse(JSON.stringify(prefix.parser.state()));
+      const suffix = parse(rows.slice(split), saved, split);
+      assert.deepEqual([...prefix.result, ...suffix.result], expected, `${label} checkpoint ${split}`);
+    }
+  }
+});
+
+test('older pending checkpoints cannot infer that late settings preceded all output', () => {
+  const rows = initialSettingsFixture();
+  const prefix = parse(rows.slice(0, 2));
+  const saved = structuredClone(prefix.parser.state());
+  for (const turn of Object.values(saved.turns)) {
+    delete turn.modeOutputSeen;
+    delete turn.modeInitializedAt;
+  }
+  assert.notEqual(parse(rows.slice(2), saved).result[0].speed_mode, 'fast');
 });
 
 test('per-turn context service tier overrides the thread setting at the task boundary', () => {

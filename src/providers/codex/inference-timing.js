@@ -4,7 +4,7 @@ import { createHmac } from 'node:crypto';
 
 export const METHOD = 2;
 // Parsing semantics can advance without changing stable timing HMAC identities.
-export const INFERENCE_TIMING_PARSER_VERSION = 18;
+export const INFERENCE_TIMING_PARSER_VERSION = 20;
 export const MAX_STATE_BYTES = 128 * 1024;
 const MAX_TIER_EVENTS = 512;
 const MAX_CONTEXT_HISTORY = 512;
@@ -220,6 +220,13 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
     turn.mode ??= 'unknown';
     turn.modeSource ??= 'unobserved';
     turn.modeMixed ??= false;
+    // Older pending checkpoints cannot prove that no output preceded a late
+    // initial declaration. A full parser-version replay can establish it.
+    turn.modeOutputSeen ??= true;
+    turn.modeInitializedAt ??= null;
+    if (typeof turn.modeOutputSeen !== 'boolean'
+        || turn.modeInitializedAt !== null && (!integer(turn.modeInitializedAt)
+          || turn.modeInitializedAt < turn.start)) turn.modeInvalid = true;
     // A pre-performance saved turn has no tier proof. Keep its existing TPS
     // state, but do not upgrade it to a mode-qualified row after restart.
     turn.modeInvalid ??= true;
@@ -264,7 +271,18 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
     t.bad = true; t.problem ??= reason; t.windowBad = true;
     if (!['unreadable_evidence', 'item_interval', 'window_endpoint'].includes(reason)) t.fatal = true;
   };
+  // Late initialization requires proof of no earlier output. Missing identity,
+  // unreadable records or delayed earlier output revoke only that turn's late
+  // inference, without discarding independent timings or future tier evidence.
+  const observeModeOutput = (turn = null, at = null) => {
+    for (const active of turn ? [turn] : Object.values(s.turns)) {
+      active.modeOutputSeen = true;
+      if (active.modeInitializedAt !== null
+          && (!turn || !integer(at) || at < active.modeInitializedAt)) active.modeInvalid = true;
+    }
+  };
   const invalidate = () => {
+    observeModeOutput();
     for (const t of Object.values(s.turns)) { bad(t, 'unreadable_evidence'); t.legacy.windowBad = true; }
     rejectToolFree();
     s.legacyTotal = null;
@@ -419,16 +437,32 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
       return;
     }
     const normalized = modeFromRawTier(rawTier);
+    const active = Object.values(s.turns);
+    const firstDeclaration = !s.tier.invalid && s.tier.timeline.length === 0
+      && id(payload.thread_id) && hash('session', payload.thread_id) === s.own
+      && active.length === 1;
     if (s.tier.timeline.length >= MAX_TIER_EVENTS) {
       // A completed declaration is sufficient for future task-start lookup;
       // active turns already captured their mode. Keep the newest prior
       // declaration plus this event instead of poisoning all later rows.
       s.tier.timeline = s.tier.timeline.slice(-1);
     }
-    for (const turn of Object.values(s.turns)) {
+    for (const turn of active) {
       if (at < turn.start) {
         turn.modeInvalid = true;
         markModeEvidenceInvalid(s);
+      } else if (firstDeclaration && !turn.modeInvalid && !turn.modeMixed
+          && turn.mode === 'unknown' && turn.modeSource === 'unobserved'
+          && ['standard', 'fast', 'ultrafast'].includes(normalized.mode)
+          && !turn.modeOutputSeen && !turn.modernSeen && turn.responses === 0
+          && turn.legacy.observed === 0 && turn.legacy.first === null
+          && turn.legacy.end === null) {
+        // Codex may write its initial settings after task_started, before the
+        // first inference output. This is initialization, not a mode switch.
+        // Keep the declaration instant so delayed output/TTFT can disprove it.
+        turn.mode = normalized.mode;
+        turn.modeSource = normalized.modeSource;
+        turn.modeInitializedAt = at;
       } else if (at >= turn.start && normalized.mode !== turn.mode) {
         turn.modeMixed = true;
       }
@@ -444,6 +478,11 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
       ? { output: total.output_tokens, reasoning: total.reasoning_output_tokens } : null;
     const active = Object.values(s.turns);
     if (!s.legacyTotal || !before) {
+      if (p.info != null && (!s.legacyTotal || s.legacyTotal.output !== 0
+          || !integer(last?.output_tokens) || last.output_tokens !== 0
+          || !integer(last?.reasoning_output_tokens) || last.reasoning_output_tokens > last.output_tokens)) {
+        observeModeOutput();
+      }
       rejectToolFree();
       for (const t of active) {
         if (integer(last?.output_tokens) && last.output_tokens > 0) t.legacy.observed++;
@@ -453,6 +492,12 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
     }
     const n = s.legacyTotal.output - before.output, reasoning = s.legacyTotal.reasoning - before.reasoning;
     if (n === 0 && reasoning === 0) return; // Repeated snapshots are not responses.
+    const matched = integer(n) && n > 0 && integer(reasoning) && reasoning <= n
+      && n === last?.output_tokens && reasoning === last?.reasoning_output_tokens;
+    const turn = active.length === 1 ? active[0] : null;
+    const sameThread = p.thread_id === undefined || id(p.thread_id) && hash('session', p.thread_id) === s.own;
+    const sameTurn = p.turn_id === undefined || id(p.turn_id) && s.turns[hash('turn', `${s.own}/${p.turn_id}`)] === turn;
+    observeModeOutput(matched && sameThread && sameTurn ? turn : null, at);
     if (active.length !== 1) {
       rejectToolFree();
       for (const t of active) { resetLegacy(t, at); t.legacy.windowBad = true; }
@@ -460,8 +505,6 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
     }
     const t = active[0], l = t.legacy;
     if (++l.observed > 512) { bad(t, 'response_limit'); return; }
-    const matched = integer(n) && n > 0 && integer(reasoning) && reasoning <= n
-      && n === last?.output_tokens && reasoning === last?.reasoning_output_tokens;
     if (t.toolFree) {
       if (!matched) t.toolFree.bad = true;
       else {
@@ -479,6 +522,7 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
   function line(bytes, offset, partial) {
     if (s.blocked) return;
     if (partial) {
+      observeModeOutput();
       rejectToolFree();
       s.diagnostics.oversized++;
       // Only a verified top-level header can establish irrelevance. In
@@ -493,17 +537,27 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
       if (bytes.includes(TIER_NEEDLE)) markModeEvidenceInvalid(s);
       invalidate(); return;
     }
-    if (!toolFree && !NEEDLES.some(n => bytes.includes(n))) return;
+    const relevant = NEEDLES.some(n => bytes.includes(n));
+    // The timing fast path cannot prove that an unreadable, unclassified line
+    // contains no output while a turn still depends on that proof.
+    if (!toolFree && !relevant && !Object.values(s.turns).some(turn => !turn.modeInvalid
+      && (turn.modeInitializedAt !== null || !turn.modeOutputSeen && turn.mode === 'unknown'))) return;
     let r;
     try { r = JSON.parse(bytes.toString('utf8')); } catch {
+      observeModeOutput();
+      if (!toolFree && !relevant) return;
       s.diagnostics.malformed++;
       rejectToolFree();
       if (bytes.includes(TIER_NEEDLE)) markModeEvidenceInvalid(s);
       invalidate(); return;
     }
-    if (!r || typeof r !== 'object') { rejectToolFree(); return; }
+    if (!r || typeof r !== 'object' || Array.isArray(r)) { observeModeOutput(); rejectToolFree(); return; }
     const p = r.payload;
-    if (!p || typeof p !== 'object') { rejectToolFree(); return; }
+    if (!p || typeof p !== 'object' || Array.isArray(p)) { observeModeOutput(); rejectToolFree(); return; }
+    if (typeof r.type !== 'string' || r.type.length === 0
+        || r.type === 'event_msg' && (typeof p.type !== 'string' || p.type.length === 0)) {
+      observeModeOutput(); rejectToolFree(); return;
+    }
     const at = stamp(r.timestamp);
     if (r.type === 'session_meta') {
       if (s.own || !id(p.id) || p.forked_from_id) { s.blocked = true; s.turns = {}; return; }
@@ -557,14 +611,22 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
       recordTurnContext(p, at, tid);
       return;
     }
+    if (r.type === 'event_msg' && ['agent_message', 'agent_reasoning', 'agent_reasoning_raw_content',
+      'agent_message_delta', 'agent_reasoning_delta', 'agent_reasoning_raw_content_delta'].includes(p.type)) {
+      const sameThread = p.thread_id === undefined || id(p.thread_id) && hash('session', p.thread_id) === s.own;
+      observeModeOutput(sameThread ? s.turns[tid] : null, at);
+      return;
+    }
     if (r.type === 'response_item') {
       if (['function_call_output', 'custom_tool_call_output'].includes(p.type)) {
+        observeModeOutput();
         for (const t of Object.values(s.turns)) t.legacy.toolSeen = true;
         return;
       }
       if (p.type === 'compaction') { invalidate(); return; }
       if (!['reasoning', 'function_call', 'custom_tool_call'].includes(p.type)
         && !(p.type === 'message' && p.role === 'assistant')) {
+        if (!(p.type === 'message' && ['user', 'system', 'developer'].includes(p.role))) observeModeOutput();
         if (p.type !== 'agent_message' && !(p.type === 'message' && ['user', 'system', 'developer'].includes(p.role)))
           for (const t of Object.values(s.turns)) t.legacy.windowBad = true;
         return;
@@ -572,13 +634,25 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
       const meta = p.internal_chat_message_metadata_passthrough;
       const target = id(meta?.turn_id) ? hash('turn', `${s.own}/${meta.turn_id}`) : null;
       const t = s.turns[target];
-      if (!t) { for (const a of Object.values(s.turns)) a.legacy.windowBad = true; return; }
+      observeModeOutput(t, at);
+      if (!t) {
+        for (const a of Object.values(s.turns)) {
+          a.legacy.windowBad = true;
+        }
+        return;
+      }
       const l = t.legacy;
       if (!integer(at) || at < l.previous || l.toolSeen || (l.end !== null && at < l.end)) l.windowBad = true;
       else l.end = at;
       return;
     }
     if (r.type === 'event_msg' && p.type === 'token_count') { legacyCount(p, at); return; }
+    if (r.type === 'token_usage_record' || r.type === 'event_msg'
+        && p.type === 'item_completed' && p.item?.type !== 'UserMessage') {
+      const sameThread = id(p.thread_id) && hash('session', p.thread_id) === s.own;
+      observeModeOutput(sameThread ? s.turns[tid] : null,
+        r.type === 'token_usage_record' ? at : p.started_at_ms);
+    }
     if (!tid) {
       if (r.type === 'token_usage_record') for (const t of Object.values(s.turns)) t.modernSeen = true;
       if (r.type === 'event_msg' && p.type === 'item_completed')
@@ -616,6 +690,7 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
       s.turns[tid] = { start: at, model: startModel, effort: startEffort, mixed: false,
         modelObserved: modelKnownAtStart, stableModel: modelKnownAtStart ? startModel : null, modelStable: true,
         mode: mode.mode, modeSource: mode.source, modeMixed: false, modeInvalid: mode.invalid,
+        modeOutputSeen: false, modeInitializedAt: null,
         boundaryInvalid: false, turnDurationProof: true,
         attributionInvalid: !modelKnownAtStart && (s.contextHistoryInvalid || context?.invalid === true),
         ...(toolFree ? {
@@ -703,6 +778,10 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
         && t.first === null && t.duration <= elapsed + 2000;
       const ttft = boundary && !p.error && !attributionInvalid && integer(p.time_to_first_token_ms)
         && p.time_to_first_token_ms <= elapsed ? p.time_to_first_token_ms : null;
+      // An absent or earlier first-token observation cannot prove that all
+      // measured inference followed this late initial declaration.
+      if (t.modeInitializedAt !== null
+          && (ttft === null || t.start + ttft < t.modeInitializedAt)) t.modeInvalid = true;
       const sampled = boundary && reconciled && !t.fatal && !attributionInvalid && !p.error
         && t.covered > 0 && t.duration > 0 && t.duration <= elapsed + 2000;
       const legacy = boundary && !t.modernSeen && !t.fatal && !attributionInvalid && !p.error

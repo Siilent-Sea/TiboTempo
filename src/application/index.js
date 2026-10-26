@@ -62,7 +62,7 @@ export {
   USAGE_EXPLAINER_SCHEMA_VERSION,
   usageExplanationCatalog,
 } from "./usage-explainer.js";
-export { createModelPerformanceContext } from './model-performance.js';
+export { createModelPerformanceContext, validModelPerformanceTimeZone } from './model-performance.js';
 export {
   createTelemetryPerformanceDayRunner,
   createTelemetryPerformanceScheduler,

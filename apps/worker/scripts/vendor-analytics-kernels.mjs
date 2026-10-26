@@ -699,6 +699,25 @@ class ReductionByteSet extends Set<number> {
     ],
   },
   {
+    id: "daily-values-closed-shape",
+    path: "apps/worker/src/v11-daily-projection-values.ts",
+    // All call sites supply fixed, unique key lists. Read enumerable own keys
+    // once, then accept an exact set without sorting. Keep the historical
+    // delimiter comparison on mismatch, including its NUL-key collisions.
+    hunks: [
+      { find: `function closed(value: unknown, keys: readonly string[]): asserts value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || Object.keys(value).sort().join('\\0') !== [...keys].sort().join('\\0')) fail();
+}`,
+        replace: `function closed(value: unknown, keys: readonly string[]): asserts value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail();
+  const actual = Object.keys(value);
+  if (actual.length === keys.length && actual.every(key => keys.includes(key))) return;
+  if (actual.sort().join('\\0') !== [...keys].sort().join('\\0')) fail();
+}` },
+    ],
+  },
+  {
     id: "daily-fold-trusted-state",
     path: "apps/worker/src/v11-daily-projection-values.ts",
     // foldV11DailyProjectionValuesTrusted: the same one-record fold, page for page, without re-normalizing and

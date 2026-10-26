@@ -162,7 +162,7 @@ test('all history uses bounded weekly bins and excludes missing or invalid sampl
 test('history scan progress is explicit and fails closed', () => {
   const historyProgress = { checked: 629, total: 9026 };
   const result = modelPerformanceProjection([], { now: NOW, historyProgress });
-  assert.equal(result.schemaVersion, 5);
+  assert.equal(result.schemaVersion, 6);
   assert.equal(result.method, 5);
   assert.equal(result.historyProgress, historyProgress);
   for (const invalid of [
@@ -289,7 +289,7 @@ test('combined speed and its fallback subset persist when an additive refresh fa
     await controller.close();
     controller = fixture.create();
     let result = await controller.read('all');
-    assert.equal(result.schemaVersion, 5);
+    assert.equal(result.schemaVersion, 6);
     assert.equal(result.method, 5);
     assert.equal(result.models[0].speedTurns, 2);
     assert.equal(result.models[0].speed[0].points[0].n, 2);
@@ -309,7 +309,7 @@ test('saved pinned windows restore only their exact period and end independently
   const fixture = await snapshotFixture(t);
   const endAt = new Date(NOW).toISOString(), collectedAt = new Date(NOW + 60_000).toISOString();
   const pinned = { ...modelPerformanceProjection([row(), row()], { period: '1', now: NOW, rolling: true }),
-    updatedAt: collectedAt, requestKey: `1:standard:${NOW}` };
+    updatedAt: collectedAt, requestKey: `1:standard:UTC:${NOW}` };
   let controller = fixture.create();
   try {
     assert.equal((await controller.read('1', { endAt })).status, 'loading');
@@ -329,7 +329,7 @@ test('saved pinned windows restore only their exact period and end independently
     assert.equal(other.status, 'loading');
     assert.equal(other.end, NOW - 1);
     assert.deepEqual(other.models, []);
-    fixture.worker().emit('message', { type: 'snapshots', values: [{ ...pinned, requestKey: `1:standard:${NOW - 1}` }] });
+    fixture.worker().emit('message', { type: 'snapshots', values: [{ ...pinned, requestKey: `1:standard:UTC:${NOW - 1}` }] });
     const rejected = await controller.read('1', { endAt });
     assert.equal(rejected.stale, true);
     assert.equal(rejected.models[0].turns, 2, 'mismatched worker window cannot replace the saved value');
@@ -361,7 +361,7 @@ test('all twelve dashboard period and mode windows retain readiness after the li
     const pinned = targets.map(options => ({
       ...modelPerformanceProjection(rows, { ...options, now: NOW, rolling: true,
         historyProgress: { checked: 1, total: 1 } }),
-      requestKey: `${options.period}:${options.speedMode}:${NOW}`,
+      requestKey: `${options.period}:${options.speedMode}:UTC:${NOW}`,
     }));
     worker.emit('message', { type: 'snapshots', values: [...live, ...pinned] });
     for (let repeat = 0; repeat < 2; repeat++) {
@@ -388,15 +388,15 @@ test('pinned retained cache is bounded to twelve exact windows plus twelve live 
       await controller.read('1', { endAt: new Date(end).toISOString() });
       fixture.worker().emit('message', { type: 'snapshots', values: [{
         ...modelPerformanceProjection([row({ at: end })], { period: '1', now: end, rolling: true }),
-        updatedAt: new Date(NOW).toISOString(), requestKey: `1:standard:${end}`,
+        updatedAt: new Date(NOW).toISOString(), requestKey: `1:standard:UTC:${end}`,
       }] });
     }
     await controller.close();
     const receipt = JSON.parse(await readFile(fixture.file, 'utf8'));
-    assert.equal(receipt.schemaVersion, 'local-model-performance-snapshot-v5');
+    assert.equal(receipt.schemaVersion, 'local-model-performance-snapshot-v6');
     assert.equal(receipt.snapshot.values.length, 24);
     assert.equal(receipt.snapshot.values.filter(value => Object.hasOwn(value, 'requestKey')).length, 12);
-    assert.equal(receipt.snapshot.values.some(value => value.requestKey === `1:standard:${NOW}`), false);
+    assert.equal(receipt.snapshot.values.some(value => value.requestKey === `1:standard:UTC:${NOW}`), false);
     controller = fixture.create();
     assert.equal((await controller.read('1', { endAt: new Date(NOW - 12 * DAY).toISOString() })).models[0].turns, 1);
     assert.equal((await controller.read('1', { endAt: new Date(NOW).toISOString() })).status, 'loading');
@@ -407,7 +407,7 @@ test('prior eight-window receipts restore unchanged and expand to the complete r
   const endAt = new Date(NOW).toISOString();
   const pinned = ['1', '7', '30', 'all'].flatMap(period => ['standard', 'fast', 'ultrafast'].map(speedMode => ({
     ...modelPerformanceProjection([row({ speed_mode: speedMode })], { period, speedMode, now: NOW, rolling: true }),
-    requestKey: `${period}:${speedMode}:${NOW}`,
+    requestKey: `${period}:${speedMode}:UTC:${NOW}`,
   })));
   const prior = pinned.slice(-8);
   const store = createModelPerformanceSnapshotStore({ ...fixture.options, now: () => NOW });
@@ -425,7 +425,7 @@ test('prior eight-window receipts restore unchanged and expand to the complete r
     fixture.worker().emit('message', { type: 'snapshots', values: [...fixture.complete, ...pinned] });
     await controller.close();
     const expanded = JSON.parse(await readFile(fixture.file, 'utf8'));
-    assert.equal(expanded.schemaVersion, 'local-model-performance-snapshot-v5');
+    assert.equal(expanded.schemaVersion, 'local-model-performance-snapshot-v6');
     assert.equal(expanded.snapshot.values.length, 24);
     controller = fixture.create();
     for (const value of pinned) {
@@ -442,14 +442,14 @@ test('snapshot storage accepts the full dashboard roster but refuses a thirteent
   const store = createModelPerformanceSnapshotStore({ ...fixture.options, now: () => NOW });
   const pinned = ['1', '7', '30', 'all'].flatMap(period => ['standard', 'fast', 'ultrafast'].map(speedMode => ({
     ...modelPerformanceProjection([row({ speed_mode: speedMode })], { period, speedMode, now: NOW, rolling: true }),
-    requestKey: `${period}:${speedMode}:${NOW}`,
+    requestKey: `${period}:${speedMode}:UTC:${NOW}`,
   })));
   assert.equal(MODEL_PERFORMANCE_MAX_WINDOWS, 12);
   assert.equal(await store.write([...fixture.complete, ...pinned]), true);
   const saved = await readFile(fixture.file, 'utf8');
   const extraEnd = NOW - DAY;
   const extra = { ...modelPerformanceProjection([row({ at: extraEnd })], {
-    period: '7', now: extraEnd, rolling: true }), requestKey: `7:standard:${extraEnd}` };
+    period: '7', now: extraEnd, rolling: true }), requestKey: `7:standard:UTC:${extraEnd}` };
   assert.equal(await store.write([...pinned, extra]), false);
   assert.equal(await readFile(fixture.file, 'utf8'), saved, 'rejected overflow preserves the last valid receipt');
 });
@@ -460,12 +460,12 @@ test('pinned cache receipts reject mismatched keys and rolling bounds even with 
   let controller = fixture.create();
   await controller.read('1', { endAt });
   fixture.worker().emit('message', { type: 'snapshots', values: [{
-    ...modelPerformanceProjection([row()], { period: '1', now: NOW, rolling: true }), requestKey: `1:standard:${NOW}`,
+    ...modelPerformanceProjection([row()], { period: '1', now: NOW, rolling: true }), requestKey: `1:standard:UTC:${NOW}`,
   }] });
   await controller.close();
   const saved = await readFile(fixture.file, 'utf8');
   for (const change of [
-    value => { value.requestKey = `1:standard:${NOW - 1}`; },
+    value => { value.requestKey = `1:standard:UTC:${NOW - 1}`; },
     value => { value.start++; },
   ]) {
     const receipt = JSON.parse(saved);
@@ -605,7 +605,7 @@ test('old independent-distribution receipts are preserved until combined samples
     fixture.worker().emit('message', { type: 'snapshots', values: fixture.complete });
   } finally { await controller.close(); }
   const rebuilt = JSON.parse(await readFile(fixture.file, 'utf8'));
-  assert.equal(rebuilt.schemaVersion, 'local-model-performance-snapshot-v5');
+  assert.equal(rebuilt.schemaVersion, 'local-model-performance-snapshot-v6');
   assert.deepEqual(rebuilt.snapshot.values, fixture.complete);
 });
 test('source changes, corrupted receipts and incompatible schemas fail closed without waiting for the worker', async t => {
@@ -718,7 +718,7 @@ test('missing timing capability returns unavailable with bounded worker retry', 
       const result = await controller.read(period);
       assert.deepEqual(Object.keys(result).sort(), [
         'schemaVersion', 'method', 'status', 'collecting', 'stale', 'updatedAt',
-        'period', 'speedMode', 'excludedUnknownTurns', 'interval', 'start', 'end', 'historyProgress', 'models',
+        'period', 'speedMode', 'timeZone', 'excludedUnknownTurns', 'interval', 'start', 'end', 'historyProgress', 'models',
       ].sort());
       assert.equal(result.status, 'unavailable');
       assert.equal(result.collecting, false);
@@ -810,7 +810,7 @@ test('actual worker persists separate Codex sources and preserves the unscoped l
       }
     }
     let result = await readReady(controller);
-    assert.equal(result.schemaVersion, 5);
+    assert.equal(result.schemaVersion, 6);
     assert.deepEqual(result.historyProgress, { checked: 4, total: 4 });
     assert.equal(result.excludedUnknownTurns, 1);
     for (const period of ['1', '7', '30', 'all']) for (const speedMode of ['standard', 'fast', 'ultrafast']) {
@@ -847,6 +847,22 @@ test('actual worker persists separate Codex sources and preserves the unscoped l
     assert.equal(result.models[0].speed[0].points[0].median, 100);
     assert.equal(result.models[0].ttft[0].median, .2);
     assert.equal(result.models[0].turns, 1);
+    const zoneTargets = ['Asia/Shanghai', 'America/New_York'].flatMap(timeZone =>
+      [false, true].map(anchored => ({ timeZone, ...(anchored ? { endAt } : {}) })));
+    let zoned = [];
+    const zoneDeadline = Date.now() + 10000;
+    do {
+      zoned = await Promise.all(zoneTargets.map(selection => controller.read('1', selection)));
+      if (zoned.every(value => value.status === 'ready' && !value.collecting && !value.stale)) break;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    } while (Date.now() < zoneDeadline);
+    for (const [index, snapshot] of zoned.entries()) {
+      assert.equal(snapshot.status, 'ready'); assert.equal(snapshot.stale, false);
+      assert.equal(snapshot.timeZone, zoneTargets[index].timeZone);
+      assert.equal(snapshot.models[0].turns, 1);
+      assert.equal(isModelPerformanceSnapshot(snapshot), true);
+      if (zoneTargets[index].endAt) assert.equal(snapshot.end, end);
+    }
     await controller.close();
     controller = createModelPerformanceController(options);
     result = await readReady(controller);
@@ -963,7 +979,7 @@ test('mode isolation survives persisted live and pinned snapshots, failure, and 
     const values = ['standard', 'fast', 'ultrafast'].flatMap((speedMode, index) => {
       const snapshot = modelPerformanceProjection(Array.from({ length: index + 2 }, () => row({ speed_mode: speedMode })),
         { period: '1', now: NOW, speedMode, rolling: true });
-      return [snapshot, { ...snapshot, requestKey: `1:${speedMode}:${NOW}` }];
+      return [snapshot, { ...snapshot, requestKey: `1:${speedMode}:UTC:${NOW}` }];
     });
     for (const speedMode of ['standard', 'fast', 'ultrafast']) {
       await controller.read('1', { speedMode, endAt });
@@ -1027,6 +1043,109 @@ test('unseparated prior snapshots remain untouched until mode-qualified measurem
     fixture.worker().emit('message', { type: 'snapshots', values: fixture.complete });
   } finally { await controller.close(); }
   const rebuilt = JSON.parse(await readFile(fixture.file, 'utf8'));
-  assert.equal(rebuilt.schemaVersion, 'local-model-performance-snapshot-v5');
+  assert.equal(rebuilt.schemaVersion, 'local-model-performance-snapshot-v6');
   assert.deepEqual(rebuilt.snapshot.values, fixture.complete);
+});
+
+test('local days partition at Beijing midnight while UTC remains selectable', () => {
+  const now = Date.parse('2026-10-25T05:00:00Z');
+  const rows = ['2026-10-24T15:59:59.999Z', '2026-10-24T16:00:00Z', '2026-10-25T00:00:00Z']
+    .map(at => row({ at: Date.parse(at) }));
+  const local = modelPerformanceProjection(rows, { now, timeZone: 'Asia/Shanghai' });
+  const utc = modelPerformanceProjection(rows, { now });
+  assert.equal(local.timeZone, 'Asia/Shanghai');
+  assert.deepEqual(local.models[0].ttft.map(p => [new Date(p.at).toISOString(), p.n]), [
+    ['2026-10-23T16:00:00.000Z', 1], ['2026-10-24T16:00:00.000Z', 2],
+  ]);
+  assert.deepEqual(utc.models[0].ttft.map(p => p.n), [2, 1]);
+  assert.equal(isModelPerformanceSnapshot(local), true);
+  assert.equal(local.models[0].turns, utc.models[0].turns);
+});
+
+test('local calendar handles spring, fall, midnight shifts, and fractional UTC offsets', () => {
+  for (const [timeZone, instants, starts] of [
+    ['America/New_York', ['2026-03-08T06:30:00Z', '2026-03-08T07:30:00Z', '2026-03-09T04:00:00Z'],
+      ['2026-03-08T05:00:00Z', '2026-03-09T04:00:00Z']],
+    ['America/New_York', ['2026-11-01T05:30:00Z', '2026-11-01T06:30:00Z', '2026-11-02T05:00:00Z'],
+      ['2026-11-01T04:00:00Z', '2026-11-02T05:00:00Z']],
+    ['America/Santiago', ['2026-09-06T04:00:00Z', '2026-09-07T03:00:00Z'],
+      ['2026-09-06T04:00:00Z', '2026-09-07T03:00:00Z']],
+    ['Asia/Kathmandu', ['2026-10-24T18:14:59Z', '2026-10-24T18:15:00Z'],
+      ['2026-10-23T18:15:00Z', '2026-10-24T18:15:00Z']],
+    ['Australia/Lord_Howe', ['2026-10-03T15:00:00Z', '2026-10-04T13:00:00Z'],
+      ['2026-10-03T13:30:00Z', '2026-10-04T13:00:00Z']],
+  ]) {
+    const result = modelPerformanceProjection(instants.map(at => row({ at: Date.parse(at) })), {
+      timeZone, now: Date.parse(instants.at(-1)) + 1,
+    });
+    assert.deepEqual(result.models[0].ttft.map(p => p.at), starts.map(Date.parse), timeZone);
+    assert.equal(isModelPerformanceSnapshot(result), true, timeZone);
+  }
+});
+
+test('calendar choice preserves exact rolling bounds and aligns history weeks to local Monday', () => {
+  const now = Date.parse('2026-10-25T04:00:00Z');
+  const start = now - DAY;
+  const rows = [row({ at: start - 1 }), row({ at: start }), row({ at: now }), row({ at: now + 1 })];
+  for (const timeZone of ['UTC', 'Asia/Shanghai', 'America/New_York']) {
+    const result = modelPerformanceProjection(rows, { now, period: '1', rolling: true, timeZone });
+    assert.equal(result.start, start); assert.equal(result.end, now); assert.equal(result.models[0].turns, 2);
+  }
+  const weekly = modelPerformanceProjection([
+    row({ at: now - 400 * DAY }), row({ at: Date.parse('2026-10-25T16:00:00Z') }),
+  ], { now: Date.parse('2026-10-26T00:00:00Z'), timeZone: 'Asia/Shanghai' });
+  assert.equal(weekly.interval, 'week');
+  assert.equal(weekly.models[0].ttft.at(-1).at, Date.parse('2026-10-25T16:00:00Z'));
+  for (const timeZone of ['', 'Not/AZone', '+08:00', null, {}, 'a'.repeat(101)]) {
+    assert.throws(() => modelPerformanceProjection([], { now, timeZone }), /invalid_timing_projection/u);
+  }
+});
+
+test('timezone-qualified live and exact snapshots cannot cross caches, failures or restarts', async t => {
+  const fixture = await snapshotFixture(t);
+  let controller = fixture.create();
+  const timeZones = ['UTC', 'Asia/Shanghai', 'America/New_York'];
+  const endAt = new Date(NOW).toISOString();
+  try {
+    const values = [];
+    for (const [index, timeZone] of timeZones.entries()) {
+      for (const anchored of [false, true]) await controller.read('1', { timeZone, ...(anchored ? { endAt } : {}) });
+      const snapshot = modelPerformanceProjection(Array.from({ length: index + 1 }, () => row()), {
+        now: NOW, period: '1', rolling: true, timeZone,
+      });
+      values.push(snapshot, { ...snapshot, requestKey: `1:standard:${timeZone}:${NOW}` });
+    }
+    fixture.worker().emit('message', { type: 'snapshots', values });
+    for (let pass = 0; pass < 2; pass++) {
+      for (const [index, timeZone] of timeZones.entries()) for (const anchored of [false, true]) {
+        const result = await controller.read('1', { timeZone, ...(anchored ? { endAt } : {}) });
+        assert.equal(result.timeZone, timeZone); assert.equal(result.models[0].turns, index + 1);
+      }
+      await controller.close(); controller = fixture.create();
+    }
+    await assert.rejects(controller.read('1', { timeZone: 'Invalid/Zone' }), /invalid_timing_time_zone/u);
+    await controller.read('1');
+    fixture.worker().emit('error', new Error('synthetic failure'));
+    const retained = await controller.read('1', { timeZone: 'Asia/Shanghai', endAt });
+    assert.equal(retained.stale, true); assert.equal(retained.timeZone, 'Asia/Shanghai');
+    assert.equal(retained.models[0].turns, 2);
+  } finally { await controller.close(); }
+});
+
+test('UTC-only v5 snapshots are preserved but never relabeled as local measurements', async t => {
+  const fixture = await snapshotFixture(t);
+  const envelope = JSON.parse(await readFile(fixture.file, 'utf8'));
+  envelope.schemaVersion = 'local-model-performance-snapshot-v5';
+  envelope.snapshot.values = envelope.snapshot.values.map(({ timeZone, ...old }) => ({ ...old, schemaVersion: 5 }));
+  envelope.digest = createHash('sha256').update(JSON.stringify(envelope.snapshot)).digest('hex');
+  const saved = JSON.stringify(envelope);
+  await writeFile(fixture.file, saved);
+  const controller = fixture.create();
+  try {
+    for (const timeZone of ['UTC', 'Asia/Shanghai']) {
+      const result = await controller.read('all', { timeZone });
+      assert.equal(result.status, 'loading'); assert.deepEqual(result.models, []);
+    }
+  } finally { await controller.close(); }
+  assert.equal(await readFile(fixture.file, 'utf8'), saved);
 });
