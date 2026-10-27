@@ -2013,7 +2013,10 @@ test("PG17 the default current v0.1 test composition stores complete v0.6 pricin
   const device = await socialDevice(twin, "in3-v01-current", randomUUID(), { consent: false });
   const record = v01Contribution("a");
   const priceCard = "openai:gpt-5.6-sol:standard:short-through-2026-08-20:official-observed-2026-08-30";
-  const currentPricing = {
+  // Keep the complete September 29 expectation independently. Terra advances
+  // registry provenance for this pre-Terra event without changing its price,
+  // selected card, method, coverage, speed or event-time semantics.
+  const predecessorPricing = {
     exactCostUsd: "0.0064", costNanousd: 6_400_000,
     coveragePercent: 100, coverageStatus: "fully_priced", unknownBillableUnits: 0,
     unpricedReasonCodes: [], selectedPriceCardIds: [priceCard],
@@ -2026,9 +2029,21 @@ test("PG17 the default current v0.1 test composition stores complete v0.6 pricin
     apiServiceTier: "standard", tierBasis: "subscription_speed_priority_price_ratio",
     subscriptionSpeedMode: "fast", speedMultiplier: 2,
   };
+  const currentPricing = {
+    ...predecessorPricing,
+    registryVersion: "app-official-api-prices-v0.10",
+    registrySha256: "206544769b43e4b9645284258edd38f7c07a226022db10f5ec0181335df236ab",
+    registryObservedAt: "2026-10-26T22:25:14Z",
+  };
   const current = await workerModule("/src/server-pricing.ts");
-  assert.deepEqual(current.priceTelemetryUsageEvent(record.usageEvents[0]), currentPricing,
+  const priced = current.priceTelemetryUsageEvent(record.usageEvents[0]);
+  assert.deepEqual(priced, currentPricing,
     "the default resolver retains the complete current pricing result after the historical composition ran");
+  assert.equal(JSON.stringify({ ...priced,
+    registryVersion: predecessorPricing.registryVersion,
+    registrySha256: predecessorPricing.registrySha256,
+    registryObservedAt: predecessorPricing.registryObservedAt,
+  }), JSON.stringify(predecessorPricing), "only the registry provenance changes from the predecessor result");
 
   const accepted = await service.uploadV01(device, record);
   assert.equal(accepted.response.status, 202);
@@ -2048,7 +2063,7 @@ test("PG17 the default current v0.1 test composition stores complete v0.6 pricin
     .filter(([key]) => key.startsWith("server_")));
   const usage = rows.records.find((row) => row.record_kind === "usage");
   assert.ok(usage);
-  assert.deepEqual(serverColumns(usage), {
+  const predecessorUsagePricing = {
     server_cost_usd: 0.0064, server_cost_nanousd: 6_400_000,
     server_pricing_coverage_percent: 100, server_unknown_billable_units: 0,
     server_pricing_status: "fully_priced",
@@ -2059,8 +2074,8 @@ test("PG17 the default current v0.1 test composition stores complete v0.6 pricin
     server_price_epoch_basis: "event_time_when_registry_has_effective_evidence",
     server_tier_basis: "subscription_speed_priority_price_ratio", server_api_service_tier: "standard",
     server_price_basis: "historical_api_prices", server_price_event_time: "2026-07-25T12:05:00.000Z",
-  });
-  assert.deepEqual(serverColumns(rows.contributions[0]), {
+  };
+  const predecessorContributionPricing = {
     server_cost_nanousd: 6_400_000, server_priced_event_count: 1,
     server_partially_priced_event_count: 0, server_unpriced_event_count: 0,
     server_pricing_method_version: "server-api-price-equivalent-v0.6",
@@ -2068,7 +2083,20 @@ test("PG17 the default current v0.1 test composition stores complete v0.6 pricin
     server_price_registry_sha256: "d57a7443bb43a756f1458872897dfcfcafdde0893433fc83b1036d58184de78d",
     server_price_basis: "historical_api_prices", server_price_epoch_basis: "event_time_when_registry_has_effective_evidence",
     server_price_event_time_start: "2026-07-25T12:05:00.000Z", server_price_event_time_end: "2026-07-25T12:05:00.000Z",
-  });
+  };
+  const currentRegistryColumns = {
+    server_price_registry_version: "app-official-api-prices-v0.10",
+    server_price_registry_sha256: "206544769b43e4b9645284258edd38f7c07a226022db10f5ec0181335df236ab",
+  };
+  for (const [actual, predecessor] of [[serverColumns(usage), predecessorUsagePricing],
+    [serverColumns(rows.contributions[0]), predecessorContributionPricing]]) {
+    assert.deepEqual(actual, { ...predecessor, ...currentRegistryColumns },
+      "every stored current pricing/provenance column is checked");
+    assert.deepEqual({ ...actual,
+      server_price_registry_version: predecessor.server_price_registry_version,
+      server_price_registry_sha256: predecessor.server_price_registry_sha256,
+    }, predecessor, "restoring only registry identity preserves every predecessor pricing column");
+  }
   assert.equal(rows.contributions[0].accepted_record_count, 2);
   assert.deepEqual(rows.windows.map(({ accepted_count }) => accepted_count), [1]);
   const replay = await service.uploadV01(device, null, { envelope: JSON.parse(accepted.raw) });
