@@ -50,7 +50,7 @@ const NOW_MS = Date.parse(`${TODAY}T18:00:00.000Z`);
 const CALENDAR_DAYS = 170;
 const MODEL_DATES = 70;
 const ACTIVE_DAYS_BACK = [0, 1, 2, 9, 20, 45, 80];
-/** sha256 of JSON.stringify of the composed envelope and preview for this corpus. */
+/** Retained sha256 pins of JSON.stringify of the composed envelope and preview. */
 const HISTORICAL_RESPONSE_SHA256 = "2737d60661d0392b19ccc368b62bdb7ba3c8f14ead2241a28d30d6914ee84390";
 const COMPOSED_RESPONSE_SHA256 = "1428371ee626e14f63e2d57720712fdad8dd7221f81888e521ce356e61963d80";
 const HISTORICAL_REGISTRY_SHA256 = "48119389ecbcaced58837bc24fa852c3c4a99835289b417e69f34fb0166a63b9";
@@ -270,35 +270,50 @@ describe("one-process composition over the reviewed vendored kernels", () => {
     const second = await compose();
     expect(digest(second.response)).toBe(digest(response));
     expect(digest(second.preview)).toBe(digest(preview));
-    // The reviewed re-vendor changed pricing identity from kernel10/v0.5 to
-    // v0.6. This standard-speed corpus keeps its exact previous dollar values:
-    // restoring ONLY the two historical price stamps must reproduce the whole
-    // original envelope pin. Numeric pricing, coverage and non-spend changes
-    // cannot pass this assertion by merely replacing the current digest.
-    const historicalIdentity = structuredClone(response);
-    for (const day of historicalIdentity.days) {
+    // Terra changes the registry identity, while this pre-launch corpus keeps
+    // every priced value and coverage byte. Restoring only the v0.9 registry
+    // stamp must first reproduce the immediately preceding composed envelope.
+    const predecessorResponse = structuredClone(response);
+    for (const day of predecessorResponse.days) {
       const spend = day.payload.apiEquivalentSpend as Record<string, unknown>;
       expect(spend.pricingMethodVersion).toBe("server-api-price-equivalent-v0.6");
-      expect(spend.registrySha256).toBe("d57a7443bb43a756f1458872897dfcfcafdde0893433fc83b1036d58184de78d");
+      expect(spend.registrySha256).toBe("206544769b43e4b9645284258edd38f7c07a226022db10f5ec0181335df236ab");
+      spend.registrySha256 = "d57a7443bb43a756f1458872897dfcfcafdde0893433fc83b1036d58184de78d";
+    }
+    expect(digest(predecessorResponse)).toBe(COMPOSED_RESPONSE_SHA256);
+    // The earlier re-vendor changed pricing identity from kernel10/v0.5 to
+    // v0.6. Restore those two historical stamps independently: numeric pricing,
+    // coverage and non-spend drift cannot hide behind a new current digest.
+    const historicalIdentity = structuredClone(predecessorResponse);
+    for (const day of historicalIdentity.days) {
+      const spend = day.payload.apiEquivalentSpend as Record<string, unknown>;
       spend.pricingMethodVersion = "server-api-price-equivalent-v0.5";
       spend.registrySha256 = HISTORICAL_REGISTRY_SHA256;
     }
     expect(digest(historicalIdentity)).toBe(HISTORICAL_RESPONSE_SHA256);
-    expect(digest(response)).toBe(COMPOSED_RESPONSE_SHA256);
-    // The same reviewed re-vendor appended Sol to the model catalog. Restoring
-    // only the exact old 42-model prefix/catalog stamp must preserve every
-    // original estimate, supporting count, date and plan normalization byte.
-    expect(preview.models.modelConfig).toHaveLength(43);
+    // Restore each exact predecessor header/catalog stamp separately. The
+    // complete old pins retain every estimate, count, date and plan unit.
+    expect(preview.models.modelConfig).toHaveLength(44);
     expect(preview.models.modelConfig[42]!.modelId).toBe("gpt-6.1-sol");
-    expect(preview.models.days.every((day) => day.catalogVersion === "reviewed-model-catalog-2026-09-29.1"
-      && day.values.every(([modelId]) => modelId !== "gpt-6.1-sol"))).toBe(true);
+    expect(preview.models.modelConfig[43]!.modelId).toBe("gpt-6.1-terra");
+    expect(preview.models.days.every((day) => day.catalogVersion === "reviewed-model-catalog-2026-10-26.1"
+      && day.values.every(([modelId]) => modelId !== "gpt-6.1-sol" && modelId !== "gpt-6.1-terra"))).toBe(true);
+    const predecessorCatalog = { ...preview, models: { ...preview.models,
+      modelConfig: preview.models.modelConfig.slice(0, 43),
+      days: preview.models.days.map((day) => ({ ...day, catalogVersion: "reviewed-model-catalog-2026-09-29.1" })),
+    } };
+    expect(validCachedAdminCommunityAllowancePreview(predecessorCatalog, preview.generatedAt, NOW_MS)).toBe(true);
+    expect(digest(predecessorCatalog)).toBe(COMPOSED_PREVIEW_SHA256);
     const historicalCatalog = { ...preview, models: { ...preview.models,
       modelConfig: preview.models.modelConfig.slice(0, 42),
       days: preview.models.days.map((day) => ({ ...day, catalogVersion: "reviewed-model-catalog-2026-09-23.1" })),
     } };
     expect(validCachedAdminCommunityAllowancePreview(historicalCatalog, preview.generatedAt, NOW_MS)).toBe(true);
     expect(digest(historicalCatalog)).toBe(HISTORICAL_PREVIEW_SHA256);
-    expect(digest(preview)).toBe(COMPOSED_PREVIEW_SHA256);
+    expect({ responseSha256: digest(response), previewSha256: digest(preview) }).toEqual({
+      responseSha256: "16ae12463cca066348fddeb897fb3526f5f98e6ed88cdffeeaec29edfe93928e",
+      previewSha256: "74757d4f173c3585f1818165e426a2f596d9d09d148fd8faac80e2f85aafc454",
+    });
     console.log(JSON.stringify({ composeProof: { responseSha256: digest(response), previewSha256: digest(preview),
       responseBytes: JSON.stringify(response).length } }));
   }, 240_000);
