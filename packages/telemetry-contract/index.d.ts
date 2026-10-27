@@ -31,8 +31,30 @@ export const TELEMETRY_PLAN_TYPES: readonly [
   "edu_plus",
   "edu_pro",
   "unknown",
+  "sci",
+  "sci_plus",
 ];
 export type TelemetryPlanType = typeof TELEMETRY_PLAN_TYPES[number];
+export const TELEMETRY_V02_PLAN_TYPES: readonly [
+  "free",
+  "go",
+  "plus",
+  "pro",
+  "prolite",
+  "team",
+  "self_serve_business_prolite",
+  "self_serve_business_usage_based",
+  "business",
+  "ent26",
+  "enterprise_cbp_automation",
+  "enterprise_cbp_usage_based",
+  "enterprise",
+  "edu",
+  "edu_plus",
+  "edu_pro",
+  "unknown",
+];
+export type TelemetryV02PlanType = typeof TELEMETRY_V02_PLAN_TYPES[number];
 export const TELEMETRY_PLAN_DISPLAY_NAMES: Readonly<
   Record<Exclude<TelemetryPlanType, "unknown">, string>
 >;
@@ -388,14 +410,16 @@ export type TelemetryUsageEventV02 =
   };
 
 export type TelemetryQuotaSnapshotV02 =
-  Omit<TelemetryQuotaSnapshot, "schemaVersion"> & {
+  Omit<TelemetryQuotaSnapshot, "schemaVersion" | "planType"> & {
     schemaVersion: "quota-snapshot-v0.2";
+    planType: TelemetryV02PlanType;
     accountTrackId: AccountTrackId;
   };
 
 export type TelemetryActivityMarkerV02 =
-  Omit<TelemetryActivityMarker, "schemaVersion"> & {
+  Omit<TelemetryActivityMarker, "schemaVersion" | "planType"> & {
     schemaVersion: "activity-marker-v0.2";
+    planType: TelemetryV02PlanType;
     provider: "openai_codex";
     accountTrackId: AccountTrackId;
   };

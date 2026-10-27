@@ -90,9 +90,28 @@ test("provider plan normalization is bounded and never infers a Pro multiplier",
   assert.equal(normalizeProviderPlanType("pro"), "pro");
   assert.equal(normalizeProviderPlanType("edu_plus"), "edu_plus");
   assert.equal(normalizeProviderPlanType("edu_pro"), "edu_pro");
+  assert.equal(normalizeProviderPlanType("sci"), "sci");
+  assert.equal(normalizeProviderPlanType("sci_plus"), "sci_plus");
+  assert.equal(normalizeProviderPlanType("sci-plus"), "unknown");
   assert.equal(normalizeProviderPlanType("pro-20x"), "unknown");
   assert.equal(normalizeProviderPlanType("provider-private-plan"), "unknown");
   assert.equal(normalizeProviderPlanType(null), "unknown");
+});
+
+test("scientific plan observations retain their identity without an inferred allowance", () => {
+  for (const planType of ["sci", "sci_plus"]) {
+    const windows = canonicalRateLimitWindows({
+      limit_id: "codex", plan_type: planType,
+      primary: { used_percent: 12, window_minutes: 43_200, resets_at: 1_785_456_360 },
+    });
+    assert.equal(windows.length, 1);
+    assert.equal(windows[0].planType, planType);
+    assert.equal(windows[0].windowDurationMins, 43_200);
+    assert.equal(windows[0].usedPercent, 12);
+    assert.equal(Object.hasOwn(windows[0], "planVariant"), false);
+    assert.equal(Object.hasOwn(windows[0], "multiplier"), false);
+    assert.equal(Object.hasOwn(windows[0], "capacity"), false);
+  }
 });
 
 test("invalid provider durations and resets fail closed", () => {

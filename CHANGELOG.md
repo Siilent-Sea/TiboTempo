@@ -42,6 +42,8 @@ published; client qualification and hosted rollout remain separate gates.
 
 - Add distinct GPT-6.1 Terra recognition, its official October 26 API prices,
   and local history replay while preserving prior model identities and prices.
+- Recognize Codex's Academic Researchers plans without inferring allowance
+  multipliers or expanding frozen contribution vocabularies.
 - Use the system calendar in Model performance, with a saved UTC toggle and
   correct day/week boundaries across time-zone and daylight-saving changes.
 - Recover supported initial speed declarations while keeping uncertain or

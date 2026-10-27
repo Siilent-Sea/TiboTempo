@@ -13,7 +13,7 @@
     "transportReady": false
   },
   "fieldContract": {
-    "sha256": "7849513f07622fada0e18edb438f8ad3b58cbca076b7a373f729f7b7b1b3ea25",
+    "sha256": "fed4986d7bb111e96551b31a267763fed84da9dcead077077b0ef0da2b53ce53",
     "version": "telemetry-field-dictionary-v0.1"
   },
   "implementation": {
@@ -72,15 +72,15 @@
     }
   },
   "registry": {
-    "sha256": "212757e77e8c97ab9e1f2202bfd6769dc77099abb13881855d96e9f2e1c29e87",
-    "version": "telemetry-v0.1-registry-2026-10-26.1"
+    "sha256": "c6af6f120feb9e355d3516a37ebc93657b1eddd2033a95d6d7abf6f0e6915361",
+    "version": "telemetry-v0.1-registry-2026-10-26.2"
   },
   "schemas": {
     "members": [
       {
         "id": "https://app-usagemonitor.local/schemas/telemetry-v0.1/activity-marker.schema.json",
         "name": "activity-marker.schema.json",
-        "sha256": "3e6db5204d174d0cc01cade736ea3243535c31514d54f0a521e6920f9f6ba20c"
+        "sha256": "b5f03f421bcfed6ff657a506bdf9ef7be1d9928d15733629067113cfdfa43f17"
       },
       {
         "id": "https://app-usagemonitor.local/schemas/telemetry-v0.1/bundle.schema.json",
@@ -90,7 +90,7 @@
       {
         "id": "https://app-usagemonitor.local/schemas/telemetry-v0.1/compatibility.schema.json",
         "name": "compatibility.schema.json",
-        "sha256": "3aa9f52c9bdd56dba3b4c5509d6b5dae510b0fca123836fdd2df6419d2a142cc"
+        "sha256": "8ad10e25ae5f5bdd8ab3ea9250570494bfefdb35743ced6d92ac1abf5e6732a1"
       },
       {
         "id": "https://app-usagemonitor.local/schemas/telemetry-v0.1/privacy-receipt.schema.json",
@@ -100,7 +100,7 @@
       {
         "id": "https://app-usagemonitor.local/schemas/telemetry-v0.1/quota-snapshot.schema.json",
         "name": "quota-snapshot.schema.json",
-        "sha256": "2d426427ae33087cb52f1f7aa12497200ee758d24f7974e20329a90c2199246b"
+        "sha256": "4caea9411e530e13bcf3e885cd8630e3a05c21c5f2b53b94fc99ec1654a32e78"
       },
       {
         "id": "https://app-usagemonitor.local/schemas/telemetry-v0.1/usage-event.schema.json",
@@ -108,7 +108,7 @@
         "sha256": "d26b6340104a7785078762cefc277481a6f29206908556a73a095c68612987e7"
       }
     ],
-    "setSha256": "498aac7d2c336851997708fef147f515683769cdd636bad5ba258db12aad60e7"
+    "setSha256": "c5e95ac0ddaa33f080dcc9ccb42201f749e299bc5c05908e91d5f37e40c4c0b6"
   },
   "tupleVersion": "usage-export-compatibility-v0.1"
 }
