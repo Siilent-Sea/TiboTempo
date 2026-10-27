@@ -37,8 +37,11 @@ remains accountable for release wording, validation, signing, and publication.
 
 ## [Unreleased]
 
-**Candidate:** [0.1.29 release notes](./release-notes/0.1.29.md). Not yet
-published; client qualification and hosted rollout remain separate gates.
+## [0.1.29](./release-notes/0.1.29.md) - 2026-10-27
+
+**Provenance:** [GitHub release](https://github.com/adamallcock/tibotattle/releases/tag/v0.1.29) ·
+[annotated source tag](https://github.com/adamallcock/tibotattle/tree/v0.1.29) ·
+[changes since 0.1.28](https://github.com/adamallcock/tibotattle/compare/v0.1.28...v0.1.29)
 
 - Add distinct GPT-6.1 Terra recognition, its official October 26 API prices,
   and local history replay while preserving prior model identities and prices.
