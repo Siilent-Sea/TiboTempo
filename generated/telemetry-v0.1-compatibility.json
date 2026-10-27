@@ -13,7 +13,7 @@
     "transportReady": false
   },
   "fieldContract": {
-    "sha256": "3afd8dbbca3d899a3e6ce4829bf5432285486c7aa1595504b8b18b58c975ae5f",
+    "sha256": "fed4986d7bb111e96551b31a267763fed84da9dcead077077b0ef0da2b53ce53",
     "version": "telemetry-field-dictionary-v0.1"
   },
   "implementation": {
@@ -21,7 +21,7 @@
     "checkpointScanVersion": "codex-export-checkpoint-scan-v0.6",
     "exporterVersion": "0.3.0-draft.3",
     "packageName": "app-usagemonitor",
-    "packageVersion": "0.1.28",
+    "packageVersion": "0.1.29",
     "resourcePolicyVersion": "g1-r3-candidate-0.5"
   },
   "providerAdapters": {
@@ -72,15 +72,15 @@
     }
   },
   "registry": {
-    "sha256": "d35c5adfef14cde87abb5ea39d59ec1061290a02e0dfa30ce1b8beef1c8ef2f1",
-    "version": "telemetry-v0.1-registry-2026-09-29.1"
+    "sha256": "c6af6f120feb9e355d3516a37ebc93657b1eddd2033a95d6d7abf6f0e6915361",
+    "version": "telemetry-v0.1-registry-2026-10-26.2"
   },
   "schemas": {
     "members": [
       {
         "id": "https://app-usagemonitor.local/schemas/telemetry-v0.1/activity-marker.schema.json",
         "name": "activity-marker.schema.json",
-        "sha256": "3e6db5204d174d0cc01cade736ea3243535c31514d54f0a521e6920f9f6ba20c"
+        "sha256": "b5f03f421bcfed6ff657a506bdf9ef7be1d9928d15733629067113cfdfa43f17"
       },
       {
         "id": "https://app-usagemonitor.local/schemas/telemetry-v0.1/bundle.schema.json",
@@ -90,7 +90,7 @@
       {
         "id": "https://app-usagemonitor.local/schemas/telemetry-v0.1/compatibility.schema.json",
         "name": "compatibility.schema.json",
-        "sha256": "98955c13215c6006746602d90dc598bce42b6d5faa130f79819c93a3d90bbfb6"
+        "sha256": "8ad10e25ae5f5bdd8ab3ea9250570494bfefdb35743ced6d92ac1abf5e6732a1"
       },
       {
         "id": "https://app-usagemonitor.local/schemas/telemetry-v0.1/privacy-receipt.schema.json",
@@ -100,15 +100,15 @@
       {
         "id": "https://app-usagemonitor.local/schemas/telemetry-v0.1/quota-snapshot.schema.json",
         "name": "quota-snapshot.schema.json",
-        "sha256": "2d426427ae33087cb52f1f7aa12497200ee758d24f7974e20329a90c2199246b"
+        "sha256": "4caea9411e530e13bcf3e885cd8630e3a05c21c5f2b53b94fc99ec1654a32e78"
       },
       {
         "id": "https://app-usagemonitor.local/schemas/telemetry-v0.1/usage-event.schema.json",
         "name": "usage-event.schema.json",
-        "sha256": "2c98005fec25e31581b05cd8a4e7e11c80e5cd7d7cca985d66002fe2e48454f6"
+        "sha256": "d26b6340104a7785078762cefc277481a6f29206908556a73a095c68612987e7"
       }
     ],
-    "setSha256": "786b6303513e12cc77e6bffa211e2aec73ea21d723d47bf5638d7ceecc6c0025"
+    "setSha256": "c5e95ac0ddaa33f080dcc9ccb42201f749e299bc5c05908e91d5f37e40c4c0b6"
   },
   "tupleVersion": "usage-export-compatibility-v0.1"
 }

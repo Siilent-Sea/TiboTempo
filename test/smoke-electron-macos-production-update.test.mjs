@@ -53,6 +53,41 @@ const currentFixture = (target = 'darwin-arm64') => ({ ...fixture(target),
 const replacementFixture = (target = 'darwin-arm64') => ({ ...fixture(target),
   schemaVersion: 'tibotattle-production-electron-update-intake-v3', version: '0.1.28',
   buildNumber: '2026100901', bundleVersion: '1036' });
+const terraFixture = (target = 'darwin-arm64') => ({ ...fixture(target),
+  schemaVersion: 'tibotattle-production-electron-update-intake-v4', version: '0.1.29',
+  buildNumber: '2026102601', bundleVersion: '1037' });
+test('v4 pins published 028 bytes and admits only the allocated 029 successor', async () => {
+  const manifestBytes = await readFile(new URL('./fixtures/releases/v0.1.28/release-manifest.json', import.meta.url));
+  assert.equal(hash(manifestBytes), '459b89538461b4249dc38e9bbcb5f7c6eb8f49b202856f3cc4f1db8a57650f89');
+  const manifest = JSON.parse(manifestBytes);
+  assert.equal(manifest.commit, 'bf84bc6c04372bb2cee64ef4a4f29981432fc3eb');
+  const expected = { 'darwin-arm64': 'e647bdcc545f43162ca1fa746b13ea2bb3125ec4e84e1860f51d057bc69f041f',
+    'darwin-x64': 'cecd6cc5b9c68edbfc6764660356d792d772d0b18af1d1ae14d3135fa682ae92' };
+  for (const target of Object.keys(expected)) {
+    const input = runner.validateProductionUpdateIntake(terraFixture(target));
+    assert.equal(input.predecessorDmgSha256, expected[target]);
+    assert.equal(manifest.artifacts.find(row => row.platform === 'macos' && row.architecture === input.architecture).sha256, input.predecessorDmgSha256);
+    assert.equal(input.predecessorUrl, 'https://github.com/adamallcock/tibotattle/releases/download/v0.1.28/TiboTattle-0.1.28-mac-' + input.architecture + '.dmg');
+    assert.equal(input.candidateUrl, 'https://github.com/adamallcock/tibotattle/releases/download/v0.1.29/TiboTattle-0.1.29-mac-' + input.architecture + '.dmg');
+    assert.equal(input.feedUrl, runner.validateProductionUpdateIntake(replacementFixture(target)).feedUrl);
+    const pkg = { name: 'app-usagemonitor', version: '0.1.28', tibotattleDistribution: createProductionDistributionMetadata({
+      version: '0.1.28', sourceRevision: 'bf84bc6c04372bb2cee64ef4a4f29981432fc3eb', buildNumber: '2026100901', target }) };
+    const plist = { CFBundleIdentifier: 'com.usagemonitor.local', CFBundleShortVersionString: '0.1.28', CFBundleVersion: '1036' };
+    assert.deepEqual(runner.validateProductionUpdatePredecessorMetadata(input, pkg, plist), pkg.tibotattleDistribution);
+    for (const patch of [{ schemaVersion: replacementFixture().schemaVersion }, { schemaVersion: 'toString' },
+      { version: '0.1.28', bundleVersion: '1036' }, { bundleVersion: '1036' }, { buildNumber: '2026100901' },
+      { buildNumber: '2026102602' }, { predecessorVersion: '0.1.26' }, { predecessorDmgSha256: expected[target] },
+      { feedUrl: 'https://example.invalid/feed.yml' }]) {
+      assert.throws(() => runner.validateProductionUpdateIntake({ ...terraFixture(target), ...patch }));
+    }
+    for (const patch of [{ version: '0.1.26' }, { sourceRevision: 'a'.repeat(40) }, { buildNumber: '2026092701' }]) {
+      const bad = structuredClone(pkg); Object.assign(bad.tibotattleDistribution, patch);
+      assert.throws(() => runner.validateProductionUpdatePredecessorMetadata(input, bad, plist));
+    }
+    assert.throws(() => runner.validateProductionUpdatePredecessorMetadata(input, pkg, { ...plist, CFBundleVersion: '1037' }));
+  }
+});
+
 test('v3 binds the replacement identity to unchanged 026 predecessor bytes without widening v2', () => {
   for (const target of ['darwin-arm64', 'darwin-x64']) {
     const old = runner.validateProductionUpdateIntake(currentFixture(target));
@@ -122,9 +157,9 @@ test('predecessor metadata refuses mixed source, build, bundle, architecture and
   }
 });
 test('live feed must bind both exact artifacts and cannot redirect the updater', () => {
-  for (const [version, bundleVersion] of [['0.1.22', '1029'], ['0.1.23', '1030'], ['0.1.27', '1035'], ['0.1.28', '1036']]) {
+  for (const [version, bundleVersion] of [['0.1.22', '1029'], ['0.1.23', '1030'], ['0.1.27', '1035'], ['0.1.28', '1036'], ['0.1.29', '1037']]) {
     const zip = Buffer.from('signed ZIP'), dmg = Buffer.from('signed DMG');
-    const input = runner.validateProductionUpdateIntake({ ...(version === '0.1.28' ? replacementFixture() : version === '0.1.27' ? currentFixture() : fixture()), version, bundleVersion, zipSha256: hash(zip), dmgSha256: hash(dmg) });
+    const input = runner.validateProductionUpdateIntake({ ...(version === '0.1.29' ? terraFixture() : version === '0.1.28' ? replacementFixture() : version === '0.1.27' ? currentFixture() : fixture()), version, bundleVersion, zipSha256: hash(zip), dmgSha256: hash(dmg) });
     const manifest = { version, files: [[input.zipFileName, zip], [input.dmgFileName, dmg]].map(([url, b]) => ({ url, size: b.length, sha512: hash(b, 'sha512', 'base64') })),
       path: input.zipFileName, sha512: hash(zip, 'sha512', 'base64') };
     assert.equal(runner.validateProductionMacUpdateFeed(input, manifest, zip, dmg), true);
@@ -148,7 +183,8 @@ test('plan reads intake only and makes no artifact, feed, process or signed-app 
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 for (const [make, schema] of [[currentFixture, runner.ELECTRON_PRODUCTION_UPDATE_SCHEMA_V2],
-  [replacementFixture, runner.ELECTRON_PRODUCTION_UPDATE_SCHEMA_V3]]) test(`${schema} plan retains unqualified native and credential assertions`, async () => {
+  [replacementFixture, runner.ELECTRON_PRODUCTION_UPDATE_SCHEMA_V3],
+  [terraFixture, runner.ELECTRON_PRODUCTION_UPDATE_SCHEMA_V4]]) test(`${schema} plan retains unqualified native and credential assertions`, async () => {
   const directory = await realpath(await mkdtemp(join(tmpdir(), 'production-update-plan-v2-')));
   try {
     for (const target of ['darwin-arm64', 'darwin-x64']) {
@@ -158,10 +194,10 @@ for (const [make, schema] of [[currentFixture, runner.ELECTRON_PRODUCTION_UPDATE
       assert.equal(result.status, 'planned');
       assert.equal(result.schemaVersion, schema);
       for (const key of ['version', 'buildNumber', 'bundleVersion', 'sourceRevision']) assert.equal(result[key], identity[key]);
-      assert.equal(result.predecessorVersion, '0.1.26');
-      assert.equal(result.predecessorSourceRevision, 'acfc385c95b49b8e1040cedfa857659b49a61d8d');
-      assert.equal(result.predecessorBuildNumber, '2026092701');
-      assert.equal(result.predecessorBundleVersion, '1034');
+      assert.equal(result.predecessorVersion, make === terraFixture ? '0.1.28' : '0.1.26');
+      assert.equal(result.predecessorSourceRevision, make === terraFixture ? 'bf84bc6c04372bb2cee64ef4a4f29981432fc3eb' : 'acfc385c95b49b8e1040cedfa857659b49a61d8d');
+      assert.equal(result.predecessorBuildNumber, make === terraFixture ? '2026100901' : '2026092701');
+      assert.equal(result.predecessorBundleVersion, make === terraFixture ? '1036' : '1034');
       assert.equal(result.predecessorProcessesExitedNaturally, false);
       for (const key of ['productionFeedVerified', 'signedArtifactVerified', 'disposableAccountVerified',
         'updaterRelaunchedCandidate', 'candidateCopiedByRunner', 'ownedProcessesStopped', 'existingCredentialFixture', 'feedOverrideApplied']) {
@@ -508,15 +544,16 @@ test('predecessor API loads exact packed archive bytes with private permissions 
   assert.deepEqual(await scratchNames(directory), []);
 });
 
-test('only v3 loads and requires the verified predecessor public ingestion API', async t => {
+for (const schemaVersion of ['tibotattle-production-electron-update-intake-v3', 'tibotattle-production-electron-update-intake-v4'])
+  test(`${schemaVersion} loads and requires the verified predecessor public ingestion API`, async t => {
   const valid = await predecessorArchiveFixture(t);
   const result = await runner.withProductionUpdatePredecessorIndex({ ...valid.input,
-    schemaVersion: 'tibotattle-production-electron-update-intake-v3' }, valid.app, (_index, ingest) => ingest());
+    schemaVersion }, valid.app, (_index, ingest) => ingest());
   assert.equal(result, 'pinned ingestion');
   assert.deepEqual(await scratchNames(valid.directory), []);
   const missing = await predecessorArchiveFixture(t, { ingest: 'export const unrelated = true;' });
   await assert.rejects(runner.withProductionUpdatePredecessorIndex({ ...missing.input,
-    schemaVersion: 'tibotattle-production-electron-update-intake-v3' }, missing.app, () => assert.fail('not admitted')),
+    schemaVersion }, missing.app, () => assert.fail('not admitted')),
   error => error.updateStage === 'predecessor_fixture_api');
   for (const schemaVersion of ['tibotattle-production-electron-update-intake-v1', 'tibotattle-production-electron-update-intake-v2']) {
     await runner.withProductionUpdatePredecessorIndex({ ...missing.input, schemaVersion }, missing.app, (_index, ingest) => assert.equal(ingest, null));
@@ -685,6 +722,33 @@ test('only exact predecessor v11 with intact compatibility metadata is pending, 
     error => error.updateStage === 'successor_state_schema');
   await assert.rejects(runner.readProductionUpdateSuccessorState('/synthetic/state', predecessorProbe({ integrity: 'private corruption detail' })),
     error => error.message === 'SIGNED_PRODUCTION_UPDATE_REFUSED' && error.updateStage === 'successor_state_database_integrity');
+});
+
+test('v4 reads exact format 12 through both process-identity checks without rewriting predecessor state', async t => {
+  const { stateRoot, before, database } = await successorStateFixture(t), bytesBefore = await readFile(database);
+  let identities = 0;
+  const state = await runner.waitForProductionUpdateSuccessorState({ stateRoot, predecessorIndex: currentIndex,
+    predecessorUserVersion: 12, successorPid, successorFingerprint }, {
+    readProcesses: () => { identities++; return successorProcess(); },
+    sleep: () => assert.fail('format 12 is already readable'),
+  });
+  assert.deepEqual(state, before);
+  assert.equal(identities, 2);
+  assert.deepEqual(await readFile(database), bytesBefore);
+  for (const predecessorUserVersion of [10, 11, 13, '12', null]) {
+    await assert.rejects(runner.readProductionUpdateSuccessorState(stateRoot, currentIndex, predecessorUserVersion),
+      error => error.updateStage === 'successor_state_schema');
+  }
+  for (const patch of [{ userVersion: 11 }, { formatUserVersion: 11 }, { minimumReaderUserVersion: 11 },
+    { minimumWriterUserVersion: 11 }, { metadataPresent: false }, { metadataPartial: true }, { metadataMalformed: true }]) {
+    const bad = predecessorProbe({ compatibility: { ...predecessorCompatibility, userVersion: 12, formatUserVersion: 12,
+      minimumReaderUserVersion: 12, minimumWriterUserVersion: 12, ...patch } });
+    await assert.rejects(runner.readProductionUpdateSuccessorState(stateRoot, bad, 12),
+      error => error.updateStage === 'successor_state_schema');
+    assert.equal(bad.observations.closes, 1);
+  }
+  await assert.rejects(runner.readProductionUpdateSuccessorState(stateRoot, { openLocalUnifiedIndex() { throw newerStateError(); } }, 12),
+    error => error.updateStage === 'successor_state_schema');
 });
 
 test('successor readiness waits for v11 pending admission then returns real current state without writing', async t => {

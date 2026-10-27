@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { join, win32 } from 'node:path';
 import { createHash } from 'node:crypto';
 import {
-  WINDOWS_FINAL_UPGRADE_PREDECESSOR as predecessor,
+  WINDOWS_FINAL_UPGRADE_PREDECESSOR as predecessor, WINDOWS_FINAL_UPGRADE_PREDECESSOR_V2 as currentPredecessor,
+  windowsFinalUpgradePredecessorFile, validateWindowsFinalUpgradePair,
   validateWindowsFinalUpgradePredecessor, parseWindowsFinalUpgradeMode, resolveWindowsFinalUpgradeSuccessor,
   validateWindowsFinalUpgradePredecessorManifest, snapshotWindowsFinalUpgradeProfile,
   runWindowsFinalUpgradeContinuity, runWindowsFinalUpgrade,
@@ -60,9 +61,11 @@ function fixture(overrides = {}) {
       } } };
 }
 
-test('only the two explicitly allocated signed successor identities select final upgrade receipts', () => {
+test('only the explicitly allocated signed successor identities select final upgrade receipts', () => {
   const historical = { version: '0.1.27', buildNumber: '2026100301' };
   const replacement = { version: '0.1.28', buildNumber: '2026100901' };
+  const terra = { version: '0.1.29', buildNumber: '2026102601' };
+  assert.deepEqual(resolveWindowsFinalUpgradeSuccessor(terra), { ...terra, receiptSchema: 'tibotattle-windows-final-upgrade-v3' });
   assert.deepEqual(resolveWindowsFinalUpgradeSuccessor(historical), { ...historical, receiptSchema: 'tibotattle-windows-final-upgrade-v1' });
   assert.deepEqual(resolveWindowsFinalUpgradeSuccessor(replacement), { ...replacement, receiptSchema: 'tibotattle-windows-final-upgrade-v2' });
   for (const value of [{}, { version: '0.1.28' }, { version: '0.1.27', buildNumber: replacement.buildNumber },
@@ -95,6 +98,39 @@ test('predecessor intake admits only exact reviewed published identity and no ca
   }
   assert.throws(() => validateWindowsFinalUpgradePredecessor({ ...predecessor, url: 'https://example.invalid' }), /PREDECESSOR_INTAKE_INVALID/u);
   assert.throws(() => validateWindowsFinalUpgradePredecessorManifest(Buffer.from('{}'), predecessor), /PREDECESSOR_MANIFEST_INVALID/u);
+});
+
+test('029 selects only the pinned published 028 predecessor and preserves older pairs', async () => {
+  const terra = { version: '0.1.29', buildNumber: '2026102601' };
+  for (const selected of [predecessor, currentPredecessor]) {
+    assert.equal(validateWindowsFinalUpgradePredecessor({ ...selected }), selected);
+    assert.equal(parseWindowsFinalUpgradeMode({ qualifyInstalled: 'true', qualifyUpgrade: 'true',
+      predecessorIntake: JSON.stringify(selected) }), selected);
+    assert.equal(windowsFinalUpgradePredecessorFile(selected), `TiboTattle-${selected.version}-Windows-x64.exe`);
+    for (const key of Object.keys(selected)) {
+      const missing = { ...selected }; delete missing[key];
+      assert.throws(() => validateWindowsFinalUpgradePredecessor(missing), /PREDECESSOR_INTAKE_INVALID/u);
+      assert.throws(() => validateWindowsFinalUpgradePredecessor({ ...selected, [key]: 'changed' }), /PREDECESSOR_INTAKE_INVALID/u);
+    }
+    assert.throws(() => validateWindowsFinalUpgradePredecessor({ ...selected, url: 'https://example.invalid' }), /PREDECESSOR_INTAKE_INVALID/u);
+  }
+  assert.equal(validateWindowsFinalUpgradePair(currentPredecessor, terra).receiptSchema, 'tibotattle-windows-final-upgrade-v3');
+  assert.throws(() => validateWindowsFinalUpgradePair(predecessor, terra), /PAIR_INVALID/u);
+  for (const candidate of [{ version: '0.1.27', buildNumber: '2026100301' }, { version: '0.1.28', buildNumber: '2026100901' }]) {
+    assert.equal(validateWindowsFinalUpgradePair(predecessor, candidate).version, candidate.version);
+    assert.throws(() => validateWindowsFinalUpgradePair(currentPredecessor, candidate), /PAIR_INVALID/u);
+  }
+  for (const patch of [{ version: '0.1.30' }, { buildNumber: '2026102602' }, { buildNumber: 2026102601 }]) {
+    assert.throws(() => validateWindowsFinalUpgradePair(currentPredecessor, { ...terra, ...patch }), /SUCCESSOR_INTAKE_INVALID/u);
+  }
+  // Retain the exact published manifest bytes; serializing the object would
+  // change the digest and cannot stand in for immutable public evidence.
+  const bytes = await readFile(new URL('./fixtures/releases/v0.1.28/release-manifest.json', import.meta.url));
+  assert.equal(sha(bytes), currentPredecessor.manifestSha256);
+  assert.equal(validateWindowsFinalUpgradePredecessorManifest(bytes, { ...currentPredecessor }).version, '0.1.28');
+  assert.throws(() => validateWindowsFinalUpgradePredecessorManifest(bytes, predecessor), /PREDECESSOR_MANIFEST_INVALID/u);
+  const altered = Buffer.from(bytes); altered[100] ^= 1;
+  assert.throws(() => validateWindowsFinalUpgradePredecessorManifest(altered, currentPredecessor), /PREDECESSOR_MANIFEST_INVALID/u);
 });
 
 test('one profile spans old rendered state, exact replacement and two new runtime launches', async () => {
@@ -221,9 +257,11 @@ test('frozen workflow preserves clean intake and adds explicit pinned immutable 
   assert.match(workflow, /artifact\.workflow_run\.id -ne \[long\]\$env:SIGNING_RUN_ID/u);
   assert.doesNotMatch(workflow, /secrets\.|id-token: write|contents: write/u);
   assert.match(wrapper, /if \(predecessorIntake === null\) \{[\s\S]*?await runWindowsSignedInstalled\(/u);
-  assert.match(wrapper, /program\('gh', \['release', 'verify', 'v0\.1\.26', '--repo', 'adamallcock\/tibotattle'\]/u);
+  assert.match(wrapper, /validateWindowsFinalUpgradePair\(predecessorIntake, candidate\)/u);
+  assert.match(wrapper, /const predecessorFile = windowsFinalUpgradePredecessorFile\(predecessorIntake\)/u);
+  assert.match(wrapper, /program\('gh', \['release', 'verify', predecessorTag, '--repo', 'adamallcock\/tibotattle'\]/u);
   const admission = wrapper.indexOf('validateWindowsFinalUpgradePredecessorManifest(await');
-  const installerDownload = wrapper.indexOf("'--pattern', WINDOWS_FINAL_UPGRADE_PREDECESSOR_FILE");
+  const installerDownload = wrapper.indexOf("'--pattern', predecessorFile");
   const signature = wrapper.indexOf('await verifyWindowsSignedInstalledSignature(installer');
   const extraction = wrapper.indexOf("program(sevenZip, ['x'");
   assert.ok(admission >= 0 && admission < installerDownload);

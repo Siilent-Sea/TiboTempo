@@ -9,6 +9,7 @@ import { productionElectronCandidatePlan } from '../package-electron-production.
 export const LINUX_FINAL_CONFIRMATION = 'RUN_DISPOSABLE_FINAL_LINUX_LIFECYCLE';
 export const LINUX_FINAL_SCHEMA = 'tibotattle-linux-final-lifecycle-intake-v1';
 export const LINUX_FINAL_SCHEMA_V2 = 'tibotattle-linux-final-lifecycle-intake-v2';
+export const LINUX_FINAL_SCHEMA_V3 = 'tibotattle-linux-final-lifecycle-intake-v3';
 const FINAL_RELEASES = Object.freeze({
   [LINUX_FINAL_SCHEMA]: Object.freeze({ version: '0.1.27', buildNumber: '2026100301',
     lifecycleSchema: 'tibotattle-linux-final-installed-lifecycle-v1',
@@ -16,6 +17,9 @@ const FINAL_RELEASES = Object.freeze({
   [LINUX_FINAL_SCHEMA_V2]: Object.freeze({ version: '0.1.28', buildNumber: '2026100901',
     lifecycleSchema: 'tibotattle-linux-final-installed-lifecycle-v2',
     publicPredecessorUpdate: 'exact_published_0.1.26_to_final_0.1.28' }),
+  [LINUX_FINAL_SCHEMA_V3]: Object.freeze({ version: '0.1.29', buildNumber: '2026102601',
+    lifecycleSchema: 'tibotattle-linux-final-installed-lifecycle-v3',
+    publicPredecessorUpdate: 'exact_published_0.1.28_to_final_0.1.29' }),
 });
 export const LINUX_FINAL_INPUT = '.release-build/linux-final-qualification';
 export const LINUX_FINAL_PREDECESSOR = Object.freeze({
@@ -23,6 +27,12 @@ export const LINUX_FINAL_PREDECESSOR = Object.freeze({
   file: 'TiboTattle-0.1.26-linux-x86_64.AppImage', bytes: 130763167,
   sha256: '9d2ac0430e556e4aca1e03e1e4bef65a872e998335cc30b83b31a08e8fd897fd',
   manifestSha256: 'be65a83f8c1f060b7c5cf6141b6332c02df730dc1a2aac696442e4e433c123cc',
+});
+export const LINUX_FINAL_PREDECESSOR_V2 = Object.freeze({
+  version: '0.1.28', sourceRevision: 'bf84bc6c04372bb2cee64ef4a4f29981432fc3eb',
+  file: 'TiboTattle-0.1.28-linux-x86_64.AppImage', bytes: 132501565,
+  sha256: '0dacbd7a0b4d34e24b04029602798729435d44cb856039021d4db64141e8aaa4',
+  manifestSha256: '459b89538461b4249dc38e9bbcb5f7c6eb8f49b202856f3cc4f1db8a57650f89',
 });
 export const LINUX_FINAL_FEED = 'https://updates.tibotattle.com/electron/stable/linux-x64';
 export const linuxFinalFailure = code => { throw Object.assign(new Error(`LINUX_FINAL_LIFECYCLE_${code}`), { code: `LINUX_FINAL_LIFECYCLE_${code}` }); };
@@ -38,6 +48,9 @@ export function resolveLinuxFinalRelease({ schemaVersion, version, buildNumber }
     ? FINAL_RELEASES[schemaVersion] : null;
   if (!release || version !== release.version || buildNumber !== release.buildNumber) fail('INTAKE_INVALID');
   return release;
+}
+export function resolveLinuxFinalPredecessor(intake) {
+  return resolveLinuxFinalRelease(intake).version === '0.1.29' ? LINUX_FINAL_PREDECESSOR_V2 : LINUX_FINAL_PREDECESSOR;
 }
 export function validateLinuxFinalIntake(value) {
   const keys = ['schemaVersion', 'runnerRevision', 'sourceRevision', 'version', 'buildNumber',
@@ -111,9 +124,10 @@ export function validateLinuxFinalPackageReceipt(value, intake, sourceBytes) {
 export function validateLinuxFinalPair(value, runnerRevision) {
   if (!exactKeys(value, ['schemaVersion', 'intake', 'predecessorManifestSha256', 'images'])
     || value.schemaVersion !== 'tibotattle-linux-final-artifact-pair-v1'
-    || value.predecessorManifestSha256 !== LINUX_FINAL_PREDECESSOR.manifestSha256
     || !exactKeys(value.images, ['current', 'next'])) fail('PAIR_INVALID');
   const intake = validateLinuxFinalIntake(value.intake);
+  const predecessor = resolveLinuxFinalPredecessor(intake);
+  if (value.predecessorManifestSha256 !== predecessor.manifestSha256) fail('PAIR_INVALID');
   if (intake.runnerRevision !== runnerRevision) fail('RUNNER_INVALID');
   for (const role of ['current', 'next']) {
     const row = value.images[role];
@@ -122,7 +136,7 @@ export function validateLinuxFinalPair(value, runnerRevision) {
       || !/^[A-Za-z0-9+/]{86}==$/u.test(row.sha512 ?? '')) fail('PAIR_INVALID');
   }
   const previous = value.images.current, next = value.images.next;
-  for (const key of ['version', 'sourceRevision', 'bytes', 'sha256']) if (previous[key] !== LINUX_FINAL_PREDECESSOR[key]) fail('PREDECESSOR_INVALID');
+  for (const key of ['version', 'sourceRevision', 'bytes', 'sha256']) if (previous[key] !== predecessor[key]) fail('PREDECESSOR_INVALID');
   if (next.version !== intake.version || next.sourceRevision !== intake.sourceRevision || next.bytes !== intake.artifactBytes
     || next.sha256 !== intake.artifactSha256 || next.asarSha256 !== intake.asarSha256
     || next.executableSha256 !== intake.executableSha256) fail('FINAL_BYTES_INVALID');

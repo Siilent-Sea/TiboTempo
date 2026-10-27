@@ -98,6 +98,27 @@ test('028 lifecycle v2 requires its exact route and cannot consume or relabel a 
   assert.equal(validateLinuxFinalLifecycleReceipt(original, pair), original);
 });
 
+test('029 lifecycle v3 requires its exact route and cannot consume or relabel a 027 v1 receipt', () => {
+  const selected = structuredClone(pair);
+  Object.assign(selected.intake, { schemaVersion: 'tibotattle-linux-final-lifecycle-intake-v3',
+    version: '0.1.29', buildNumber: '2026102601' });
+  const original = receipt();
+  assert.equal(validateLinuxFinalLifecycleReceipt(original, selected), null);
+  const replacement = { ...original, schemaVersion: 'tibotattle-linux-final-installed-lifecycle-v3',
+    version: '0.1.29', buildNumber: '2026102601', publicPredecessorUpdate: 'exact_published_0.1.28_to_final_0.1.29' };
+  assert.equal(validateLinuxFinalLifecycleReceipt(replacement, selected), replacement);
+  assert.equal(validateLinuxFinalLifecycleReceipt(replacement, pair), null);
+  for (const patch of [{ schemaVersion: original.schemaVersion }, { version: original.version },
+    { buildNumber: original.buildNumber }, { publicPredecessorUpdate: original.publicPredecessorUpdate },
+    { replacementAndAutomaticRestartVerified: false }, { physicalDesktop: 'qualified' }]) {
+    assert.equal(validateLinuxFinalLifecycleReceipt({ ...replacement, ...patch }, selected), null);
+  }
+  for (const patch of [{ schemaVersion: pair.intake.schemaVersion }, { version: '0.1.30' }, { buildNumber: '2026102602' }]) {
+    assert.equal(validateLinuxFinalLifecycleReceipt(replacement, { ...selected, intake: { ...selected.intake, ...patch } }), null);
+  }
+  assert.equal(validateLinuxFinalLifecycleReceipt(original, pair), original);
+});
+
 function hostHarness({ outcome = 'compared', lifecycleResult = null, handoff = true } = {}) {
   const calls = [], comparison = { outcome, profilesRemoved: true };
   const candidate = { name: profile, nonce: owner.nonce, profileSha256: owner.profileSha256, profileNameSha256: owner.profileNameSha256 };

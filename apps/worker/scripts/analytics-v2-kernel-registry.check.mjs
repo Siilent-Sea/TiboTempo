@@ -110,6 +110,12 @@ const REGISTRY_PINS = Object.freeze([
   // Kernel 20: fast closed-shape validation with the historical comparison as
   // fallback. Accepted states, arithmetic, prices and method are unchanged.
   "3d19c89d3e6da520bed8b08d9e497747d390a64f34eff9137fefbf918b0f67e4",
+  // Kernel 21: the independently measured Terra and scientific-plan successor
+  // of the production origin line. Retain its allocation before this build.
+  "00de5d3dd296f79a2d7bb90361f126621d4155593787045baec137454775705e",
+  // Kernel 22: this line's Terra catalog/pricing and scientific-plan successor,
+  // with the exact retained-preview compatibility patch and compute closure.
+  "4d97cafbcd47b3426a0af21122c728b1d56ee2678b05df00a10587b25bc58f3d",
 ]);
 const ENTRY_KEYS = ["computeClosureSha256", "kernelId", "methodVersion", "priceRegistrySha256", "priceRegistryVersion",
   "productionCommit", "vendorManifestSha256"];

@@ -51,7 +51,11 @@ test("the named current Q-1 contract preserves strict legacy rejection and exact
   assert.equal(perDate.equal, true);
   assert.deepEqual(perDate.currentContract, report.currentContract);
   const legacy = compareAnalyticsV2Parity({ ...fixture, currentContract: null });
-  assert.equal(legacy.unexpectedDiffs, 558, "the historical lane retains the independently observed regression signature");
+  assert.equal(legacy.unexpectedDiffs, 559, "the historical lane also rejects the appended Terra admin entry");
+  const withoutTerra = structuredClone(fixture.actualPreview);
+  assert.equal(withoutTerra.models.modelConfig.pop().modelId, "gpt-6.1-terra");
+  assert.equal(compareAnalyticsV2Parity({ ...fixture, actualPreview: withoutTerra, currentContract: null }).unexpectedDiffs,
+    558, "removing only Terra preserves the prior historical regression signature");
   assert.equal(Object.hasOwn(legacy, "currentContract"), false);
   assert.equal(comparePerDate({ expected: fixture.perDateExpected, response: fixture.actual,
     preview: fixture.actualPreview }).equal, false);
@@ -528,7 +532,9 @@ function checkPublic(value) {
   assert.equal(value.modelBasis, CURRENT_MODEL_BASIS);
   assert.equal(value.modelGate, "shared_composition_kernel_identification");
   assert.equal(value.days.length, 69);
-  assert.equal(value.modelConfig.length, 7);
+  assert.equal(value.modelConfig.length, 8);
+  equal(value.modelConfig[4], { id: "gpt-6.1-terra", label: "GPT-6.1 Terra", family: "terra", order: 4 },
+    "current Terra presentation precedes its predecessor");
   for (const day of value.days) {
     equal(Object.keys(day.byPlanType), PLAN_KEYS, "current public plan order");
     equal(Object.keys(day.byPlanType.promax), Object.keys(EMPTY), "public empty summary shape");
@@ -555,9 +561,14 @@ function checkPreview(value, expectedModelDays) {
   }
   assert.equal(value.models.basis, CURRENT_MODEL_BASIS);
   assert.equal(value.models.gate, "shared_composition_kernel_identification");
-  assert.equal(value.models.modelConfig.length, 43);
+  assert.equal(value.models.modelConfig.length, 44);
+  equal(value.models.modelConfig[43], { modelId: "gpt-6.1-terra", label: "GPT-6.1 Terra",
+    allowanceTrack: "primary", pricingStatus: "published" }, "Terra appends to current wire metadata");
   assert.equal(value.models.days.length, expectedModelDays);
-  for (const day of value.models.days) assert.equal(day.catalogVersion, "reviewed-model-catalog-2026-09-29.1");
+  for (const day of value.models.days) {
+    assert.equal(day.catalogVersion, "reviewed-model-catalog-2026-10-26.1");
+    assert.equal(day.values.some(([id]) => id === "gpt-6.1-terra"), false, "metadata cannot invent historical Terra evidence");
+  }
 }
 
 test("the explicitly selected Q1 contract has fixed provenance and deeply frozen expected copies", () => {
@@ -580,17 +591,18 @@ test("all added headers, empty summaries, metadata and catalog stamps have the d
   checkPreview(expected.goldenPreview, 56);
   checkPreview(expected.perDateExpected.preview, 70);
   assert.equal(expected.perDateExpected.days.length, 70);
-  for (const day of expected.perDateExpected.days) assert.equal(day.payload.catalogVersion, "reviewed-model-catalog-2026-09-29.1");
+  for (const day of expected.perDateExpected.days) assert.equal(day.payload.catalogVersion, "reviewed-model-catalog-2026-10-26.1");
   const admin = await readJson(join(FIXTURES, "fixtures/allowance-preview-v04.json"));
   const publicFixture = await readJson(join(FIXTURES, "fixtures/allowance-breakdowns-v14-expected.json"));
-  equal(expected.goldenPreview.models.modelConfig, admin.models.modelConfig, "pinned admin metadata only");
-  equal(expected.golden.allowanceBreakdowns.modelConfig, publicFixture.modelConfig, "pinned public metadata only");
+  equal(expected.goldenPreview.models.modelConfig.slice(0, 43), admin.models.modelConfig, "pinned retained admin metadata unchanged");
+  equal(expected.golden.allowanceBreakdowns.modelConfig.filter(({ id }) => id !== "gpt-6.1-terra")
+    .map((entry, order) => ({ ...entry, order })), publicFixture.modelConfig, "pinned retained public metadata order unchanged");
   equal(expected.goldenPreview.models.modelConfig.slice(0, 42), original.goldenPreview.models.modelConfig,
     "all historical roster metadata remain exact");
   for (const day of expected.golden.days) {
     assert.equal(day.payload.apiEquivalentSpend.pricingMethodVersion, "server-api-price-equivalent-v0.6");
     assert.equal(day.payload.apiEquivalentSpend.registrySha256,
-      "d57a7443bb43a756f1458872897dfcfcafdde0893433fc83b1036d58184de78d");
+      "206544769b43e4b9645284258edd38f7c07a226022db10f5ec0181335df236ab");
   }
 });
 

@@ -245,6 +245,20 @@ These ratios are product expectations; provider-authoritative allowance and
 window semantics remain unverified. Enum verification does not establish those
 capacities or qualify a TiboTattle release artifact.
 
+On 2026-10-26 UTC, ChatGPT-bundled `codex-cli 0.164.0-alpha.11.1`
+generated 20 plan values, including `sci` and `sci_plus`. The
+[reviewed official source](https://github.com/openai/codex/blob/fea1d7f7d163521a868c344527da79ba0efc146d/codex-rs/protocol/src/auth.rs)
+names them **Academic Researchers** and **Academic Researchers Plus**.
+Current local exports and staged v1.1/v1.2 records retain these exact names;
+their account and plan-attribution proof requirements remain unchanged.
+The frozen v0.2 schema, runtime vocabulary and public types exclude these
+later identities, so its projection writes `unknown`, as it does for `promax`.
+The current local v0.1 quota/activity schemas include all reviewed plans.
+Historical binary observations and frozen wire dictionaries retain their
+original meanings. No scientific-plan allowance capacity, multiplier or
+window duration is inferred; both plans remain outside personal-plan
+normalization. Source and binary recognition do not qualify a release artifact.
+
 ## Staged continuity successor v1.2
 
 The v1.2 contract adds three required nullable usage fields:

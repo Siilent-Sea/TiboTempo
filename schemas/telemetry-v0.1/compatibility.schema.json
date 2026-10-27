@@ -52,7 +52,7 @@
         "checkpointParserVersion": { "const": "codex-checkpoint-state-v0.3" },
         "checkpointScanVersion": { "const": "codex-export-checkpoint-scan-v0.6" },
         "packageName": { "const": "app-usagemonitor" },
-        "packageVersion": { "const": "0.1.28" }
+        "packageVersion": { "const": "0.1.29" }
       }
     },
     "providerAdapters": {
@@ -167,7 +167,7 @@
       "additionalProperties": false,
       "required": ["version", "sha256"],
       "properties": {
-        "version": { "const": "telemetry-v0.1-registry-2026-09-29.1" },
+        "version": { "const": "telemetry-v0.1-registry-2026-10-26.2" },
         "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
       }
     },

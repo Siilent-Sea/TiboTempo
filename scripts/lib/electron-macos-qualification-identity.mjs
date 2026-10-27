@@ -15,6 +15,9 @@ const fail = reason => { throw Object.assign(new Error('MACOS_QUALIFICATION_IDEN
 // Historical v1 remains the 0.1.20 route, including the signed credential lane.
 // v2 retains the exact 0.1.26 -> 0.1.27 production-feed route.
 // v3 separately admits the replacement 0.1.28 and its allocated provenance build.
+// v4 admits only published 0.1.28 -> 0.1.29. Its predecessor manifest SHA-256 is
+// 459b89538461b4249dc38e9bbcb5f7c6eb8f49b202856f3cc4f1db8a57650f89:
+// https://github.com/adamallcock/tibotattle/releases/download/v0.1.28/release-manifest.json
 // 0.1.26 DMGs/source are pinned by the immutable published manifest:
 // https://github.com/adamallcock/tibotattle/releases/download/v0.1.26/release-manifest.json
 // SHA-256 be65a83f8c1f060b7c5cf6141b6332c02df730dc1a2aac696442e4e433c123cc.
@@ -43,6 +46,15 @@ const PRODUCTION_UPDATE_PREDECESSORS = Object.freeze({
     dmgSha256: Object.freeze({
       'darwin-arm64': '7b5f66d91c9f1b8c1537505da860c67177d2b489ee6fb90d445d97c7e46cc9ec',
       'darwin-x64': '3806a1ce2650350b69faff759287c08a5f146acfb9c26e3b3b04abb5cf8896c3',
+    }),
+  }),
+  'tibotattle-production-electron-update-intake-v4': Object.freeze({
+    version: '0.1.28', sourceRevision: 'bf84bc6c04372bb2cee64ef4a4f29981432fc3eb',
+    buildNumber: '2026100901', bundleVersion: '1036', successorVersion: '0.1.29',
+    successorBuildNumber: '2026102601',
+    dmgSha256: Object.freeze({
+      'darwin-arm64': 'e647bdcc545f43162ca1fa746b13ea2bb3125ec4e84e1860f51d057bc69f041f',
+      'darwin-x64': 'cecd6cc5b9c68edbfc6764660356d792d772d0b18af1d1ae14d3135fa682ae92',
     }),
   }),
 });

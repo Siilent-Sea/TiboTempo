@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import {
   ACCOUNT_SCOPED_TELEMETRY_CONSENT_VERSION,
   ACCOUNT_SCOPED_TELEMETRY_SCHEMA_VERSION,
+  TELEMETRY_V02_PLAN_TYPES,
   inspectTelemetryContributionDatasetV02,
   inspectTelemetryContributionV02,
 } from "@app-usagemonitor/telemetry-contract";
@@ -144,8 +145,8 @@ function transformQuota(record, localScope, participantId) {
     schemaVersion: "quota-snapshot-v0.2",
     ...safe,
     // v0.2 is a closed, older wire contract. Preserve its bytes and represent
-    // the provisional tier as unknown; v1.1 carries the exact plan value.
-    planType: record.planType === "promax" ? "unknown" : record.planType,
+    // later reviewed plans as unknown; v1.1 carries their exact plan values.
+    planType: TELEMETRY_V02_PLAN_TYPES.includes(record.planType) ? record.planType : "unknown",
     accountTrackId: deriveTelemetryAccountTrackId(
       localScope,
       participantId,
@@ -160,7 +161,7 @@ function transformActivity(record, localScope, participantId) {
   return {
     schemaVersion: "activity-marker-v0.2",
     ...safe,
-    planType: record.planType === "promax" ? "unknown" : record.planType,
+    planType: TELEMETRY_V02_PLAN_TYPES.includes(record.planType) ? record.planType : "unknown",
     provider,
     accountTrackId: deriveTelemetryAccountTrackId(
       localScope,

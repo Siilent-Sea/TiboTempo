@@ -447,6 +447,22 @@ describe("independent performance report repository", () => {
       .rejects.toThrow(/CHECK constraint/u);
   });
 
+  it("admits Terra Standard and Fast cohorts through the unchanged performance dictionary and SQL schema", async () => {
+    const fixture = await createV11DeviceFixture(db());
+    await activatePerformance(fixture);
+    const day = "2026-10-26", now = Date.parse(`${day}T12:00:00.000Z`);
+    const records = ["standard", "fast"].map((speedMode) => ({
+      ...record("gpt-6.1-terra"), day, speedMode,
+    })).sort((a, b) => canonicalTelemetryPerformanceJson(a).localeCompare(canonicalTelemetryPerformanceJson(b)));
+    await expect(admitTelemetryPerformanceReport(db(), fixture, await report("gpt-6.1-terra", records, day),
+      AUTHORIZATION, "b".repeat(64), now)).resolves.toMatchObject({ status: "accepted", day });
+    const actual = await readTelemetryPerformanceReports(db(), fixture.participantId);
+    expect(actual.reports).toHaveLength(1);
+    expect(actual.reports[0]?.fieldDictionaryVersion).toBe(CURRENT_DICTIONARY);
+    expect(actual.reports[0]?.cohorts.map((entry) => [entry.modelId, entry.speedMode, entry.speedTokens]).sort())
+      .toEqual([["gpt-6.1-terra", "fast", 100], ["gpt-6.1-terra", "standard", 100]]);
+  });
+
   it("requires typed performance deployment without requiring v1.2 activation", async () => {
     await db().prepare("UPDATE telemetry_performance_runtime SET state='active' WHERE id=1").run();
     await expect(requireTelemetryPerformanceStorageMode(db(), {

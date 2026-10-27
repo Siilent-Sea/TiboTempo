@@ -11,6 +11,7 @@ test("model names format Astra while preserving reviewed names and unknown ident
     ["gpt-6.1-sol", "GPT-6.1 Sol"],
     ["gpt-6-sol", "GPT-6 Sol"],
     ["gpt-6-luna", "GPT-6 Luna"],
+    ["gpt-6.1-terra", "GPT-6.1 Terra"],
     ["gpt-5.6-sol", "GPT-5.6 Sol"],
     ["gpt-5.6-terra", "GPT-5.6 Terra"],
     ["gpt-5.6-luna", "GPT-5.6 Luna"],
@@ -128,7 +129,7 @@ test("shared model icons preserve established aliases without inventing unknown 
   for (const [id, theme] of [
     ["gpt-6-astra", "astra"], ["gpt-6.1-sol", "sol"], ["gpt-6-sol", "sol"],
     ["gpt-6-luna", "luna"], ["gpt-5.6-sol-wm", "sol"],
-    ["gpt-5.6-terra", "terra"], ["gpt-5.6-luna", "luna"],
+    ["gpt-6.1-terra", "terra"], ["gpt-5.6-terra", "terra"], ["gpt-5.6-luna", "luna"],
     ["gpt-5.5-codex", "classic"], ["gpt-5.3-codex-spark", "spark"],
   ]) {
     const presentation = modelUsagePresentation(id);

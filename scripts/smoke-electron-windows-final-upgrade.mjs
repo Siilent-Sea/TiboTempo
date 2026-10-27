@@ -45,12 +45,27 @@ export const WINDOWS_FINAL_UPGRADE_PREDECESSOR = Object.freeze({
   installerBytes: 101301024,
 });
 export const WINDOWS_FINAL_UPGRADE_PREDECESSOR_FILE = 'TiboTattle-0.1.26-Windows-x64.exe';
-const PREDECESSOR_RELEASE = 'https://github.com/adamallcock/tibotattle/releases/download/v0.1.26/';
+// Exact immutable v0.1.28 release-manifest.json and downloaded installer bytes.
+export const WINDOWS_FINAL_UPGRADE_PREDECESSOR_V2 = Object.freeze({
+  schemaVersion: 'tibotattle-windows-final-upgrade-predecessor-v2',
+  version: '0.1.28',
+  target: 'win32-x64',
+  sourceRevision: 'bf84bc6c04372bb2cee64ef4a4f29981432fc3eb',
+  manifestSha256: '459b89538461b4249dc38e9bbcb5f7c6eb8f49b202856f3cc4f1db8a57650f89',
+  installerSha256: '4f536f2da0dba7a9e2f04adf959d0069256c9d16da7d8d61d31585b7d6f9c36e',
+  installerBytes: 105541856,
+});
+const PREDECESSORS = Object.freeze({
+  [WINDOWS_FINAL_UPGRADE_PREDECESSOR.schemaVersion]: WINDOWS_FINAL_UPGRADE_PREDECESSOR,
+  [WINDOWS_FINAL_UPGRADE_PREDECESSOR_V2.schemaVersion]: WINDOWS_FINAL_UPGRADE_PREDECESSOR_V2,
+});
 const FINAL_SUCCESSORS = Object.freeze({
   '0.1.27': Object.freeze({ version: '0.1.27', buildNumber: '2026100301',
     receiptSchema: 'tibotattle-windows-final-upgrade-v1' }),
   '0.1.28': Object.freeze({ version: '0.1.28', buildNumber: '2026100901',
     receiptSchema: 'tibotattle-windows-final-upgrade-v2' }),
+  '0.1.29': Object.freeze({ version: '0.1.29', buildNumber: '2026102601',
+    receiptSchema: 'tibotattle-windows-final-upgrade-v3' }),
 });
 export function resolveWindowsFinalUpgradeSuccessor({ version, buildNumber } = {}) {
   const successor = typeof version === 'string' && Object.hasOwn(FINAL_SUCCESSORS, version)
@@ -62,12 +77,24 @@ export function resolveWindowsFinalUpgradeSuccessor({ version, buildNumber } = {
 /** Caller-supplied URLs, alternative releases, extra fields and inferred versions
  * are not intake. A new predecessor needs its own reviewed public evidence. */
 export function validateWindowsFinalUpgradePredecessor(value) {
+  const predecessor = typeof value?.schemaVersion === 'string' && Object.hasOwn(PREDECESSORS, value.schemaVersion)
+    ? PREDECESSORS[value.schemaVersion] : null;
   if (!value || typeof value !== 'object' || Array.isArray(value)
-      || Object.keys(value).length !== Object.keys(WINDOWS_FINAL_UPGRADE_PREDECESSOR).length
-      || Object.entries(WINDOWS_FINAL_UPGRADE_PREDECESSOR).some(([key, expected]) => value[key] !== expected)) {
+      || !predecessor || Object.keys(value).length !== Object.keys(predecessor).length
+      || Object.entries(predecessor).some(([key, expected]) => value[key] !== expected)) {
     fail('PREDECESSOR_INTAKE_INVALID');
   }
-  return WINDOWS_FINAL_UPGRADE_PREDECESSOR;
+  return predecessor;
+}
+export function windowsFinalUpgradePredecessorFile(value) {
+  return `TiboTattle-${validateWindowsFinalUpgradePredecessor(value).version}-Windows-x64.exe`;
+}
+export function validateWindowsFinalUpgradePair(intake, candidate) {
+  const predecessor = validateWindowsFinalUpgradePredecessor(intake);
+  const successor = resolveWindowsFinalUpgradeSuccessor(candidate);
+  if (predecessor !== (successor.version === '0.1.29'
+    ? WINDOWS_FINAL_UPGRADE_PREDECESSOR_V2 : WINDOWS_FINAL_UPGRADE_PREDECESSOR)) fail('PAIR_INVALID');
+  return successor;
 }
 export function parseWindowsFinalUpgradeMode({ qualifyInstalled, qualifyUpgrade, predecessorIntake } = {}) {
   if (!['true', 'false', ''].includes(qualifyUpgrade ?? '')
@@ -84,7 +111,10 @@ export function parseWindowsFinalUpgradeMode({ qualifyInstalled, qualifyUpgrade,
 }
 export function validateWindowsFinalUpgradePredecessorManifest(bytes, intake) {
   validateWindowsFinalUpgradePredecessor(intake);
-  if (!Buffer.isBuffer(bytes) || bytes.length !== 5866 || hash(bytes) !== intake.manifestSha256) {
+  const file = windowsFinalUpgradePredecessorFile(intake);
+  const tag = `v${intake.version}`;
+  const manifestBytes = intake.schemaVersion === WINDOWS_FINAL_UPGRADE_PREDECESSOR_V2.schemaVersion ? 5429 : 5866;
+  if (!Buffer.isBuffer(bytes) || bytes.length !== manifestBytes || hash(bytes) !== intake.manifestSha256) {
     fail('PREDECESSOR_MANIFEST_INVALID');
   }
   let manifest;
@@ -92,13 +122,13 @@ export function validateWindowsFinalUpgradePredecessorManifest(bytes, intake) {
   const rows = manifest.artifacts?.filter(row => row.platform === 'windows' && row.architecture === 'x64');
   const row = rows?.[0];
   if (manifest.schemaVersion !== 'usage-monitor-release-evidence-v1' || manifest.version !== intake.version
-      || manifest.tag !== 'v0.1.26' || manifest.commit !== intake.sourceRevision
+      || manifest.tag !== tag || manifest.commit !== intake.sourceRevision
       || manifest.repository !== 'https://github.com/adamallcock/tibotattle'
       || rows?.length !== 1 || row.version !== intake.version || row.sha256 !== intake.installerSha256
-      || row.bytes !== intake.installerBytes || row.fileName !== WINDOWS_FINAL_UPGRADE_PREDECESSOR_FILE
-      || row.downloadUrl !== `${PREDECESSOR_RELEASE}${WINDOWS_FINAL_UPGRADE_PREDECESSOR_FILE}`
+      || row.bytes !== intake.installerBytes || row.fileName !== file
+      || row.downloadUrl !== `https://github.com/adamallcock/tibotattle/releases/download/${tag}/${file}`
       || row.format !== 'exe' || row.distribution !== 'github-release' || row.channel !== 'direct'
-      || row.source?.commit !== intake.sourceRevision || row.source?.tag !== 'v0.1.26'
+      || row.source?.commit !== intake.sourceRevision || row.source?.tag !== tag
       || row.source?.version !== intake.version || row.nativeTrust?.publisher !== 'Adam Allcock'
       || row.assurances?.authenticodeSigned !== true || row.assurances?.timestamped !== true) {
     fail('PREDECESSOR_MANIFEST_INVALID');
@@ -236,13 +266,13 @@ export async function runWindowsFinalUpgrade(options, {
     fail('DISPOSABLE_WINDOWS_REQUIRED');
   }
   const intake = validateOptions(options);
-  const successor = resolveWindowsFinalUpgradeSuccessor(options.candidate);
+  const successor = validateWindowsFinalUpgradePair(intake, options.candidate);
   await safePath(environment.RUNNER_TEMP, true);
   await safePath(win32.dirname(options.receiptPath), true);
   validateWindowsFinalUpgradePredecessorManifest(await boundedEvidence(options.predecessorManifestPath, 64 * 1024), intake);
   const receiptHandle = await open(options.receiptPath, 'wx', 0o600);
   const receipt = { schemaVersion: successor.receiptSchema, status: 'failed',
-    ...(successor.version === '0.1.28' ? { version: successor.version, buildNumber: successor.buildNumber } : {}),
+    ...(successor.receiptSchema !== 'tibotattle-windows-final-upgrade-v1' ? { version: successor.version, buildNumber: successor.buildNumber } : {}),
     sourceRevision: options.candidate.sourceRevision, installerSha256: options.candidate.installerSha256,
     predecessor: intake, referenceOrigin: 'extracted_from_exact_signed_installers',
     independentPreSigningStage: false, rebuilt: false, resigned: false, published: false,

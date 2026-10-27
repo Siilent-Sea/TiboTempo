@@ -12,17 +12,17 @@ function payload() {
     models: [{ id: 'gpt-5.6-sol', label: 'Sol', turns: 20, speedTurns: 10, ttftTurns: 15, timedResponses: 45, toolFreeTurns: 0, toolFree: [],
       speed: [{ method: 'speed', points: [point(), point(3 * DAY)] }], ttft: [point(), point(3 * DAY), point(4 * DAY)] }] };
 }
-test('GPT-6.1 Sol and older Sol and Luna DTOs retain generation labels and refuse unreviewed suffixes', () => {
+test('GPT-6.1 Terra and Sol and older generations retain distinct DTO labels and refuse unreviewed suffixes', () => {
   const data = payload();
-  data.models.push(...[['gpt-6.1-sol', 'GPT-6.1 Sol'], ['gpt-6-sol', 'GPT-6 Sol'], ['gpt-6-luna', 'GPT-6 Luna'], ['gpt-5.6-luna', 'Luna']]
+  data.models.push(...[['gpt-6.1-sol', 'GPT-6.1 Sol'], ['gpt-6-sol', 'GPT-6 Sol'], ['gpt-6-luna', 'GPT-6 Luna'], ['gpt-6.1-terra', 'GPT-6.1 Terra'], ['gpt-5.6-terra', 'Terra'], ['gpt-5.6-luna', 'Luna']]
     .map(([id, label]) => ({ ...structuredClone(data.models[0]), id, label })));
   assert.equal(normalizeModelPerformance(data), data);
-  for (const model of ['gpt-6.1-sol', 'gpt-6-sol', 'gpt-6-luna']) {
+  for (const model of ['gpt-6.1-sol', 'gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-terra']) {
     const suffix = structuredClone(data);
     suffix.models.find(row => row.id === model).id += '-unreviewed';
     assert.equal(normalizeModelPerformance(suffix), null);
     const mislabeled = structuredClone(data);
-    mislabeled.models.find(row => row.id === model).label = model.endsWith('sol') ? 'Sol' : 'Luna';
+    mislabeled.models.find(row => row.id === model).label = model.endsWith('sol') ? 'Sol' : model.endsWith('terra') ? 'Terra' : 'Luna';
     assert.equal(normalizeModelPerformance(mislabeled), null);
   }
 });
@@ -389,16 +389,16 @@ test('horizontal hover bins are calendar-aligned including unobserved days and e
 test('performance cards render separate GPT-6 generations with their shared family icons', async () => {
   const dom = focusHarness();
   const data = payload();
-  data.models.push(...[['gpt-6.1-sol', 'GPT-6.1 Sol'], ['gpt-6-sol', 'GPT-6 Sol'], ['gpt-6-luna', 'GPT-6 Luna'], ['gpt-5.6-luna', 'Luna']]
+  data.models.push(...[['gpt-6.1-sol', 'GPT-6.1 Sol'], ['gpt-6-sol', 'GPT-6 Sol'], ['gpt-6-luna', 'GPT-6 Luna'], ['gpt-6.1-terra', 'GPT-6.1 Terra'], ['gpt-5.6-terra', 'Terra'], ['gpt-5.6-luna', 'Luna']]
     .map(([id, label]) => ({ ...structuredClone(data.models[0]), id, label })));
   const controller = mountModelPerformance({ ...dom, client: { modelPerformance: async () => data },
     t: (key, values) => translate(key, values, 'en-US') });
   try {
     dom.show(); await controller.refresh();
-    for (const name of ['GPT-5.6 Sol', 'GPT-5.6 Luna', 'GPT-6 Sol', 'GPT-6 Luna', 'GPT-6.1 Sol']) {
+    for (const name of ['GPT-5.6 Sol', 'GPT-5.6 Luna', 'GPT-6 Sol', 'GPT-6 Luna', 'GPT-6.1 Sol', 'GPT-6.1 Terra', 'GPT-5.6 Terra']) {
       assert.ok(dom.root.all().some(node => node.textContent === name), name);
     }
-    for (const family of ['sol', 'luna']) {
+    for (const family of ['sol', 'luna', 'terra']) {
       const buttons = dom.root.all().filter(node => node.tagName === 'button');
       assert.equal(buttons.filter(button => button.all().some(node => node.className ===
         `allowance-model-icon performance-model-icon allowance-model-${family}`)).length, family === 'sol' ? 3 : 2);

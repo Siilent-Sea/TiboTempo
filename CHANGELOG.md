@@ -37,6 +37,30 @@ remains accountable for release wording, validation, signing, and publication.
 
 ## [Unreleased]
 
+## [0.1.29](./release-notes/0.1.29.md) - 2026-10-27
+
+**Provenance:** [GitHub release](https://github.com/adamallcock/tibotattle/releases/tag/v0.1.29) ·
+[annotated source tag](https://github.com/adamallcock/tibotattle/tree/v0.1.29) ·
+[changes since 0.1.28](https://github.com/adamallcock/tibotattle/compare/v0.1.28...v0.1.29)
+
+- Add distinct GPT-6.1 Terra recognition, its official October 26 API prices,
+  and local history replay while preserving prior model identities and prices.
+- Recognize Codex's Academic Researchers plans without inferring allowance
+  multipliers or expanding frozen contribution vocabularies.
+- Use the system calendar in Model performance, with a saved UTC toggle and
+  correct day/week boundaries across time-zone and daylight-saving changes.
+- Recover supported initial speed declarations while keeping uncertain or
+  genuinely mixed turns excluded from confident performance comparisons.
+  Thanks to [Siilent-Sea](https://github.com/Siilent-Sea) for
+  [PR #299](https://github.com/adamallcock/tibotattle/pull/299), incorporated
+  and strengthened in [PR #300](https://github.com/adamallcock/tibotattle/pull/300).
+- Improve large local export verification and quota-analysis efficiency, and
+  skip oversized Claude transcript records that cannot contain usage.
+- Preserve older hosted model rosters and explicit unavailable community
+  estimates while adding Terra to current client/server contracts.
+- Update Electron from 43.5.0 to 43.8.1 and refresh affected dependencies for
+  security advisories. The macOS 14 minimum remains unchanged.
+
 ## [0.1.28](./release-notes/0.1.28.md) - 2026-10-09
 
 **Provenance:** [GitHub release](https://github.com/adamallcock/tibotattle/releases/tag/v0.1.28) ·

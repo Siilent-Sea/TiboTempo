@@ -7312,6 +7312,10 @@ test("the share card names only a known, most-recent Codex plan", async () => {
   assert.equal(shareCardPlanLabel("plus"), "Plus");
   assert.equal(shareCardPlanLabel("edu_plus"), "Edu Plus");
   assert.equal(shareCardPlanLabel("edu_pro"), "Edu Pro");
+  assert.equal(shareCardPlanLabel("sci"), "Academic Researchers");
+  assert.equal(shareCardPlanLabel("sci_plus"), "Academic Researchers Plus");
+  assert.doesNotMatch(shareCardPlanLabel("sci"), /[0-9×]/u);
+  assert.doesNotMatch(shareCardPlanLabel("sci_plus"), /[0-9×]/u);
   assert.equal(
     shareCardPlanLabel("self_serve_business_prolite"),
     "Business · Pro Lite (5×)",
@@ -9932,6 +9936,31 @@ test("local accounting preserves distinct subscription and API Ultrafast dimensi
   assert.deepEqual(result.accounting.bySpeed.ultrafast, row);
   assert.deepEqual(result.accounting.byApiServiceTier.ultrafast, row);
   assert.equal(Object.hasOwn(result.accounting.byApiServiceTier, "private_canary"), false);
+});
+
+test("GPT-6.1 Terra preserves its identity and published Fast ratio without inventing an Ultrafast rate", () => {
+  const result = normalizeDashboardPayload({ mode: "real_local_evidence", accounting: {
+    modelUsage: ["gpt-6.1-terra", "gpt-5.6-terra"].map((model, index) => ({
+      model, allowanceTrack: "primary", pricingStatus: "priced", events: 1,
+      totalTokens: 120, apiPriceEquivalentUsd: index + 1,
+      components: { input_uncached_tokens: 100, output_text_tokens: 20 },
+    })),
+    speedWeighting: {
+      fast: { "gpt-6.1-terra": { events: 1, apiPriceEquivalentUsd: 2 } },
+      standard: { "gpt-5.6-terra": { events: 1, apiPriceEquivalentUsd: 1 } },
+    },
+    fastMode: {
+      appliedMultipliers: { "gpt-6.1-terra": 999, "ultrafast:gpt-6.1-terra": 999 },
+    },
+  } });
+  assert.deepEqual(result.accounting.modelUsage.map(row => [row.model, row.apiPriceEquivalentUsd]),
+    [["gpt-6.1-terra", 1], ["gpt-5.6-terra", 2]]);
+  assert.deepEqual(result.accounting.speedWeighting.fast["gpt-6.1-terra"],
+    { events: 1, apiPriceEquivalentUsd: 2 });
+  assert.equal(result.accounting.fastMode.multipliers["gpt-6.1-terra"], 2);
+  assert.equal(result.accounting.fastMode.appliedMultipliers["gpt-6.1-terra"], 2);
+  assert.equal(Object.hasOwn(result.accounting.fastMode.ultrafastMultipliers, "gpt-6.1-terra"), false);
+  assert.equal(Object.hasOwn(result.accounting.fastMode.appliedMultipliers, "ultrafast:gpt-6.1-terra"), false);
 });
 
 
