@@ -4,7 +4,10 @@ import { createHmac } from 'node:crypto';
 
 export const METHOD = 2;
 // Parsing semantics can advance without changing stable timing HMAC identities.
-export const INFERENCE_TIMING_PARSER_VERSION = 21;
+// v22 admits forked sources by per-turn session-identity provenance instead of
+// discarding the whole source; the version bump forces the reviewed replay so a
+// previously blocked fork is measured rather than left permanently empty.
+export const INFERENCE_TIMING_PARSER_VERSION = 22;
 export const MAX_STATE_BYTES = 128 * 1024;
 const MAX_TIER_EVENTS = 512;
 const MAX_CONTEXT_HISTORY = 512;
@@ -28,6 +31,16 @@ const integer = x => Number.isSafeInteger(x) && x >= 0;
 const stamp = x => typeof x === 'string' ? Date.parse(x) : NaN;
 const id = x => typeof x === 'string' && x.length > 0 && x.length <= 256;
 const TIER_RAW = /^[A-Za-z0-9._:-]{1,64}$/u;
+const HASH = /^[0-9a-f]{64}$/u;
+// Fork provenance is decided per turn from the only evidence a single rollout
+// can carry: the owner session identity written on a record. An inline fork
+// replays the parent's whole history into its own file, so a record that names
+// the parent session is copied evidence, and a record that names this file's
+// own session cannot be — the parent's history predates that identity.
+const TURN_PROVENANCE = new Set(['own', 'inherited', 'conflict']);
+// Metadata timestamps can have small write-time skew; this tolerance applies
+// only to the nested header, never to admitting a turn before the fork.
+const FORK_HEADER_TIME_TOLERANCE = 2000;
 
 function modeFromRawTier(rawTier, source = 'rollout_thread_settings') {
   if (rawTier === null) return { mode: 'unknown', modeSource: 'unobserved', invalid: false };
@@ -141,11 +154,14 @@ function normalizeSavedTierState(value) {
         || !MODES.has(entry.mode)
         || !['rollout_thread_settings', 'unobserved'].includes(entry.source)
         || !validModeSource
+        || (Object.hasOwn(entry, 'own') && typeof entry.own !== 'boolean')
         || (previous !== null && entry.at < previous)) {
       return { timeline: [], lastAt: null, invalid: true };
     }
     previous = entry.at;
-    clean.push({ at: entry.at, mode: entry.mode, source: entry.source });
+    // A checkpoint written before fork provenance existed cannot prove that a
+    // declaration belonged to this session. Keep it as ordering evidence only.
+    clean.push({ at: entry.at, mode: entry.mode, source: entry.source, own: entry.own === true });
   }
   const hasLastAt = Object.hasOwn(value, 'lastAt');
   if (!hasLastAt) {
@@ -173,13 +189,16 @@ function normalizeSavedTierState(value) {
   };
 }
 
-function modeAt(tier, at) {
+function modeAt(tier, at, ownOnly = false) {
   if (tier.invalid || !integer(at) || (tier.lastAt !== null && tier.lastAt > at)) {
     return { mode: 'unknown', source: 'unobserved', invalid: true };
   }
   let result = null;
   for (const entry of tier.timeline) {
     if (entry.at > at) break;
+    // A fork's copied declarations are inherited or unproven evidence. They
+    // order the timeline but can never label the child's own turn.
+    if (ownOnly && entry.own !== true) continue;
     result = entry;
   }
   return result === null
@@ -208,6 +227,44 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
     }
   };
   s.modelAt ??= null;
+  // Fork provenance. `forked` records that this source declared a parent;
+  // `parent` is the parent session's HMAC, never the raw identifier. A declared
+  // fork whose parent hash cannot be restored keeps `parent === null`, which
+  // leaves every unproven turn undetermined instead of guessing.
+  if (typeof s.forked !== 'boolean') s.forked = s.forked === undefined ? false : true;
+  if (s.parent !== undefined && s.parent !== null
+      && (typeof s.parent !== 'string' || !HASH.test(s.parent))) s.parent = null;
+  s.parent ??= null;
+  // The fork's own creation instant. It is a second, independent boundary:
+  // a turn that started before the child existed can only be copied history,
+  // even if its copied records name the child.
+  if (s.forkCreatedAt !== undefined && s.forkCreatedAt !== null && !integer(s.forkCreatedAt)) {
+    s.forkCreatedAt = null;
+  }
+  s.forkCreatedAt ??= null;
+  if (typeof s.modelOwn !== 'boolean') s.modelOwn = !s.forked;
+  // A fork inlines its parent's history, and this file cannot consult the
+  // parent. Two independent facts therefore have to agree before a turn is
+  // measured as this fork's own new work: the turn is named by this session,
+  // and it did not start before the child rollout was created. Copied parent
+  // turns keep the parent's own timestamps (the reviewed accounting boundary
+  // reads copied history at parent-era times for the same reason), so the
+  // second fact also excludes a copy whose session identity was rewritten.
+  if (typeof s.forkInline !== 'boolean') s.forkInline = s.forkInline === undefined ? s.forked : true;
+  // Whether this file has shown an attributable copied prefix and this
+  // session's own work, and whether the two ever appeared out of order.
+  const corruptForkOrder = ['forkInheritedSeen', 'ownWorkSeen', 'forkOrderViolation', 'parentHeaderSeen']
+    .some(name => s[name] !== undefined && typeof s[name] !== 'boolean');
+  if (corruptForkOrder && s.forked) s.blocked = true;
+  if (typeof s.forkInheritedSeen !== 'boolean') s.forkInheritedSeen = false;
+  if (typeof s.ownWorkSeen !== 'boolean') s.ownWorkSeen = false;
+  if (typeof s.forkOrderViolation !== 'boolean') s.forkOrderViolation = false;
+  if (typeof s.parentHeaderSeen !== 'boolean') s.parentHeaderSeen = false;
+  s.diagnostics ??= { malformed: 0, oversized: 0, orphan: 0, capacity: 0, completed: 0 };
+  for (const counter of ['forkInheritedTurns', 'forkUndeterminedTurns',
+    'forkInheritedDeclarations', 'forkUndeterminedDeclarations', 'forkContradictions']) {
+    if (!integer(s.diagnostics[counter])) s.diagnostics[counter] = 0;
+  }
   const hadContextHistory = Object.hasOwn(s, 'contextHistory');
   const savedContextHistoryInvalid = s.contextHistoryInvalid === true;
   const contextHistory = normalizeSavedContextHistory(s.contextHistory);
@@ -220,6 +277,12 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
     turn.mode ??= 'unknown';
     turn.modeSource ??= 'unobserved';
     turn.modeMixed ??= false;
+    // A checkpoint written before fork provenance existed cannot claim that a
+    // turn was this session's own work. Leave it unproven rather than letting a
+    // resumed fork turn qualify on a value it never recorded.
+    if (turn.provenance !== undefined && turn.provenance !== null
+        && !TURN_PROVENANCE.has(turn.provenance)) turn.provenance = null;
+    turn.provenance ??= null;
     // Older pending checkpoints cannot prove that no output preceded a late
     // initial declaration. A full parser-version replay can establish it.
     turn.modeOutputSeen ??= true;
@@ -267,6 +330,68 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
     }
   }
   const hash = (domain, value) => digest(key, domain, value);
+  // The only per-record session identity a rollout carries is `thread_id`. It
+  // is hashed here and never retained. `own` proves this file's session wrote
+  // the record; `inherited` proves it is a copy of the declared parent's
+  // history. Anything else — an absent field, another session, or a fork whose
+  // parent hash did not survive — stays undetermined rather than guessed.
+  const identify = payload => {
+    if (!id(payload?.thread_id)) return null;
+    const observed = hash('session', payload.thread_id);
+    if (observed === s.own) return 'own';
+    if (s.parent !== null && observed === s.parent) {
+      if (s.forked) {
+        // A parent record after the child's own output contradicts a copied
+        // prefix. Mark the source blocked so the store invalidates any rows
+        // already emitted from this source in the same or an earlier pass.
+        if (s.ownWorkSeen && !s.forkOrderViolation) {
+          s.forkOrderViolation = true;
+          s.blocked = true;
+          s.diagnostics.forkContradictions++;
+        }
+        // An inline copy is present in this file, whatever the metadata shape
+        // claimed. The stricter copied-prefix rule then has to hold.
+        s.forkInheritedSeen = true;
+        s.forkInline = true;
+      }
+      return 'inherited';
+    }
+    return null;
+  };
+  // A turn started before the child exists cannot be proven to be child work.
+  const atOrAfterFork = start => integer(s.forkCreatedAt) && integer(start)
+    && start >= s.forkCreatedAt;
+  // Only three facts can prove a forked turn inside a single file. An inline
+  // fork that shows an attributable copied prefix before this session's own
+  // work is separable, and then a turn named by this session that also started
+  // after the child rollout existed is provably new. A file that declares a
+  // parent but never names it inline cannot be told apart from a copy whose
+  // identities were rewritten, so nothing in it is admitted: an inline copy is
+  // the only shape that can re-attribute parent work to this session.
+  const forkOwnWork = turn => {
+    if (!s.forked) return true;
+    if (s.parent === null || turn.provenance !== 'own'
+        || s.forkOrderViolation === true || !atOrAfterFork(turn.start)) return false;
+    // A paginated continuation references its base rather than inlining it, so
+    // there is no copied prefix to attribute.
+    if (s.forkInline !== true) return true;
+    return s.forkInheritedSeen === true && atOrAfterFork(turn.start);
+  };
+  const recordProvenance = (turn, provenance) => {
+    if (!turn || provenance === null) return;
+    if (s.forked && provenance === 'own') s.ownWorkSeen = true;
+    // A copied prefix precedes the child's own records, so the two identities
+    // must never describe the same turn. If they do, they cannot separate the
+    // replay in this file and the turn becomes unproven rather than one or the
+    // other being chosen.
+    if (turn.provenance !== null && turn.provenance !== provenance) {
+      s.diagnostics.forkContradictions++;
+      turn.provenance = 'conflict';
+      return;
+    }
+    if (turn.provenance === 'conflict') return;
+    turn.provenance = provenance;
+  };
   const bad = (t, reason) => {
     t.bad = true; t.problem ??= reason; t.windowBad = true;
     if (!['unreadable_evidence', 'item_interval', 'window_endpoint'].includes(reason)) t.fatal = true;
@@ -377,6 +502,15 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
     s.model = model;
     s.effort = effort;
     s.modelAt = at;
+    // Config records are state updates and usually carry no session identity.
+    // In a fork that makes the carried model the copied parent's until this
+    // file proves otherwise, so the carry is only usable once it is attributable
+    // to this session: the record names it, or the turn it belongs to is already
+    // proven this session's own work.
+    const identity = identify(payload);
+    s.modelOwn = !s.forked
+      || identity === 'own'
+      || (turnId !== null && s.turns[turnId]?.provenance === 'own');
     const turn = turnId ? s.turns[turnId] : null;
     if (turn) {
       if ((turn.responses || turn.first !== null || turn.legacy.observed || turn.legacy.first !== null || turn.legacy.end !== null)
@@ -409,8 +543,23 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
   }
   function setTierEvent(payload, at) {
     const settings = payload?.thread_settings;
+    // In a fork, a declaration is usable for this session only when the event
+    // names this session. The declared parent's declaration is copied history,
+    // and one with no identity is neither. Both are still kept as ordering
+    // evidence but never qualify this session's turn. Because the parent's
+    // declaration cannot describe the child's later switch, a malformed
+    // inherited declaration also cannot poison the child's own evidence.
+    const declaration = identify(payload);
+    if (s.forked) {
+      if (declaration === 'inherited') s.diagnostics.forkInheritedDeclarations++;
+      else if (declaration !== 'own') s.diagnostics.forkUndeterminedDeclarations++;
+    }
+    const qualifies = !s.forked || declaration === 'own';
+    const invalidateMode = () => {
+      if (declaration !== 'inherited') markModeEvidenceInvalid(s);
+    };
     if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
-      markModeEvidenceInvalid(s);
+      invalidateMode();
       return;
     }
     // A settings event without a service tier is a model/settings update, not
@@ -419,7 +568,7 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
     if (!Object.hasOwn(settings, 'service_tier')) return;
     const rawTier = settings.service_tier;
     if (!integer(at) || (rawTier !== null && typeof rawTier !== 'string')) {
-      markModeEvidenceInvalid(s);
+      invalidateMode();
       if (integer(at) && (s.tier.lastAt === null || at >= s.tier.lastAt)) s.tier.lastAt = at;
       return;
     }
@@ -428,12 +577,12 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
     // explicitly `other`, preserving the distinction without retaining the
     // provider token.
     if (rawTier !== null && !TIER_RAW.test(rawTier)) {
-      markModeEvidenceInvalid(s);
+      invalidateMode();
       if (s.tier.lastAt === null || at >= s.tier.lastAt) s.tier.lastAt = at;
       return;
     }
     if (s.tier.lastAt !== null && at < s.tier.lastAt) {
-      markModeEvidenceInvalid(s);
+      invalidateMode();
       return;
     }
     const normalized = modeFromRawTier(rawTier);
@@ -451,7 +600,7 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
       if (at < turn.start) {
         turn.modeInvalid = true;
         markModeEvidenceInvalid(s);
-      } else if (firstDeclaration && !turn.modeInvalid && !turn.modeMixed
+      } else if (qualifies && firstDeclaration && !turn.modeInvalid && !turn.modeMixed
           && turn.mode === 'unknown' && turn.modeSource === 'unobserved'
           && ['standard', 'fast', 'ultrafast'].includes(normalized.mode)
           && !turn.modeOutputSeen && !turn.modernSeen && turn.responses === 0
@@ -463,11 +612,12 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
         turn.mode = normalized.mode;
         turn.modeSource = normalized.modeSource;
         turn.modeInitializedAt = at;
-      } else if (at >= turn.start && normalized.mode !== turn.mode) {
+      } else if (qualifies && at >= turn.start && normalized.mode !== turn.mode) {
         turn.modeMixed = true;
       }
     }
-    s.tier.timeline.push({ at, mode: normalized.mode, source: normalized.modeSource });
+    s.tier.timeline.push({ at, mode: normalized.mode, source: normalized.modeSource,
+      own: qualifies });
     s.tier.lastAt = at;
   }
   function legacyCount(p, at) {
@@ -560,7 +710,48 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
     }
     const at = stamp(r.timestamp);
     if (r.type === 'session_meta') {
-      if (s.own || !id(p.id) || p.forked_from_id) { s.blocked = true; s.turns = {}; return; }
+      if (s.own) {
+        // Paginated fork logs can embed the immediate parent's metadata header
+        // before the child's own work. Accept that one identified header only;
+        // a second, unrelated, late or temporally incompatible header remains
+        // a source-level ambiguity and invalidates its measurements.
+        const identifiedParentHeader = s.forked && s.parent !== null && id(p.id)
+          && hash('session', p.id) === s.parent && !s.parentHeaderSeen
+          && !s.ownWorkSeen && Object.keys(s.turns).length === 0
+          && integer(at) && integer(s.forkCreatedAt)
+          && at <= s.forkCreatedAt + FORK_HEADER_TIME_TOLERANCE;
+        if (identifiedParentHeader) {
+          s.parentHeaderSeen = true;
+          s.forkInheritedSeen = true;
+          s.forkInline = true;
+          return;
+        }
+        s.blocked = true; s.turns = {}; return;
+      }
+      if (!id(p.id)) { s.blocked = true; s.turns = {}; return; }
+      // An inline fork copies its declared parent's history into this file
+      // before its own first turn. The sidecar keeps its deliberately narrower
+      // whole-source refusal, but the primary parser admits the source and
+      // separates copied from new work per turn. A fork whose parent identity
+      // is not a usable session id cannot be separated at all, so it stays
+      // refused rather than measured as if every turn were new.
+      if (Object.hasOwn(p, 'forked_from_id') && p.forked_from_id !== null
+          && p.forked_from_id !== undefined) {
+        // A file that declares itself as its own parent cannot separate copied
+        // from new work at all: every record would satisfy both identities.
+        if (!id(p.forked_from_id) || p.forked_from_id === p.id || toolFree) {
+          s.blocked = true; s.turns = {}; return;
+        }
+        s.forked = true;
+        s.parent = hash('session', p.forked_from_id);
+        // Only the legacy shape writes the parent's records into this file.
+        // A `paginated` continuation references its base instead, which the
+        // reviewed accounting boundary already reads the same way.
+        s.forkInline = p.history_mode !== 'paginated';
+        // The child rollout's own metadata timestamp is the fork instant: the
+        // parent's copied history was written before it.
+        s.forkCreatedAt = integer(at) ? at : null;
+      }
       s.own = hash('session', p.id); return;
     }
     if (!s.own) return;
@@ -613,7 +804,9 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
     }
     if (r.type === 'event_msg' && ['agent_message', 'agent_reasoning', 'agent_reasoning_raw_content',
       'agent_message_delta', 'agent_reasoning_delta', 'agent_reasoning_raw_content_delta'].includes(p.type)) {
-      const sameThread = p.thread_id === undefined || id(p.thread_id) && hash('session', p.thread_id) === s.own;
+      const identity = identify(p);
+      recordProvenance(s.turns[tid], identity);
+      const sameThread = identity === 'own' || p.thread_id === undefined && !s.forked;
       observeModeOutput(sameThread ? s.turns[tid] : null, at);
       return;
     }
@@ -649,8 +842,9 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
     if (r.type === 'event_msg' && p.type === 'token_count') { legacyCount(p, at); return; }
     if (r.type === 'token_usage_record' || r.type === 'event_msg'
         && p.type === 'item_completed' && p.item?.type !== 'UserMessage') {
-      const sameThread = id(p.thread_id) && hash('session', p.thread_id) === s.own;
-      observeModeOutput(sameThread ? s.turns[tid] : null,
+      const identity = identify(p);
+      recordProvenance(s.turns[tid], identity);
+      observeModeOutput(identity === 'own' ? s.turns[tid] : null,
         r.type === 'token_usage_record' ? at : p.started_at_ms);
     }
     if (!tid) {
@@ -683,11 +877,20 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
         && context.invalid === false;
       const mode = contextAtStart && context.modeOverride
         ? { mode: context.mode, source: context.modeSource, invalid: context.modeInvalid }
-        : modeAt(s.tier, at);
-      const startModel = contextAtStart ? context.model : s.model;
-      const startEffort = contextAtStart ? context.effort : s.effort;
+        // A fork's timeline may hold the copied parent's declarations; only
+        // this session's own declaration may label its own turn.
+        : modeAt(s.tier, at, s.forked);
+      // The carried model/effort belong to whoever wrote the last context,
+      // which in a fork can be the copied parent. Per-turn context is always
+      // this turn's own evidence, and so is a carry the file established after
+      // its own work had already begun — the copied prefix is contiguous at the
+      // head of the file, so it cannot be. Anything else stays unknown.
+      const carryProven = !s.forked || s.modelOwn === true;
+      const startModel = contextAtStart ? context.model : carryProven ? s.model : null;
+      const startEffort = contextAtStart ? context.effort : carryProven ? s.effort : null;
       const modelKnownAtStart = contextAtStart && startModel !== null;
       s.turns[tid] = { start: at, model: startModel, effort: startEffort, mixed: false,
+        provenance: null,
         modelObserved: modelKnownAtStart, stableModel: modelKnownAtStart ? startModel : null, modelStable: true,
         mode: mode.mode, modeSource: mode.source, modeMixed: false, modeInvalid: mode.invalid,
         modeOutputSeen: false, modeInitializedAt: null,
@@ -722,7 +925,13 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
       return;
     }
     if (r.type === 'event_msg' && p.type === 'item_completed') {
-      if (!id(p.thread_id) || hash('session', p.thread_id) !== s.own) { bad(t, 'identity'); return; }
+      const identity = identify(p);
+      recordProvenance(t, identity);
+      // A record that names the declared parent is copied history: it proves
+      // this turn is not this session's work and must not accumulate a window
+      // that the row would later report as new inference.
+      if (identity === 'inherited') return;
+      if (identity !== 'own') { bad(t, 'identity'); return; }
       if (!['Reasoning', 'AgentMessage'].includes(p.item?.type)) return;
       const a = p.started_at_ms, b = p.completed_at_ms;
       const l = t.legacy;
@@ -740,7 +949,12 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
     }
     if (r.type === 'token_usage_record') {
       t.modernSeen = true;
-      if (!id(p.thread_id) || hash('session', p.thread_id) !== s.own || !id(p.response_id)) { bad(t, 'identity'); return; }
+      const identity = identify(p);
+      recordProvenance(t, identity);
+      // Copied parent usage is never this session's measurement. It also cannot
+      // establish the reconciliation totals of this session's own turn.
+      if (identity === 'inherited') return;
+      if (identity !== 'own' || !id(p.response_id)) { bad(t, 'identity'); return; }
       const response = hash('response', p.response_id);
       if (t.seen[response]) { bad(t, 'duplicate_response'); t.first = null; t.lastItem = null; return; }
       if (t.responses >= 512) { bad(t, 'response_limit'); s.diagnostics.capacity++; return; }
@@ -761,6 +975,25 @@ export function createParser(key, saved, onTurn, { toolFree = false } = {}) {
       return;
     }
     if (r.type === 'event_msg' && p.type === 'task_complete') {
+      // Fork admission is decided per turn, never per source. Two independent
+      // proofs must agree before a forked turn is measured as this session's
+      // own work: its records name this session, and it started after the child
+      // rollout existed. A turn named by the declared parent is the replayed
+      // parent turn. Anything else — no identity at all, conflicting identities,
+      // or a name that contradicts the fork instant — cannot be separated here,
+      // so it stays unmeasured and is counted rather than being counted twice
+      // or silently dropped.
+      if (s.forked) {
+        const own = forkOwnWork(t);
+        if (!own) {
+          // Proven copied history, or a turn this file cannot separate.
+          s.diagnostics[t.provenance === 'inherited' || !atOrAfterFork(t.start)
+            ? 'forkInheritedTurns' : 'forkUndeterminedTurns']++;
+          delete s.turns[tid];
+          delete s.contextHistory[tid];
+          return;
+        }
+      }
       const elapsed = p.duration_ms;
       const boundary = integer(at) && integer(elapsed) && elapsed > 0
         && Math.abs(at - t.start - elapsed) <= 2000 && t.previous <= at + 1000;

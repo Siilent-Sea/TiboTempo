@@ -74,12 +74,27 @@ function validHandoverPackageMetadata({ sourceReleaseVersion, manifest }) {
     && metadata.rehearsalNextVersion === selected.rehearsalNextVersion;
 }
 
-const sourceReleaseVersion = Object.hasOwn(packageManifest, "tibotattleSourceReleaseVersion")
-  ? packageManifest.tibotattleSourceReleaseVersion
-  : packageManifest.version;
+// The personal development package has its own version and application
+// identity. The retained engine still needs its original source version for
+// internal compatibility; this marker never selects an upstream release.
+const personalDevelopment = packageManifest.name === "tibotempo"
+  && packageManifest.productName === "TiboTempo"
+  && packageManifest.tibotempoChannel === "local-development-v1"
+  && typeof packageManifest.tibotempoSourceReleaseVersion === "string"
+  && RELEASE_VERSION_PATTERN.test(packageManifest.tibotempoSourceReleaseVersion)
+  && !Object.hasOwn(packageManifest, "tibotattleSourceReleaseVersion")
+  && !Object.hasOwn(packageManifest, "tibotattleDistribution");
+const sourceReleaseVersion = personalDevelopment
+  ? packageManifest.tibotempoSourceReleaseVersion
+  : Object.hasOwn(packageManifest, "tibotattleSourceReleaseVersion")
+    ? packageManifest.tibotattleSourceReleaseVersion
+    : packageManifest.version;
 const packagedHandover = Object.hasOwn(packageManifest, "tibotattleSourceReleaseVersion");
 
-if (packageManifest.name !== "app-usagemonitor"
+if ((packageManifest.name !== "app-usagemonitor" && !personalDevelopment)
+    || (packageManifest.name === "app-usagemonitor"
+      && (Object.hasOwn(packageManifest, "tibotempoChannel")
+        || Object.hasOwn(packageManifest, "tibotempoSourceReleaseVersion")))
     || packageManifest.type !== "module"
     || typeof packageManifest.version !== "string"
     || (packagedHandover

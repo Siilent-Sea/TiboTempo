@@ -1,5 +1,7 @@
 # Documentation index
 
+> **个人开发版说明：** 本索引及其原有条目记录上游 TiboTattle 的架构与发布资料，作为本项目重构参考；其中的“当前状态”、社区服务、安装和发布指令不代表本个人产品的状态。个人开发入口见[根 README](../README.md)。
+
 This index separates maintained truth from point-in-time evidence. Start with
 the current authorities below. A dated filename does not make a document
 current, and source, local runtime, native app, installed artifact, CI, release,

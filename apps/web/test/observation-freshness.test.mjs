@@ -97,7 +97,7 @@ test("dashboard stale transition qualifies allowance and pacing inputs together"
 test("quota cards preserve unknown percentages and label stale observations", async () => {
   const { readFile } = await import("node:fs/promises");
   const source = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
-  const body = source.slice(source.indexOf("function renderQuotaCards(data) {"), source.indexOf("\nfunction providerReportedPlanEvidence"));
+  const body = source.slice(source.indexOf("function renderQuotaCards(data) {"), source.indexOf("\nfunction localizedQuotaWindowDuration"));
   const node = (tag, className = "", textContent = "") => ({
     tag, className, textContent, children: [], style: {}, attributes: {}, dataset: {},
     append(...children) { this.children.push(...children); },
@@ -105,13 +105,14 @@ test("quota cards preserve unknown percentages and label stale observations", as
   });
   const container = node("div");
   const finite = value => typeof value === "number" && Number.isFinite(value) ? value : null;
-  const render = new Function("$", "clear", "node", "finite", "isPrimaryCodexQuotaWindow", "isSparkQuotaLimitId", "isValidQuotaWindowDuration", "selectPrimaryCodexQuotaWindow", "localizedQuotaWindowLabel", "providerReportedPlanEvidence", "setLocalizedText", "t", "formatPercent", "formatLocal", "formatTimeRemaining", "localizedQuotaWindowDuration", "isPrimaryCodexWeeklyQuotaWindow", "forecastTimestamp", "allowanceTimestamp", "CODEX_FIVE_HOUR_ALLOWANCE_MINUTES", `const closeInformationPopover = () => {}; ${body}; return renderQuotaCards;`)(
+  const render = new Function("$", "clear", "node", "finite", "isPrimaryCodexQuotaWindow", "isSparkQuotaLimitId", "isValidQuotaWindowDuration", "selectPrimaryCodexQuotaWindow", "localizedQuotaWindowLabel", "providerReportedPlanEvidence", "setLocalizedText", "t", "formatPercent", "formatLocal", "formatTimeRemaining", "localizedQuotaWindowDuration", "isPrimaryCodexWeeklyQuotaWindow", "forecastTimestamp", "allowanceTimestamp", "quotaExhaustionProjection", "CODEX_FIVE_HOUR_ALLOWANCE_MINUTES", `const closeInformationPopover = () => {}; ${body}; return renderQuotaCards;`)(
     () => container, element => { element.children = []; }, node, finite,
     () => true, () => false, () => true, windows => windows[0] ?? null,
     () => "Seven-day allowance", () => "", (element, key, params) => { element.textContent = key; element.params = params; },
     key => key, value => `${value}%`, value => value, () => "Remaining time",
     () => "7 days", () => true, value => value ? Date.parse(value) : null,
-    (label, timestamp) => node("span", "allowance-timestamp", `${label}: ${timestamp}`), 300,
+    (label, timestamp) => node("span", "allowance-timestamp", `${label}: ${timestamp}`),
+    projectionOptions => ({ state: "unavailable", stale: false, ...projectionOptions }), 300,
   );
   const descendants = element => [element, ...element.children.flatMap(descendants)];
   for (const remainingPercent of [null, undefined, -1, 101, 0, 61]) {

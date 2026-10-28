@@ -1,5 +1,23 @@
 # Electron artwork
 
+## TiboTempo icon
+
+The personal edition uses the original [TiboTempo SVG](../../web/public/tibotempo.svg)
+and its transparent [PNG rendering](./tibotempo.png). The gauge represents
+model speed and the ruler represents measurement. The menu-bar glyph is a
+separate, small monochrome interpretation of the same design.
+
+On macOS, create a fresh PNG at a new destination with:
+
+```sh
+swift scripts/render-personal-icon.swift apps/web/public/tibotempo.svg /tmp/tibotempo-icon.png
+```
+
+The following section records the retained upstream artwork; it is not the
+personal edition's application icon.
+
+## Upstream artwork
+
 `tibotattle.ico` is a format conversion of the existing approved
 [`tibotattle-icon.png`](../../web/public/tibotattle-icon.png), matching the macOS
 icon and Linux/web artwork. No artwork was redrawn. Rights and permission are

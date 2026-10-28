@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title">
+  <title id="title">TiboTempo</title>
+  <defs>
+    <linearGradient id="plate" x1="16" y1="16" x2="240" y2="240" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#163449"/>
+      <stop offset="1" stop-color="#0a1727"/>
+    </linearGradient>
+    <linearGradient id="scale" x1="57" y1="158" x2="198" y2="84" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#50e2cb"/>
+      <stop offset="1" stop-color="#63aaff"/>
+    </linearGradient>
+  </defs>
+  <rect x="16" y="16" width="224" height="224" rx="61" fill="url(#plate)"/>
+  <path d="M59 157a69 69 0 1 1 138 0" fill="none" stroke="url(#scale)" stroke-width="15" stroke-linecap="round"/>
+  <path d="M128 157l38-48" fill="none" stroke="#f5fbff" stroke-width="10" stroke-linecap="round"/>
+  <circle cx="128" cy="157" r="10" fill="#f5fbff"/>
+  <path d="M58 192h140M79 184v8m24-8v8m25-8v8m25-8v8m24-8v8" fill="none" stroke="#a3c2d0" stroke-opacity=".72" stroke-width="6" stroke-linecap="round"/>
+</svg>

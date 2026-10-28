@@ -4,6 +4,7 @@ import { configureGuardedSqliteConnection } from './windows-protected-sqlite.js'
 import { randomBytes } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { forEachRolloutLine } from './rollout-line-reader.js';
+import { compressedRolloutHandle, isCompressedRolloutSource } from './bounded-rollout-bytes.js';
 
 
 const APPLICATION = 0x54425450;
@@ -242,6 +243,7 @@ async function fingerprint(handle, cursor, key, digest) {
 export async function ingestTimingFile(store, path, { maxBytes = CHUNK, signal, onReadLine } = {}) {
   safe(Number.isSafeInteger(maxBytes) && maxBytes > 0 && maxBytes <= CHUNK, 'invalid_budget');
   const { db, key, createParser, digest } = store;
+  const compressed = isCompressedRolloutSource(path);
   const handle = await store.filesystem.openSource(path);
   let attemptedBytes = 0;
   let primaryError = null;
@@ -272,11 +274,19 @@ export async function ingestTimingFile(store, path, { maxBytes = CHUNK, signal, 
       // a second completion. Stable HMAC keys preserve logical identities.
       replay = upgradingParser ? old.replay_parser_version !== store.parserVersion
         : before.size > previous.size && previous.exhausted === true;
-      safe(await fingerprint(handle, cursor, key, digest) === old.fingerprint, 'source_rewritten');
+      safe(await fingerprint(handle, compressed ? before.size : cursor, key, digest) === old.fingerprint, 'source_rewritten');
     }
     if (signal?.aborted) throw new Error('cancelled');
-    const start = replay ? 0 : cursor;
-    const end = Math.min(before.size, start + maxBytes);
+    // A `.jsonl.zst` archive is immutable and is not physically appendable, and
+    // its logical offset cannot address physical bytes. Decoding a prefix per
+    // call would re-decode the whole archive on every bounded slice, so a
+    // compressed source is always read in one streaming pass from its first
+    // logical byte inside a single transaction. `maxBytes` therefore bounds
+    // only uncompressed slices; the compressed pass stays bounded by the
+    // decoder's own byte/runtime ceilings, the line cap, cancellation, and the
+    // parser's checkpoint budget.
+    const start = compressed ? 0 : replay ? 0 : cursor;
+    const end = compressed ? Number.POSITIVE_INFINITY : Math.min(before.size, start + maxBytes);
     db.exec('BEGIN IMMEDIATE');
     try {
       if (!old) db.prepare('INSERT INTO source(digest,fingerprint,cursor,snapshot,state) VALUES (?,?,?,?,?)')
@@ -285,14 +295,14 @@ export async function ingestTimingFile(store, path, { maxBytes = CHUNK, signal, 
       // Parser repairs may span many bounded reads. Keep the prior live rows
       // and their parser provenance until the verified replay is complete.
       const table = upgradingParser ? 'parser_replay_turn' : 'turn';
-      if (replay) db.prepare(`DELETE FROM ${table} WHERE source=?`).run(source);
+      if (replay || compressed) db.prepare(`DELETE FROM ${table} WHERE source=?`).run(source);
       const insert = db.prepare(`INSERT OR IGNORE INTO ${table}
         (key,source,offset,${PRIMARY_TURN_COLUMNS.join(',')})
         VALUES (${new Array(3 + PRIMARY_TURN_COLUMNS.length).fill('?').join(',')})`);
       const existing = db.prepare(`SELECT ${PRIMARY_TURN_COLUMNS.join(',')} FROM ${table} WHERE key=?`);
       const conflictFields = "model=NULL,effort=NULL,duration=NULL,ttft=NULL,sample_tokens=NULL,sample_reasoning=NULL,sample_duration=NULL,sample_responses=0,sample_method=NULL,turn_duration=NULL,speed_mode=NULL,speed_mode_source=NULL,api_service_tier=NULL,quality='conflicting_duplicate'";
       const conflict = db.prepare(`UPDATE ${table} SET ${conflictFields} WHERE key=?`);
-      const saved = replay ? null : old ? JSON.parse(old.state) : null;
+      const saved = replay || compressed ? null : old ? JSON.parse(old.state) : null;
       let discardLine = saved?.discardLine === true;
       const parser = createParser(key, saved, t => {
         const turnKey = Buffer.from(t.key, 'hex');
@@ -302,29 +312,35 @@ export async function ingestTimingFile(store, path, { maxBytes = CHUNK, signal, 
           if (PRIMARY_TURN_COLUMNS.some((column, index) => prior[column] !== values[index])) conflict.run(turnKey);
         } else insert.run(turnKey, source, t.offset, ...values);
       });
-      attemptedBytes = end - start;
-      const receipt = await forEachRolloutLine(handle, { start, end, signal,
+      attemptedBytes = compressed ? before.size : end - start;
+      // The logical reader rejects non-integer `end`, so an unbounded
+      // compressed pass is expressed as "read to the decoded end".
+      const receipt = await forEachRolloutLine(compressed ? compressedRolloutHandle(handle) : handle, {
+        start, end, signal,
         onLine: (line, offset, partial) => {
           if (discardLine) discardLine = false;
           else parser.line(line, offset, partial);
           onReadLine?.();
         } });
       if (receipt.aborted || signal?.aborted) throw new Error('cancelled');
+      attemptedBytes = compressed ? receipt.totalBytes : end - start;
       const after = snapshot(await handle.stat());
       const named = snapshot(await store.filesystem.namedStat(path, handle));
       safe(sameFile(before, after) && sameFile(before, named)
         && before.size === after.size && before.mtime === after.mtime
         && before.ctime === after.ctime, 'source_changed');
+      const logicalSize = compressed ? receipt.totalBytes : before.size;
+      if (compressed) after.logicalSize = logicalSize;
       let nextOffset = receipt.nextOffset;
       // Persist only the fact that an oversized line is being discarded. This
       // allows arbitrarily large content lines without retaining their bytes or
       // repeatedly reading the same prefix. Resume parsing after its newline.
-      if (nextOffset === start && (discardLine || end - start > 64 * 1024)) {
-        if (!discardLine) parser.line(Buffer.alloc(0), end, true);
-        discardLine = true; nextOffset = end;
+      if (nextOffset === start && (discardLine || logicalSize - start > 64 * 1024)) {
+        if (!discardLine) parser.line(Buffer.alloc(0), logicalSize, true);
+        discardLine = true; nextOffset = logicalSize;
       }
       const state = parser.state(); state.discardLine = discardLine;
-      after.exhausted = end === before.size;
+      after.exhausted = compressed ? true : end === before.size;
       if (state.blocked) db.prepare(`UPDATE ${table} SET model=NULL,effort=NULL,duration=NULL,ttft=NULL,sample_tokens=NULL,sample_reasoning=NULL,sample_duration=NULL,sample_responses=0,sample_method=NULL,turn_duration=NULL,speed_mode=NULL,speed_mode_source=NULL,api_service_tier=NULL,quality='blocked_source' WHERE source=?`).run(source);
       const repairComplete = upgradingParser && after.exhausted;
       if (repairComplete) {
@@ -349,13 +365,18 @@ export async function ingestTimingFile(store, path, { maxBytes = CHUNK, signal, 
       safe(Number.isSafeInteger(revision) && revision >= 0, 'invalid_revision');
       safe(Number.isSafeInteger(telemetryRevision) && telemetryRevision >= 1, 'invalid_telemetry_revision');
       db.prepare('UPDATE source SET fingerprint=?,cursor=?,snapshot=?,state=?,revision=?,telemetry_revision=?,parser_version=?,replay_parser_version=? WHERE id=?')
-        .run(await fingerprint(handle, nextOffset, key, digest), nextOffset,
+        // The stored cursor is a logical offset for compressed sources; the
+        // immutable-prefix fingerprint always addresses physical bytes.
+        .run(await fingerprint(handle, compressed ? before.size : nextOffset, key, digest), nextOffset,
           JSON.stringify(after), JSON.stringify(state), revision, telemetryRevision,
           upgradingParser && !repairComplete ? old.parser_version : store.parserVersion,
           upgradingParser && !repairComplete ? store.parserVersion : 0, source);
       db.exec('COMMIT');
-      return { bytes: end - start, unchanged: false, replayed: replay || upgradingParser, invalidated,
-        revision, cursor: nextOffset, remaining: before.size - nextOffset, partial: receipt.partialDeferred };
+      return { bytes: compressed ? before.size : end - start, unchanged: false,
+        replayed: replay || upgradingParser || compressed, invalidated,
+        revision, cursor: nextOffset,
+        remaining: compressed ? 0 : before.size - nextOffset,
+        partial: receipt.partialDeferred };
     } catch (e) {
       try { db.exec('ROLLBACK'); } catch { /* Preserve the operation failure. */ }
       throw e;

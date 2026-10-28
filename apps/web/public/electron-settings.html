@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light dark">
     <meta name="theme-color" content="#f5f1e8">
-    <title data-i18n="electron.settings.title">TiboTattle Settings</title>
+    <title data-i18n="electron.settings.title">TiboTempo Settings</title>
     <link rel="stylesheet" href="./styles.css">
     <link rel="stylesheet" href="./electron-settings.css">
     <script type="module" src="./electron-settings.js"></script>
@@ -16,9 +16,9 @@
     <main class="settings-window" id="settings-content" tabindex="-1">
       <header class="settings-header">
         <div class="settings-heading">
-          <img class="settings-brand-icon" src="./tibotattle-icon.png" alt="">
+          <img class="settings-brand-icon" src="./tibotempo.svg" alt="" width="36" height="36">
           <div>
-            <p class="eyebrow">TiboTattle</p>
+            <p class="eyebrow">TiboTempo</p>
             <h1 data-i18n="electron.settings.heading">Settings</h1>
             <p class="settings-lede" data-i18n="electron.settings.lede">
               Keep the local dashboard aligned with the way you work.
@@ -90,13 +90,13 @@
           <div class="settings-panel-heading">
             <p class="eyebrow" data-i18n="electron.settings.general.eyebrow">Local behavior</p>
             <h2 data-i18n="electron.settings.general.title">General</h2>
-            <p data-i18n="electron.settings.general.description">Choose the language, appearance, and startup behavior of TiboTattle.</p>
+            <p data-i18n="electron.settings.general.description">Choose the language, appearance, and startup behavior of TiboTempo.</p>
           </div>
 
           <section class="settings-card" aria-labelledby="settings-language-title">
             <div class="settings-card-copy">
               <h3 id="settings-language-title" data-i18n="electron.settings.language.title">Language</h3>
-              <p data-i18n="electron.settings.language.description">Choose the language used for TiboTattle controls and explanations.</p>
+              <p data-i18n="electron.settings.language.description">Choose the language used for TiboTempo controls and explanations.</p>
             </div>
             <label class="settings-field" for="settings-language">
               <span data-i18n="electron.settings.language.label">Language</span>
@@ -112,7 +112,7 @@
           <section class="settings-card" aria-labelledby="settings-appearance-title">
             <div class="settings-card-copy">
               <h3 id="settings-appearance-title" data-i18n="electron.settings.appearance.title">Appearance</h3>
-              <p data-i18n="electron.settings.appearance.description">Choose whether TiboTattle follows the operating system or uses a fixed light or dark appearance.</p>
+              <p data-i18n="electron.settings.appearance.description">Choose whether TiboTempo follows the operating system or uses a fixed light or dark appearance.</p>
             </div>
             <label class="settings-field" for="settings-appearance">
               <span data-i18n="electron.settings.appearance.label">Appearance</span>
@@ -133,7 +133,7 @@
                 aria-live="polite"
                 aria-atomic="true"
               >
-                Choose whether TiboTattle starts when you sign in.
+                Choose whether TiboTempo starts when you sign in.
               </p>
             </div>
             <div class="settings-control-column">
@@ -145,7 +145,7 @@
                   aria-describedby="settings-start-at-login-summary"
                 >
                 <span class="settings-switch-track" aria-hidden="true"><span></span></span>
-                <span data-i18n="electron.settings.login.label">Start TiboTattle at login</span>
+                <span data-i18n="electron.settings.login.label">Start TiboTempo at login</span>
               </label>
               <div class="settings-actions">
                 <button class="button button-quiet" id="settings-open-login-items" type="button">
@@ -173,30 +173,12 @@
             <p data-i18n="electron.settings.data.description">Manage your Codex folder, refresh frequency, sharing choice, and local tools.</p>
           </div>
 
-          <section class="settings-card settings-sharing-card" aria-labelledby="settings-sharing-title">
-            <div class="settings-card-copy">
-              <h3 id="settings-sharing-title" data-i18n="electron.settings.sharing.title">Community sharing</h3>
-              <p data-i18n="electron.settings.sharing.summary">
-                Manage what this installation shares from the Community page. Your saved choice applies throughout TiboTattle.
-              </p>
-              <p class="settings-status" id="settings-sharing-state" role="status" aria-live="polite" data-i18n="electron.sharing.state.unavailable">
-                Community sharing preference unavailable; nothing will be shared.
-              </p>
-              <p class="settings-status" id="settings-sharing-transport" role="status" aria-live="polite" data-i18n="electron.sharing.transport.unavailable">
-                Uploads are not available in this build.
-              </p>
-            </div>
-            <button class="button button-secondary" id="settings-manage-sharing" type="button" disabled data-i18n="electron.settings.sharing.manage">
-              Manage sharing
-            </button>
-          </section>
-
           <section class="settings-card settings-roots-card" aria-labelledby="settings-codex-roots-title">
             <div class="settings-roots-heading">
               <div class="settings-card-copy">
                 <h3 id="settings-codex-roots-title" data-i18n="electron.settings.codexRoots.title">Codex folder</h3>
                 <p data-i18n="electron.settings.codexRoots.description">
-                  TiboTattle analyzes the selected Codex folder for local usage and quota evidence.
+                  TiboTempo analyzes the selected Codex folder for local usage and quota evidence.
                 </p>
                 <p data-i18n="electron.settings.codexRoots.removalNote">
                   Saved additional folders are retained for future multi-folder support and are not analyzed.
@@ -221,7 +203,7 @@
           <section class="settings-card" aria-labelledby="settings-refresh-title">
             <div class="settings-card-copy">
               <h3 id="settings-refresh-title" data-i18n="electron.settings.refresh.title">Refresh interval</h3>
-              <p data-i18n="electron.settings.refresh.description">Local usage refreshes while TiboTattle is open.</p>
+              <p data-i18n="electron.settings.refresh.description">Local usage refreshes while TiboTempo is open.</p>
             </div>
             <label class="settings-field" for="settings-refresh-interval">
               <span data-i18n="electron.settings.refresh.label">Refresh interval</span>
@@ -238,7 +220,7 @@
             <div class="settings-card-copy">
               <h3 id="settings-local-tools-title" data-i18n="electron.settings.localTools.title">Local tools</h3>
               <p data-i18n="electron.settings.localTools.description">
-                Open the current dashboard in your browser, inspect the support doctor, or reveal TiboTattle's local data folder.
+                Open the current dashboard in your browser, inspect the support doctor, or reveal TiboTempo's local data folder.
               </p>
             </div>
             <div class="settings-actions" aria-label="Local tools" data-i18n-aria-label="electron.settings.localTools.actions">
@@ -339,49 +321,20 @@
         >
           <div class="settings-panel-heading">
             <p class="eyebrow" data-i18n="electron.settings.about.eyebrow">Build and support</p>
-            <h2 data-i18n="electron.settings.about.title">About TiboTattle</h2>
+            <h2 data-i18n="electron.settings.about.title">About TiboTempo</h2>
             <p data-i18n="electron.settings.about.description">Local Codex allowance, measured on your device.</p>
           </div>
 
           <section class="settings-card settings-about-brand" aria-labelledby="settings-about-product-title">
-            <img class="settings-about-icon" src="./tibotattle-icon.png" alt="">
+            <img class="settings-about-icon" src="./tibotempo.svg" alt="" width="44" height="44">
             <div class="settings-about-brand-copy">
-              <h3 id="settings-about-product-title">TiboTattle</h3>
+              <h3 id="settings-about-product-title">TiboTempo</h3>
+              <p class="settings-value settings-attribution">模型速度与用量</p>
               <p class="settings-value" id="settings-version">Version unavailable</p>
               <p class="settings-value" id="settings-build">Build unavailable</p>
             </div>
           </section>
 
-          <section class="settings-card settings-updates-card" aria-labelledby="settings-updates-title">
-            <div class="settings-card-copy">
-              <h3 id="settings-updates-title" data-i18n="electron.settings.updates.title">Automatic updates</h3>
-              <p id="settings-updates-status" class="settings-status" role="status" aria-live="polite">
-                Update checks are unavailable in this development build.
-              </p>
-            </div>
-            <div class="settings-updates-controls">
-              <label class="settings-switch" for="settings-automatic-updates">
-                <input id="settings-automatic-updates" type="checkbox" role="switch" disabled>
-                <span class="settings-switch-track" aria-hidden="true"><span></span></span>
-                <span data-i18n="electron.settings.updates.downloadLabel">Download verified updates automatically</span>
-              </label>
-              <button class="button button-secondary" id="settings-check-for-updates" type="button">
-                Check for Updates…
-              </button>
-              <button class="button button-secondary" id="settings-download-update" type="button" hidden disabled>
-                Download Update
-              </button>
-              <button class="button button-primary" id="settings-install-update" type="button" hidden disabled>
-                Install and Restart
-              </button>
-            </div>
-          </section>
-
-          <nav class="settings-project-links" aria-label="Project links" data-i18n-aria-label="electron.settings.links">
-            <a href="https://tibotattle.com" data-external-target="website" data-i18n="electron.settings.link.website">Website</a>
-            <a href="https://github.com/adamallcock/tibotattle" data-external-target="github" data-i18n="electron.settings.link.github">GitHub</a>
-            <a href="https://x.com/adamallcock" data-external-target="x" data-i18n="electron.settings.link.x">X / Twitter</a>
-          </nav>
         </section>
       </div>
 

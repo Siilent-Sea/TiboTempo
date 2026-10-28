@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-Hans">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -34,11 +34,11 @@
       so a reader can find the project; the release build's own canonical URL
       wins over it whenever release packaging has filled that slot.
     -->
-    <meta name="usage-monitor-share-home" content="tibotattle.com">
+    <meta name="usage-monitor-share-home" content="">
     <meta name="usage-monitor-semantic-open-target" content="__USAGE_MONITOR_SEMANTIC_OPEN_TARGET__">
     <link rel="canonical" href="">
     <meta property="og:type" content="website">
-    <meta property="og:title" content="TiboTattle">
+    <meta property="og:title" content="TiboTempo">
     <meta
       property="og:description"
       content="Private, local-first monitoring for AI usage, quota movement, and calibration quality."
@@ -47,9 +47,9 @@
     <meta property="og:image" content="">
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
-    <meta property="og:image:alt" content="TiboTattle local-first allowance dashboard">
+    <meta property="og:image:alt" content="TiboTempo local usage dashboard">
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="TiboTattle">
+    <meta name="twitter:title" content="TiboTempo">
     <meta
       name="twitter:description"
       content="Private, local-first monitoring for AI usage, quota movement, and calibration quality."
@@ -57,9 +57,9 @@
     <meta name="twitter:image" content="">
     <meta
       name="description"
-      content="Private, local-first monitoring for AI usage, quota movement, calibration quality, and safe community contributions."
+      content="Local model performance, Codex usage and quota forecasts."
     >
-    <title>TiboTattle</title>
+    <title>TiboTempo</title>
     <link rel="stylesheet" href="./styles.css">
   <link rel="stylesheet" href="./cache-reuse-matrix.css">
     <link rel="stylesheet" href="./model-performance.css">
@@ -70,9 +70,9 @@
     <a class="skip-link" href="#main" data-i18n-legacy-root>Skip to monitoring dashboard</a>
 
     <header class="topbar" data-i18n-legacy-root>
-      <a class="brand" href="#overview" aria-label="TiboTattle dashboard" data-i18n-aria-label="aria.tibotattleDashboard">
-        <img class="brand-icon" src="./tibotattle-icon.png" alt="">
-        <span>TiboTattle</span>
+      <a class="brand" href="#overview" aria-label="TiboTempo dashboard" data-i18n-aria-label="aria.tibotattleDashboard">
+        <img class="brand-icon" src="./tibotempo.svg" alt="" width="28" height="28">
+        <span>TiboTempo</span>
       </a>
       <section class="reporting-period-toolbar" id="reporting-period-toolbar" aria-labelledby="reporting-period-label">
         <span class="sr-only" id="reporting-period-label" data-i18n="reporting.period">Reporting period</span>
@@ -98,7 +98,7 @@
           <span class="state-dot" aria-hidden="true"></span>
           Connecting
         </span>
-        <button class="button button-secondary compact" id="refresh-button" type="button" disabled>
+        <button class="button button-secondary compact" id="refresh-button" type="button" data-i18n="dashboard.analysis.start" disabled>
           Analyze local usage
         </button>
         <button class="button button-quiet compact" id="cancel-refresh" type="button" hidden>
@@ -130,11 +130,8 @@
         <nav class="primary-nav" aria-label="Dashboard sections" data-i18n-aria-label="aria.dashboardSections">
           <a href="#overview" data-nav="overview" data-requires-evidence>Overview</a>
           <a href="#weekly" data-nav="weekly" data-requires-evidence data-i18n="allowance.valueTab">Allowance Value</a>
-          <a href="#timeline" data-nav="trends" data-requires-evidence>Trends</a>
           <a href="#performance" data-nav="performance" data-i18n="performance.title">Model performance</a>
           <a href="#accounting" data-nav="method" data-requires-evidence>Usage and costs</a>
-          <a href="#projects" data-nav="projects" data-i18n="workUsage.title">Projects &amp; threads</a>
-          <a href="#community" data-nav="community" data-requires-evidence>Community</a>
         </nav>
       </aside>
       <div class="dashboard-content">
@@ -177,8 +174,8 @@
         <div>
           <strong id="connection-title">Local companion unavailable</strong>
           <p id="connection-copy">
-            Open TiboTattle from Applications and use the in-app window it
-            opens. Nothing has been presented as your real usage.
+            Keep TiboTempo open and reopen this window from its menu bar item.
+            Nothing has been presented as your real usage.
           </p>
         </div>
         <div class="notice-actions">
@@ -187,100 +184,14 @@
         </div>
       </div>
 
-      <section
-        class="notice notice-info electron-sharing-notice"
-        id="electron-sharing-notice"
-        role="region"
-        aria-labelledby="electron-sharing-notice-title"
-        data-dashboard-page="overview"
-        hidden
-      >
-        <div>
-          <p class="eyebrow" data-i18n="electron.sharing.notice.eyebrow">Community sharing</p>
-          <strong id="electron-sharing-notice-title" data-i18n="electron.sharing.notice.title">Share usage measurements</strong>
-          <p id="electron-sharing-notice-copy" data-i18n="electron.sharing.notice.copy">Community sharing will turn on automatically unless you choose Keep sharing off. This is notice {index} of 3. Shared measurements include token counts, model labels, quota measurements, and pseudonymous identifiers. Prompts, responses, credentials, private paths, and raw account identifiers stay on this device. No sign-in is needed.</p>
-          <p class="annotation" id="electron-sharing-notice-earliest" data-i18n="electron.sharing.notice.earliest">Earliest automatic sharing: {date}; activation also requires all three notices and at least 24 hours after the final notice.</p>
-          <p class="annotation" id="electron-sharing-notice-transport" role="status" aria-live="polite" data-i18n="electron.sharing.transport.unavailable">Uploads are not available in this build.</p>
-          <p class="participant-action-status" id="electron-sharing-notice-status" role="status" aria-live="polite" hidden></p>
-        </div>
-        <div class="notice-actions">
-          <button class="button button-primary" id="electron-sharing-share-now" type="button" data-i18n="electron.sharing.notice.shareNow">Share now</button>
-          <button class="button button-quiet" id="electron-sharing-keep-off" type="button" data-i18n="electron.sharing.notice.keepOff">Keep sharing off</button>
-        </div>
-      </section>
 
-      <section class="companion-setup" id="companion-setup" aria-labelledby="companion-setup-title" data-dashboard-page="overview" hidden>
-        <div class="companion-setup-copy">
-          <p class="eyebrow">First-time setup</p>
-          <h2 id="companion-setup-title">Open TiboTattle on this Mac</h2>
-          <p>
-            A normal website cannot read Codex files. The TiboTattle Mac app
-            runs a private loopback companion, reads metadata locally, and opens
-            your dashboard in its own TiboTattle in-app window.
-          </p>
-        </div>
-        <ol class="companion-steps">
-          <li>
-            <strong>Get the Mac app</strong>
-            <a class="button button-primary" id="installer-link" href="" hidden>
-              Download TiboTattle for Mac
-            </a>
-            <div class="installer-details" id="installer-details" hidden>
-              <span id="installer-version"></span>
-              <span id="installer-compatibility"></span>
-              <span id="installer-size"></span>
-              <span id="installer-sha256"></span>
-            </div>
-            <nav class="installer-links" id="installer-links" aria-label="Release information" data-i18n-aria-label="aria.releaseInformation" hidden>
-              <a id="release-notes-link" href="" hidden>Release notes</a>
-              <a id="privacy-link" href="" hidden>Privacy</a>
-              <a id="security-link" href="" hidden>Security</a>
-              <a id="support-link" href="" hidden>Support</a>
-            </nav>
-            <span class="installer-unavailable" id="installer-unavailable">
-              A public installer is not configured for this build. If you
-              already received the app, continue below.
-            </span>
-          </li>
-          <li>
-            <strong>Open it from Applications</strong>
-            <a class="button button-secondary" id="open-installed-app" href="">
-              Open installed app
-            </a>
-            <span>Wait for <b>Ready</b>, then open the dashboard in TiboTattle.</span>
-          </li>
-          <li>
-            <strong>Use the TiboTattle in-app window</strong>
-            <span>
-              Your real usage appears only on that loopback page. This hosted
-              page never receives permission to read local logs.
-            </span>
-          </li>
-        </ol>
-        <div class="companion-setup-actions">
-          <button class="button button-secondary" id="companion-check" type="button">
-            Check this page again
-          </button>
-          <p>
-            This check only reconnects to the current page. If the app opened a
-            TiboTattle window, continue there.
-          </p>
-          <p class="safe-close-guidance">
-            You may close this hosted browser tab at any time. During an
-            analysis, keep the TiboTattle app open; closing the app stops its
-            local companion, while the last durable checkpoint remains available
-            when you reopen it.
-          </p>
-          <p id="open-installed-app-status" role="status" hidden></p>
-        </div>
-      </section>
 
       <details class="setup-card" open id="setup-card" aria-labelledby="setup-title" data-dashboard-page="overview" hidden>
         <summary><h2 id="setup-title">Check this Mac before analyzing</h2><span id="setup-ready-label" class="setup-ready-label" hidden data-i18n="setup.ready">Ready</span></summary>
         <div class="setup-details-body">
           <div class="setup-copy">
             <p id="setup-summary">
-              TiboTattle checks only whether the expected Codex folders and its
+              TiboTempo checks only whether the expected Codex folders and its
               private state directory are available. It does not send or display
               prompts, responses, commands, paths, or account identifiers.
             </p>
@@ -294,7 +205,7 @@
               Monitor app open while analysis runs.
           </p>
           <div class="setup-actions">
-            <button class="button button-primary" id="setup-refresh" type="button" disabled>
+            <button class="button button-primary" id="setup-refresh" type="button" data-i18n="dashboard.analysis.start" disabled>
               Analyze local usage
             </button>
             <button class="button button-quiet" id="setup-check-again" type="button">
@@ -779,7 +690,6 @@
 
       </section>
 
-      <section class="dashboard-section dashboard-page-inactive" id="projects" aria-labelledby="work-usage-title" data-dashboard-page="projects" aria-hidden="true" inert></section>
       <section class="dashboard-section dashboard-page-inactive model-performance" id="performance" aria-labelledby="performance-title" data-dashboard-page="performance" aria-hidden="true" inert data-i18n-skip></section>
 
       <section class="dashboard-section dashboard-page-inactive" id="accounting" aria-labelledby="accounting-title" data-dashboard-page="method" data-requires-evidence aria-hidden="true" inert>
@@ -993,44 +903,6 @@
         </details>
       </section>
 
-      <section
-        class="contribution-cta dashboard-section dashboard-page-inactive"
-        id="community"
-        aria-labelledby="community-page-title"
-        data-dashboard-page="community"
-        data-requires-evidence
-        aria-hidden="true"
-        inert
-      >
-        <div class="dashboard-page-header">
-          <div>
-            <h2 id="community-page-title" data-i18n="page.community.title">Community</h2>
-            <p class="page-description" data-i18n="page.community.description">Manage sharing and explore community measurements.</p>
-          </div>
-        </div>
-        <section class="panel electron-accountless-community" id="electron-accountless-community" aria-labelledby="electron-accountless-community-title" hidden>
-          <div class="panel-heading">
-            <div>
-              <h2 id="electron-accountless-community-title" data-i18n="electron.sharing.community.title">Share usage measurements</h2>
-            </div>
-          </div>
-          <p id="electron-accountless-community-state" class="annotation" role="status" aria-live="polite" data-i18n="electron.sharing.state.unavailable">Community sharing preference unavailable; nothing will be shared.</p>
-          <p id="electron-accountless-community-transport" class="annotation" role="status" aria-live="polite" data-i18n="electron.sharing.transport.unavailable">Uploads are not available in this build.</p>
-          <p id="electron-accountless-sharing-description" class="annotation" data-i18n="electron.settings.sharing.description">Choose whether this installation may share content-free usage measurements. No sign-in is required. Shared measurements may include token counts, model labels, quota measurements, and pseudonymous continuity identifiers. Prompts, responses, credentials, private paths, and raw account identifiers stay on this device.</p>
-          <label class="electron-accountless-sharing-control">
-            <input id="electron-accountless-sharing-enabled" type="checkbox" role="switch" disabled aria-describedby="electron-accountless-sharing-description electron-accountless-community-state electron-accountless-community-transport electron-accountless-sharing-error">
-            <span data-i18n="electron.settings.sharing.label">Share usage measurements</span>
-          </label>
-          <p id="electron-accountless-sharing-error" class="annotation" role="status" aria-live="polite" hidden data-i18n="electron.sharing.notice.error">This sharing choice was not confirmed. Try again.</p>
-        </section>
-          <!--
-            What the community published lives on the website. It is a link,
-            not a second explanation of the same thing inside the app.
-          -->
-          <p class="community-public-evidence">
-            <a href="https://tibotattle.com/#community" target="_blank" rel="noopener">See what the community published</a>
-          </p>
-      </section>
 
     </main>
 
@@ -1041,7 +913,7 @@
       share card's text transcript; it was never a fact a reader acts on.
     -->
     <footer data-i18n-legacy-root>
-      <p>TiboTattle · not affiliated with OpenAI or Thibault Sottiaux</p>
+      <p>TiboTempo · 本地用量</p>
     </footer>
       </div>
     </div>

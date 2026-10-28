@@ -106,6 +106,7 @@ export function createDesktopLifecycle({
   createNavigationPolicy = createLoopbackNavigationPolicy,
   installNavigationPolicy = installLoopbackNavigationPolicy,
   appName = "TiboTattle",
+  minimalMenu = false,
   platform = process.platform,
   desktopLocale = "system",
   initialTrayPreferences = DESKTOP_TRAY_UPGRADE_DEFAULTS,
@@ -127,6 +128,7 @@ export function createDesktopLifecycle({
   openDashboardExternal,
 } = {}) {
   if (!app || typeof app.on !== "function") throw new TypeError("app is required");
+  if (typeof minimalMenu !== "boolean") throw new TypeError("minimalMenu must be a boolean");
   if (nativeAutoUpdater !== undefined
       && (nativeAutoUpdater === null || typeof nativeAutoUpdater.on !== "function")) {
     throw new TypeError("nativeAutoUpdater must be an event emitter");
@@ -1266,6 +1268,7 @@ export function createDesktopLifecycle({
     tray.setToolTip?.(appName);
     const template = createDesktopTrayTemplate({
       appName,
+      minimal: minimalMenu,
       actions: getDesktopActionInterface(),
       onCustomize: () => showSettingsWindow("tray"),
       trayStatus: desktopTrayStatus,
@@ -1300,6 +1303,7 @@ export function createDesktopLifecycle({
     applicationMenu = installDesktopApplicationMenu({
       Menu,
       appName,
+      minimal: minimalMenu,
       platform,
       actions: getDesktopActionInterface(),
       locale: activeDesktopLocale,
@@ -1313,6 +1317,7 @@ export function createDesktopLifecycle({
       applicationMenu = installDesktopApplicationMenu({
         Menu,
         appName,
+        minimal: minimalMenu,
         platform,
         actions: getDesktopActionInterface(),
         locale: activeDesktopLocale,
@@ -1323,6 +1328,7 @@ export function createDesktopLifecycle({
     if (tray && typeof Menu?.buildFromTemplate === "function") {
       const template = createDesktopTrayTemplate({
         appName,
+        minimal: minimalMenu,
         actions: getDesktopActionInterface(),
         onCustomize: () => showSettingsWindow("tray"),
         trayStatus: desktopTrayStatus,

@@ -7,7 +7,7 @@ import { performance } from 'node:perf_hooks';
 import { setImmediate as yieldTurn } from 'node:timers/promises';
 import { canonicalTelemetryPerformanceJson } from '@app-usagemonitor/telemetry-contract';
 import { MODEL_PERFORMANCE_MAX_WINDOWS, modelPerformanceSnapshotKey } from './model-performance-snapshots.js';
-import { openTimingStore, ingestTimingFile, readTimingRows } from '../../src/platform/index.js';
+import { openTimingStore, ingestTimingFile, readTimingRows, supportsCompressedRollouts } from '../../src/platform/index.js';
 import {
   createModelPerformanceContext,
   prepareTelemetryPerformanceDay,
@@ -112,8 +112,16 @@ async function run() {
       }
     }
   });
+  const COMPRESSED_SUFFIX = '.jsonl.zst';
+  const PLAIN_SUFFIX = '.jsonl';
+  // Read `.jsonl.zst` archives only when this runtime can decode them. A runtime
+  // without native Zstd must not present archives as covered history, so their
+  // presence is reported as a bounded, explicit degradation instead.
+  const compressedSupported = supportsCompressedRollouts();
+  let compressedSkipped = 0;
   async function discover() {
     const result = []; let entries = 0;
+    compressedSkipped = 0;
     async function walk(path, depth) {
       if (depth > 3 || stopped) return;
       let directory;
@@ -123,14 +131,25 @@ async function run() {
         if (++entries > 50000) throw new Error('discovery_limit');
         const next = join(path, entry.name);
         if (entry.isDirectory()) await walk(next, depth + 1);
-        else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
-          const stat = await lstat(next);
-          result.push({ path: next, at: stat.mtimeMs });
+        else if (entry.isFile() && (entry.name.endsWith(PLAIN_SUFFIX) || entry.name.endsWith(COMPRESSED_SUFFIX))) {
+          const compressed = entry.name.endsWith(COMPRESSED_SUFFIX);
+          if (compressed && !compressedSupported) { compressedSkipped += 1; continue; }
+          let stat;
+          // An archive can vanish or lose a link between readdir and lstat
+          // (Codex rotates archived sessions). Treat that as absent, not as
+          // evidence, and never abort the whole discovery pass.
+          try { stat = await lstat(next); } catch { continue; }
+          if (!stat.isFile()) continue;
+          result.push({ path: next, at: stat.mtimeMs, compressed, size: stat.size });
         }
       }
     }
     await walk(join(workerData.codexHome, 'sessions'), 0);
     await walk(join(workerData.codexHome, 'archived_sessions'), 0);
+    // Newest first. A compressed archive and a plain rollout of the same
+    // session are both scanned: their logical turn identities are identical, so
+    // the store keeps exactly one measurement per logical turn and only a
+    // genuinely divergent duplicate is marked as a conflict.
     return result.sort((a, b) => b.at - a.at || a.path.localeCompare(b.path));
   }
   let lastPublished = 0, lastCollecting = null;
@@ -157,13 +176,18 @@ async function run() {
     publishedRevision = revision;
     const now = Date.now();
     lastPublished = now; lastCollecting = collecting; windowsChanged = false;
+    // `stale` must also cover archives this runtime could not read at all: an
+    // unreadable compressed source is not covered history. The flag stays
+    // content-free (a count only) and persists until a capable runtime reads it.
+    const archivesUnreadable = compressedSkipped > 0;
     parentPort.postMessage({ type: 'snapshots', revision, values: [
       ...['1', '7', '30', 'all'].flatMap(period => ['standard', 'fast', 'ultrafast'].map(speedMode => ({ period, speedMode, timeZone: 'UTC', end: now }))), ...windows.values(),
     ].map(({period, speedMode, timeZone, end, requestKey}) => ({
       ...(requestKey && end !== null ? { requestKey } : {}),
       ...context.project(rows, { period, speedMode, timeZone, now: end ?? now, rolling: Boolean(requestKey) && end !== null, historyProgress: files === null ? null : {
         checked: Math.min(cursor, files.length), total: files.length,
-      } }), updatedAt: new Date(now).toISOString(), collecting, stale: degraded || parserIncomplete,
+      } }), updatedAt: new Date(now).toISOString(), collecting,
+      stale: degraded || parserIncomplete || archivesUnreadable,
     })) });
   }
   try {

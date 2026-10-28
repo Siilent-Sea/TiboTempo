@@ -166,6 +166,8 @@ function refreshHarness({
       element.textContent = translate(key, {}, "en-US");
     },
     t: (key) => translate(key, {}, "en-US"),
+    localization: { locale: () => "en-US" },
+    translateLegacyText: (value) => value,
   });
   for (const name of [
     "localAnalysisLabel",

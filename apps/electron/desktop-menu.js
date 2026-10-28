@@ -108,6 +108,7 @@ export function createDesktopMenuTemplate({
   actions = createDesktopActionInterface(),
   locale = "system",
   systemLocales = defaultSystemLocales(),
+  minimal = false,
 } = {}) {
   assertAppName(appName);
   if (platform !== "darwin" && platform !== "win32" && platform !== "linux") {
@@ -115,6 +116,35 @@ export function createDesktopMenuTemplate({
   }
   const boundedActions = createDesktopActionInterface(actions);
   const textOptions = { locale, systemLocales };
+  if (typeof minimal !== "boolean") throw new TypeError("minimal must be a boolean");
+  if (minimal) {
+    return [
+      {
+        label: platform === "darwin" ? appName : desktopText("electron.menu.file", {}, textOptions),
+        submenu: [
+          actionItem(desktopText("electron.menu.show", { appName }, textOptions), boundedActions.show),
+          actionItem(desktopText("electron.menu.refresh", {}, textOptions), boundedActions.refresh, {
+            accelerator: "CmdOrCtrl+R",
+          }),
+          actionItem(desktopText("electron.menu.settings", {}, textOptions), boundedActions.settings, {
+            accelerator: "CmdOrCtrl+,",
+          }),
+          { type: "separator" },
+          actionItem(desktopText("electron.menu.quit", { appName }, textOptions), boundedActions.quit, {
+            accelerator: "CmdOrCtrl+Q",
+          }),
+        ],
+      },
+      {
+        label: desktopText("electron.menu.edit", {}, textOptions),
+        submenu: [{ role: "copy" }, { role: "selectAll" }],
+      },
+      {
+        label: desktopText("electron.menu.window", {}, textOptions),
+        submenu: [{ role: "minimize" }, { role: "zoom" }, { role: "front" }],
+      },
+    ];
+  }
   const platformMenu = platform === "darwin"
     ? {
       label: appName,
@@ -202,6 +232,7 @@ export function installDesktopApplicationMenu({
   actions,
   locale = "system",
   systemLocales = defaultSystemLocales(),
+  minimal = false,
 } = {}) {
   if (Menu === null
       || (typeof Menu !== "object" && typeof Menu !== "function")) return null;
@@ -212,6 +243,7 @@ export function installDesktopApplicationMenu({
     actions,
     locale,
     systemLocales,
+    minimal,
   }));
   Menu.setApplicationMenu?.(menu);
   return menu;

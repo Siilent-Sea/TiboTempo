@@ -62,7 +62,24 @@ test("setup stays expanded before any dashboard results exist", () => {
 test("every static page header is available through the browser locale entrypoint", async () => {
   const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
   const keys = [...html.matchAll(/data-i18n="(page\.[^"]+)"/gu)].map((match) => match[1]);
-  assert.equal(keys.length, 10);
+  // The four visible pages are overview, allowance value, model performance
+  // and usage/token value. Model performance renders its own headings, so its
+  // page keys are not static; a removed page must leave no key behind.
+  const unique = new Set(keys);
+  for (const kept of [
+    "page.overview.title", "page.overview.description",
+    "page.weekly.title", "page.weekly.description",
+    "page.accounting.title", "page.accounting.description",
+  ]) {
+    assert.equal(unique.has(kept), true, kept);
+  }
+  for (const removed of [
+    "page.community.title", "page.community.description",
+    "page.projects.title", "page.projects.description",
+  ]) {
+    assert.equal(unique.has(removed), false, removed);
+  }
+  assert.doesNotMatch(html, /data-nav="community"/u);
   for (const locale of SUPPORTED_LOCALES) {
     for (const key of keys) {
       const value = translate(key, {}, locale);

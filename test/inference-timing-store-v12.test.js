@@ -151,7 +151,7 @@ test('parser upgrade reclassifies initial settings without changing retained tim
   } finally { current.close(); }
 });
 
-test('v21 recognizes present Terra timing sources while absent v20 identities and measurements stay unchanged', async t => {
+test('v22 preserves the v21 Terra repair while absent v20 measurements stay unchanged', async t => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'timing-terra-replay-')));
   t.after(() => rm(root, { recursive: true, force: true }));
   const presentFile = join(root, 'present.jsonl'), absentFile = join(root, 'absent.jsonl');
@@ -180,7 +180,7 @@ test('v21 recognizes present Terra timing sources while absent v20 identities an
   assert.ok(before.sources.every(source => source.parserVersion === 20));
   old.close();
   await rm(absentFile);
-  assert.equal(INFERENCE_TIMING_PARSER_VERSION, 21);
+  assert.equal(INFERENCE_TIMING_PARSER_VERSION, 22);
   let current = await openTimingStore(directory, { ...options, parserVersion: INFERENCE_TIMING_PARSER_VERSION });
   try {
     assert.deepEqual(readTimingRows(current, { withRevision: true }), before, 'opening does not relabel retained facts');
@@ -198,7 +198,7 @@ test('v21 recognizes present Terra timing sources while absent v20 identities an
     assert.equal(afterRaw[0].speed_mode, 'unknown');
     assert.equal(afterRaw[0].speed_mode_source, 'unobserved');
     const sourceVersions = current.db.prepare('SELECT parser_version FROM source ORDER BY id').all();
-    assert.deepEqual(sourceVersions.map(source => source.parser_version), [21, 20]);
+    assert.deepEqual(sourceVersions.map(source => source.parser_version), [22, 20]);
     const after = readTimingRows(current, { withRevision: true });
     await assert.rejects(ingestTimingFile(current, absentFile));
     assert.deepEqual(await ingestTimingFile(current, presentFile), { bytes: 0, unchanged: true });

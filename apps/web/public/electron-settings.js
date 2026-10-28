@@ -646,6 +646,10 @@ function queryRequired(documentRef, selector) {
   return element;
 }
 
+function queryOptional(documentRef, selector) {
+  return documentRef?.querySelector?.(selector) ?? null;
+}
+
 function translateSettingsMessage(localizer, key, values = {}) {
   if (typeof localizer?.t === "function") return localizer.t(key, values);
   return translate(key, values, "en-US");
@@ -946,10 +950,13 @@ function renderSettingsState(
     documentRef,
     "#settings-open-notification-settings",
   );
-  const automaticSwitch = queryRequired(documentRef, "#settings-automatic-updates");
-  const checkForUpdates = queryRequired(documentRef, "#settings-check-for-updates");
-  const downloadUpdate = queryRequired(documentRef, "#settings-download-update");
-  const installUpdate = queryRequired(documentRef, "#settings-install-update");
+  // TiboTempo has no update controls of its own: the upstream updater card is
+  // not part of this product's settings, so every reference below is optional
+  // and a missing control simply means there is nothing to paint.
+  const automaticSwitch = queryOptional(documentRef, "#settings-automatic-updates");
+  const checkForUpdates = queryOptional(documentRef, "#settings-check-for-updates");
+  const downloadUpdate = queryOptional(documentRef, "#settings-download-update");
+  const installUpdate = queryOptional(documentRef, "#settings-install-update");
   const openDashboardBrowser = queryRequired(
     documentRef,
     "#settings-open-dashboard-browser",
@@ -1003,8 +1010,10 @@ function renderSettingsState(
     input.disabled = !notificationReady;
   }
   const automaticUpdatesReady = bridgeAvailable && state.about.automaticUpdates.canSet;
-  automaticSwitch.checked = automaticUpdatesReady && state.about.automaticUpdates.enabled;
-  automaticSwitch.disabled = !automaticUpdatesReady;
+  if (automaticSwitch) {
+    automaticSwitch.checked = automaticUpdatesReady && state.about.automaticUpdates.enabled;
+    automaticSwitch.disabled = !automaticUpdatesReady;
+  }
   setText(
     documentRef,
     "#settings-version",
@@ -1020,25 +1029,31 @@ function renderSettingsState(
     }),
   );
   const updateStatusKey = UPDATE_STATUS_KEYS[state.about.update.status];
-  setText(
-    documentRef,
-    "#settings-updates-status",
-    state.about.update.status === "downloading" || updateStatusKey === undefined
-      ? state.about.update.detail
-      : translateSettingsMessage(localizer, updateStatusKey),
-  );
-  checkForUpdates.disabled = !bridgeAvailable
-    || !state.about.update.canCheck
-    || state.about.update.status === "checking"
-    || state.about.update.status === "downloading"
-    || state.about.update.status === "installing";
-  checkForUpdates.textContent = state.about.update.status === "checking"
-    ? translateSettingsMessage(localizer, "electron.settings.updates.checkingButton")
-    : translateSettingsMessage(localizer, "electron.settings.updates.check");
-  downloadUpdate.hidden = !state.about.update.canDownload;
-  downloadUpdate.disabled = !bridgeAvailable || !state.about.update.canDownload;
-  installUpdate.hidden = !state.about.update.canInstall;
-  installUpdate.disabled = !bridgeAvailable || !state.about.update.canInstall;
+  const updateStatusElement = queryOptional(documentRef, "#settings-updates-status");
+  if (updateStatusElement) {
+    updateStatusElement.textContent =
+      state.about.update.status === "downloading" || updateStatusKey === undefined
+        ? state.about.update.detail
+        : translateSettingsMessage(localizer, updateStatusKey);
+  }
+  if (checkForUpdates) {
+    checkForUpdates.disabled = !bridgeAvailable
+      || !state.about.update.canCheck
+      || state.about.update.status === "checking"
+      || state.about.update.status === "downloading"
+      || state.about.update.status === "installing";
+    checkForUpdates.textContent = state.about.update.status === "checking"
+      ? translateSettingsMessage(localizer, "electron.settings.updates.checkingButton")
+      : translateSettingsMessage(localizer, "electron.settings.updates.check");
+  }
+  if (downloadUpdate) {
+    downloadUpdate.hidden = !state.about.update.canDownload;
+    downloadUpdate.disabled = !bridgeAvailable || !state.about.update.canDownload;
+  }
+  if (installUpdate) {
+    installUpdate.hidden = !state.about.update.canInstall;
+    installUpdate.disabled = !bridgeAvailable || !state.about.update.canInstall;
+  }
   openDashboardBrowser.disabled = !bridgeAvailable;
   showDiagnostics.disabled = !bridgeAvailable;
   revealLocalData.disabled = !bridgeAvailable;
@@ -1122,7 +1137,11 @@ export async function mountSettingsPage({
   let currentState = normalizeSettingsState(null);
   applyElectronAppearancePreference(currentState.appearance, { documentRef, windowRef });
   let busy = false;
-  const settingsSharingBridge = sharingBridge(settingsBridge);
+  const hasSharingSurface = Boolean(
+    documentRef.querySelector("#settings-sharing-state")
+      || documentRef.querySelector("#settings-manage-sharing"),
+  );
+  const settingsSharingBridge = hasSharingSurface ? sharingBridge(settingsBridge) : null;
   let currentSharingPreference = null;
   let invoke = null;
   let unsubscribeDesktopCommands = () => {};
@@ -1497,19 +1516,22 @@ export async function mountSettingsPage({
       .catch(() => { operationError(documentRef, pageLocalizer); })
       .finally(() => { busy = false; });
   });
-  listen(queryRequired(documentRef, "#settings-check-for-updates"), "click", () => {
-    void invoke("checkForUpdates");
-  });
-  listen(queryRequired(documentRef, "#settings-download-update"), "click", () => {
-    void invoke("downloadUpdate");
-  });
-  listen(queryRequired(documentRef, "#settings-install-update"), "click", () => {
-    void invoke("installUpdateAndRestart");
-  });
-  listen(queryRequired(documentRef, "#settings-automatic-updates"), "change", (event) => {
-    if (!currentState.about.automaticUpdates.canSet) return;
-    void invoke("setAutomaticDownload", event.target.checked === true);
-  });
+  // Update controls are optional in this product's settings surface.
+  for (const [selector, action] of [
+    ["#settings-check-for-updates", () => invoke("checkForUpdates")],
+    ["#settings-download-update", () => invoke("downloadUpdate")],
+    ["#settings-install-update", () => invoke("installUpdateAndRestart")],
+  ]) {
+    const control = queryOptional(documentRef, selector);
+    if (control) listen(control, "click", action);
+  }
+  const automaticUpdatesSwitch = queryOptional(documentRef, "#settings-automatic-updates");
+  if (automaticUpdatesSwitch) {
+    listen(automaticUpdatesSwitch, "change", (event) => {
+      if (!currentState.about.automaticUpdates.canSet) return;
+      void invoke("setAutomaticDownload", event.target.checked === true);
+    });
+  }
   listen(queryRequired(documentRef, "#settings-open-dashboard-browser"), "click", () => {
     void invoke("openDashboardInBrowser");
   });

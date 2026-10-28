@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { modelThemeIcon } from "../public/model-visuals.js";
 import { translate } from "../public/localization.js";
+import { quotaExhaustionProjection } from "../public/lib.js";
 import {
   isPrimaryCodexQuotaWindow, isPrimaryCodexWeeklyQuotaWindow, selectPrimaryCodexQuotaWindow,
   isSparkQuotaLimitId, isValidQuotaWindowDuration,
@@ -44,9 +45,9 @@ function harness(locale = "en-US") {
   const document = { createElementNS: (_namespace, tag) => node(tag), createTextNode: text => node("text", "", text), activeElement: null };
   const constants = ["PACE_ON_TRACK_LOWER_RATIO", "PACE_ON_TRACK_UPPER_RATIO", "PACE_CRITICAL_RATIO", "PACE_AVERAGE_MINIMUM_HOURS", "PACE_STATE_LABELS"]
     .map(name => source.match(new RegExp(`\\nconst ${name} = [^;]+;`, "u"))[0]).join("\n");
-  const functions = ["formatAllowanceDuration", "allowanceTimestamp", "formatForecastDuration", "forecastTimestamp", "firstFiniteForecastNumber", "weeklyPaceRates", "weeklyPaceStanding", "formatPaceRatio", "weeklyPaceTrack", "renderWeeklyPaceWaiting", "renderWeeklyPaceForecast", "renderQuotaCards", "providerReportedPlanEvidence", "renderDashboardSkeleton"]
+  const functions = ["formatAllowanceDuration", "allowanceTimestamp", "formatForecastDuration", "forecastTimestamp", "firstFiniteForecastNumber", "weeklyPaceRates", "weeklyPaceStanding", "formatPaceRatio", "weeklyPaceTrack", "renderWeeklyPaceWaiting", "renderWeeklyPaceForecast", "renderQuotaCards", "renderQuotaExhaustionProjection", "providerReportedPlanEvidence", "renderDashboardSkeleton"]
     .map(declaration).join("\n");
-  const factory = new Function("node", "document", "modelThemeIcon", "$", "t", "setLocalizedText", "isPrimaryCodexQuotaWindow", "isPrimaryCodexWeeklyQuotaWindow", "selectPrimaryCodexQuotaWindow", "isSparkQuotaLimitId", "isValidQuotaWindowDuration", "card", `
+  const factory = new Function("node", "document", "modelThemeIcon", "$", "t", "setLocalizedText", "isPrimaryCodexQuotaWindow", "isPrimaryCodexWeeklyQuotaWindow", "selectPrimaryCodexQuotaWindow", "isSparkQuotaLimitId", "isValidQuotaWindowDuration", "card", "quotaExhaustionProjection", `
     const finite = value => typeof value === "number" && Number.isFinite(value) ? value : null;
     const clear = element => element.replaceChildren();
     const formatDecimal = (value, digits = 0) => value.toFixed(digits);
@@ -71,7 +72,7 @@ function harness(locale = "en-US") {
   const api = factory(node, document, modelThemeIcon, selector => ({ "#quota-cards": quota, "#allowance-context": context, "#weekly-pace-forecast": card })[selector],
     (key, values = {}) => translate(key, values, locale),
     (element, key) => { element.textContent = translate(key, {}, locale); },
-    isPrimaryCodexQuotaWindow, isPrimaryCodexWeeklyQuotaWindow, selectPrimaryCodexQuotaWindow, isSparkQuotaLimitId, isValidQuotaWindowDuration, card);
+    isPrimaryCodexQuotaWindow, isPrimaryCodexWeeklyQuotaWindow, selectPrimaryCodexQuotaWindow, isSparkQuotaLimitId, isValidQuotaWindowDuration, card, quotaExhaustionProjection);
   return { ...api, quota, card, context, document };
 }
 const now = Date.now();

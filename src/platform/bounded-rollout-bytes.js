@@ -60,127 +60,175 @@ function samePhysicalState(left, right) {
     && left.ctimeMs === right.ctimeMs && left.birthtimeMs === right.birthtimeMs;
 }
 
-function assertRegularOwned(stats) {
-  if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1
+// A source this module opened itself must be a single-link regular file so a
+// replaced name can never be read twice. A caller-owned descriptor was already
+// validated by its owner (`openSource`); requiring nlink===1 there would reject
+// legitimate hard-linked duplicate archives instead of deduplicating them.
+function assertRegularOwned(stats, owned) {
+  if (!stats.isFile() || stats.isSymbolicLink()
+      || (owned === true && stats.nlink !== 1)
       || (typeof process.getuid === "function" && stats.uid !== process.getuid())) {
     throw readError("codex_rollout_source_changed");
   }
 }
 
-// Native Zstd on supported Node versions can finish successfully for truncated
-// input (including returning no output). Independently validate frame/block
-// boundaries; never infer completeness merely from the decoder ending. This
-// tracks at most 18 header bytes and skips block bodies without retaining them.
-class ZstdFrameBoundaries {
-  constructor(maximumOutputBytes, maximumWindowLog, createLimitError) {
-    this.maximumOutputBytes = BigInt(maximumOutputBytes);
-    this.maximumWindowBytes = 2 ** maximumWindowLog;
-    this.createLimitError = createLimitError;
-    this.header = Buffer.alloc(18);
-    this.headerBytes = 0;
-    this.state = "magic";
-    this.needed = 4;
-    this.skipBytes = 0;
-    this.frames = 0;
-    this.checksum = false;
-    this.lastBlock = false;
+// Zstandard magic values from the public format specification.
+const FRAME_MAGIC = 0xfd2fb528;
+const SKIPPABLE_MINIMUM = 0x184d2a50;
+const SKIPPABLE_MAXIMUM = 0x184d2a5f;
+const MAXIMUM_BLOCK_BYTES = 128 * 1024;
+const FRAME_HEADER_BYTES = 18;
+
+// Pull-based cursor over the physical compressed byte stream. Views alias a
+// freshly allocated read buffer per physical read, so they stay valid while a
+// downstream decoder holds them; nothing beyond one read chunk is retained.
+class CompressedByteStream {
+  constructor(chunks) {
+    this.chunks = chunks;
+    this.chunk = null;
+    this.offset = 0;
   }
 
-  next(state, needed) {
-    this.state = state;
-    this.needed = needed;
-    this.headerBytes = 0;
-  }
-
-  blockEnded() {
-    if (!this.lastBlock) this.next("block", 3);
-    else if (this.checksum) this.next("checksum", 4);
-    else this.next("magic", 4);
-  }
-
-  push(chunk) {
-    let offset = 0;
-    while (offset < chunk.length) {
-      if (this.skipBytes > 0) {
-        const length = Math.min(this.skipBytes, chunk.length - offset);
-        this.skipBytes -= length;
-        offset += length;
-        if (this.skipBytes === 0) {
-          if (this.state === "body") this.blockEnded();
-          else this.next("magic", 4);
-        }
-        continue;
+  async fill() {
+    for (;;) {
+      if (this.chunk !== null && this.offset < this.chunk.length) return true;
+      const next = await this.chunks.next();
+      if (next.done === true) {
+        this.chunk = null;
+        this.offset = 0;
+        return false;
       }
-      const length = Math.min(this.needed - this.headerBytes, chunk.length - offset);
-      chunk.copy(this.header, this.headerBytes, offset, offset + length);
-      this.headerBytes += length;
-      offset += length;
-      if (this.headerBytes !== this.needed) continue;
-      if (this.state === "magic") {
-        const magic = this.header.readUInt32LE(0);
-        if (magic >= 0x184d2a50 && magic <= 0x184d2a5f) this.next("skippable", 4);
-        else if (magic === 0xfd2fb528) this.next("descriptor", 1);
-        else throw readError("codex_rollout_content_invalid");
-      } else if (this.state === "descriptor") {
-        const descriptor = this.header[0];
-        if ((descriptor & 8) !== 0) throw readError("codex_rollout_content_invalid");
-        this.checksum = (descriptor & 4) !== 0;
-        const singleSegment = (descriptor & 32) !== 0;
-        this.singleSegment = singleSegment;
-        this.contentSizeBytes = [singleSegment ? 1 : 0, 2, 4, 8][descriptor >> 6];
-        this.contentSizeOffset = (singleSegment ? 0 : 1) + [0, 1, 2, 4][descriptor & 3];
-        this.next("frameHeader", this.contentSizeOffset + this.contentSizeBytes);
-        if (this.needed === 0) this.next("block", 3);
-      } else if (this.state === "frameHeader") {
-        if (!this.singleSegment) {
-          const descriptor = this.header[0];
-          const windowBase = 2 ** (10 + (descriptor >> 3));
-          if (windowBase + (windowBase / 8) * (descriptor & 7) > this.maximumWindowBytes) {
-            throw this.createLimitError("source_bytes");
-          }
-        }
-        if (this.contentSizeBytes > 0) {
-          let size = 0n;
-          for (let index = this.contentSizeBytes - 1; index >= 0; index -= 1) {
-            size = size * 256n + BigInt(this.header[this.contentSizeOffset + index]);
-          }
-          if (this.contentSizeBytes === 2) size += 256n;
-          if (size > this.maximumOutputBytes
-              || (this.singleSegment && size > BigInt(this.maximumWindowBytes))) {
-            throw this.createLimitError("source_bytes");
-          }
-        }
-        this.next("block", 3);
-      } else if (this.state === "block") {
-        const header = this.header.readUIntLE(0, 3);
-        const type = (header >> 1) & 3;
-        const size = header >>> 3;
-        if (type === 3 || size > 128 * 1024) throw readError("codex_rollout_content_invalid");
-        this.lastBlock = (header & 1) !== 0;
-        if (this.lastBlock) this.frames += 1;
-        this.state = "body";
-        this.skipBytes = type === 1 ? 1 : size;
-        if (this.skipBytes === 0) this.blockEnded();
-      } else if (this.state === "checksum") {
-        this.next("magic", 4);
-      } else if (this.state === "skippable") {
-        this.skipBytes = this.header.readUInt32LE(0);
-        this.state = "skipBody";
-        if (this.skipBytes === 0) this.next("magic", 4);
-      }
+      this.chunk = next.value;
+      this.offset = 0;
+      if (this.chunk.length > 0) return true;
     }
   }
 
-  finish() {
-    if (this.frames < 1 || this.state !== "magic" || this.headerBytes !== 0) {
+  async view(maximum) {
+    if (!(await this.fill())) return null;
+    const take = Math.min(maximum, this.chunk.length - this.offset);
+    const view = this.chunk.subarray(this.offset, this.offset + take);
+    this.offset += take;
+    return view;
+  }
+
+  async exact(length) {
+    if (length === 0) return Buffer.alloc(0);
+    const parts = [];
+    let remaining = length;
+    while (remaining > 0) {
+      const view = await this.view(remaining);
+      if (view === null) return null;
+      parts.push(view);
+      remaining -= view.length;
+    }
+    return parts.length === 1 ? parts[0] : Buffer.concat(parts, length);
+  }
+
+  async skip(length) {
+    let remaining = length;
+    while (remaining > 0) {
+      const view = await this.view(remaining);
+      if (view === null) return false;
+      remaining -= view.length;
+    }
+    return true;
+  }
+
+  release() {
+    try {
+      this.chunks.return?.();
+    } catch { /* The outer read already owns failure reporting. */ }
+  }
+}
+
+// Walk exactly one frame's physical bytes so a decoder instance can be given a
+// single complete frame. Node's native Zstd stream does not reliably emit every
+// frame of concatenated input: measured on Node 26.0.0 one buffered chunk
+// produced only the first frame while the same bytes delivered in 3-byte chunks
+// failed with ZSTD_error_prefix_unknown, and the outcome depended on where the
+// chunk boundaries fell. Electron's Node 24.22 does emit all frames. Validating
+// and decoding frame by frame is deterministic on both.
+//
+// The walk validates header/block structure, window-log and content-size
+// ceilings before any byte is decompressed, and never retains a block body.
+async function* frameBytes(stream, magic, {
+  maximumWindowBytes, maximumOutputBytes, createLimitError, check,
+}) {
+  yield magic;
+  const descriptorBytes = await stream.exact(1);
+  if (descriptorBytes === null) throw readError("codex_rollout_content_invalid");
+  const descriptor = descriptorBytes[0];
+  // Bit 3 is reserved; bit 4 must be zero in every supported revision.
+  if ((descriptor & 8) !== 0) throw readError("codex_rollout_content_invalid");
+  const checksum = (descriptor & 4) !== 0;
+  const singleSegment = (descriptor & 32) !== 0;
+  const dictionaryIdBytes = [0, 1, 2, 4][descriptor & 3];
+  const contentSizeBytes = [singleSegment ? 1 : 0, 2, 4, 8][descriptor >> 6];
+  yield descriptorBytes;
+
+  if (!singleSegment) {
+    const window = await stream.exact(1);
+    if (window === null) throw readError("codex_rollout_content_invalid");
+    const base = 2 ** (10 + (window[0] >> 3));
+    if (base + (base / 8) * (window[0] & 7) > maximumWindowBytes) {
+      throw createLimitError("source_bytes");
+    }
+    yield window;
+  }
+  if (dictionaryIdBytes > 0) {
+    const dictionaryId = await stream.exact(dictionaryIdBytes);
+    if (dictionaryId === null) throw readError("codex_rollout_content_invalid");
+    yield dictionaryId;
+  }
+  if (contentSizeBytes > 0) {
+    const contentSize = await stream.exact(contentSizeBytes);
+    if (contentSize === null) throw readError("codex_rollout_content_invalid");
+    let size = 0n;
+    for (let index = contentSizeBytes - 1; index >= 0; index -= 1) {
+      size = size * 256n + BigInt(contentSize[index]);
+    }
+    if (contentSizeBytes === 2) size += 256n;
+    if (size > BigInt(maximumOutputBytes)
+        || (singleSegment && size > BigInt(maximumWindowBytes))) {
+      throw createLimitError("source_bytes");
+    }
+    yield contentSize;
+  }
+
+  for (;;) {
+    check();
+    const header = await stream.exact(3);
+    if (header === null) throw readError("codex_rollout_content_invalid");
+    const value = header.readUIntLE(0, 3);
+    const type = (value >> 1) & 3;
+    const size = value >>> 3;
+    const last = (value & 1) !== 0;
+    if (type === 3 || size > MAXIMUM_BLOCK_BYTES) {
       throw readError("codex_rollout_content_invalid");
     }
+    yield header;
+    // An RLE block stores one byte that the decoder expands `size` times.
+    let remaining = type === 1 ? 1 : size;
+    while (remaining > 0) {
+      const view = await stream.view(Math.min(remaining, 64 * 1024));
+      if (view === null) throw readError("codex_rollout_content_invalid");
+      remaining -= view.length;
+      yield view;
+    }
+    if (last) break;
+  }
+  if (checksum) {
+    const trailer = await stream.exact(4);
+    if (trailer === null) throw readError("codex_rollout_content_invalid");
+    yield trailer;
   }
 }
 
 /** Yield decompressed bytes at logical offsets; descriptor ownership is retained.
- * Bounded prefix readers may stop early. A reader consumed to EOF validates all
- * frames, checksums and the immutable physical source before it succeeds.
+ * Bounded prefix readers may stop early. A reader consumed to EOF validates every
+ * frame, checksum and the immutable physical source before it succeeds, and
+ * decodes each concatenated frame with its own decoder instance.
  */
 export async function* readCompressedRolloutBytes(source, {
   start = 0,
@@ -207,11 +255,8 @@ export async function* readCompressedRolloutBytes(source, {
   abortIfNeeded(signal);
   if (!supportsCompressedRollouts()) throw readError("codex_rollout_compression_unsupported");
   const owned = typeof source === "string";
-  let handle;
-  let input;
-  let decoder;
-  let pumping;
-  let pumpError = null;
+  let handle = null;
+  let stream = null;
   const startedAt = performance.now();
   function check() {
     abortIfNeeded(signal);
@@ -225,53 +270,79 @@ export async function* readCompressedRolloutBytes(source, {
       ? await open(source, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
       : source;
     const before = await handle.stat();
-    assertRegularOwned(before);
+    assertRegularOwned(before, owned);
     if (owned && !samePhysicalState(before, await lstat(source))) {
       throw readError("codex_rollout_source_changed");
     }
     if (before.size > limits.maximumCompressedBytes) throw createLimitError("source_bytes");
     const expansionBound = Math.min(limits.maximumDecompressedBytes,
       Math.max(limits.minimumExpansionAllowance, before.size * limits.maximumExpansionRatio));
-    const frameBoundaries = new ZstdFrameBoundaries(expansionBound, limits.maximumWindowLog, createLimitError);
-    input = Readable.from((async function* () {
-      let offset = 0;
-      while (offset < before.size) {
+    stream = new CompressedByteStream((async function* () {
+      let position = 0;
+      while (position < before.size) {
         check();
-        // A stream may retain the chunk after write(), so unlike positional
+        // A decoder may retain the chunk after write(), so unlike positional
         // line readers this buffer must not be reused for the next read.
-        const buffer = Buffer.allocUnsafe(Math.min(highWaterMark, before.size - offset));
-        const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
+        const buffer = Buffer.allocUnsafe(Math.min(highWaterMark, before.size - position));
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
         if (bytesRead !== buffer.length) throw readError("codex_rollout_source_changed");
-        offset += bytesRead;
-        frameBoundaries.push(buffer);
+        position += bytesRead;
         yield buffer;
       }
-      frameBoundaries.finish();
-    })(), { highWaterMark: 1, objectMode: false });
-    decoder = zlib.createZstdDecompress({
-      chunkSize: Math.max(64, highWaterMark),
-      highWaterMark,
-      params: { [zlib.constants.ZSTD_d_windowLogMax]: limits.maximumWindowLog },
-    });
-    // Capture immediately: malformed input can reject while the consumer is
-    // paused at a yielded chunk. Never emit unhandled rejections or raw errors.
-    pumping = pipeline(input, decoder, ...(signal ? [{ signal }] : []))
-      .catch((error) => { pumpError = error; });
+    })());
+
     let offset = 0;
-    for await (const chunk of decoder) {
+    let frames = 0;
+    for (;;) {
       check();
-      const next = offset + chunk.length;
-      if (next > expansionBound) throw createLimitError("source_bytes");
-      if (next > start && offset < end) {
-        yield chunk.subarray(Math.max(0, start - offset), Math.min(chunk.length, end - offset));
+      const magicBytes = await stream.exact(4);
+      if (magicBytes === null) break;
+      const magic = magicBytes.readUInt32LE(0);
+      if (magic >= SKIPPABLE_MINIMUM && magic <= SKIPPABLE_MAXIMUM) {
+        // A skippable frame carries only a length and opaque payload.
+        const header = await stream.exact(4);
+        if (header === null) throw readError("codex_rollout_content_invalid");
+        if (!(await stream.skip(header.readUInt32LE(0)))) throw readError("codex_rollout_content_invalid");
+        continue;
       }
-      offset = next;
+      if (magic !== FRAME_MAGIC) throw readError("codex_rollout_content_invalid");
+      frames += 1;
+      const decoder = zlib.createZstdDecompress({
+        chunkSize: Math.max(64, highWaterMark),
+        highWaterMark,
+        params: { [zlib.constants.ZSTD_d_windowLogMax]: limits.maximumWindowLog },
+      });
+      let failure = null;
+      // Capture immediately: malformed input can reject while the consumer is
+      // paused at a yielded chunk. Never emit unhandled rejections.
+      const pumping = pipeline(Readable.from(frameBytes(stream, magicBytes, {
+        maximumWindowBytes: 2 ** limits.maximumWindowLog,
+        maximumOutputBytes: expansionBound,
+        createLimitError,
+        check,
+      }), { highWaterMark: 1, objectMode: false }), decoder, ...(signal ? [{ signal }] : []))
+        .catch((error) => { failure = error; });
+      try {
+        for await (const chunk of decoder) {
+          check();
+          const next = offset + chunk.length;
+          if (next > expansionBound) throw createLimitError("source_bytes");
+          if (next > start && offset < end) {
+            yield chunk.subarray(Math.max(0, start - offset), Math.min(chunk.length, end - offset));
+          }
+          offset = next;
+        }
+      } catch (error) {
+        if (failure === null) failure = error;
+      }
+      await pumping;
+      decoder.destroy();
+      if (failure !== null) throw failure;
     }
-    await pumping;
-    if (pumpError) throw pumpError;
+    if (frames < 1) throw readError("codex_rollout_content_invalid");
     check();
     const after = await handle.stat();
-    assertRegularOwned(after);
+    assertRegularOwned(after, owned);
     if (!samePhysicalState(before, after)
         || (owned && !samePhysicalState(after, await lstat(source)))) {
       throw readError("codex_rollout_source_changed");
@@ -282,9 +353,7 @@ export async function* readCompressedRolloutBytes(source, {
         || (typeof error?.code === "string" && error.code.startsWith("export_resource_"))) throw error;
     throw readError("codex_rollout_content_invalid");
   } finally {
-    input?.destroy();
-    decoder?.destroy();
-    await pumping;
+    stream?.release();
     if (owned) await handle?.close().catch(() => {});
   }
 }

@@ -5552,6 +5552,26 @@ body:not(.community-site) > .topbar:has(#reporting-period-toolbar[hidden]) { gri
 .quota-tank-bottom { display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 12px; }
 .quota-tank-value { display: block; font-family: var(--serif); font-size: clamp(2.6rem, 4vw, 3.5rem); font-weight: var(--weight-regular); line-height: 1.15; font-variant-numeric: tabular-nums; }
 .quota-tank-caption, .quota-tank-reset { display: flex; flex-direction: column; font-size: .75rem; }
+/* The run-out estimate is a separate reading from the allowance itself, so it
+   sits below the remaining/reset row with its own rule instead of competing
+   with the headline percentage. Unknown, unused and exhausted states keep the
+   same footprint so a card never reflows when evidence changes. */
+.quota-tank-projection { display: grid; gap: 2px; padding-top: 10px; border-top: 1px solid color-mix(in srgb, var(--ink) 12%, transparent); }
+.quota-tank-projection-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; }
+.quota-tank-projection-label { color: var(--muted); font-size: .65rem; letter-spacing: .06em; text-transform: uppercase; }
+.quota-tank-projection-value { display: block; font-family: var(--serif); font-size: 1.05rem; font-weight: var(--weight-regular); line-height: 1.3; font-variant-numeric: tabular-nums; }
+.quota-tank-projection-value.is-unknown { color: var(--muted); }
+.quota-tank-projection-caption, .quota-tank-projection-detail { color: var(--muted); font-size: .68rem; line-height: 1.35; }
+.quota-tank-projection-caption { margin: 0; }
+.quota-tank-projection-detail { font-variant-numeric: tabular-nums; }
+.quota-tank-projection .allowance-timestamp { font-size: inherit; }
+.quota-tank[data-short-window="true"] .quota-tank-projection { padding-top: 8px; }
+.quota-tank[data-short-window="true"] .quota-tank-projection-value { font-size: .95rem; }
+@media (max-width: 700px) {
+  /* Wrap rather than hide: the elapsed/used facts are the evidence behind the
+     estimate, so a narrow card keeps them at a smaller size. */
+  .quota-tank-projection-detail { font-size: .64rem; }
+}
 .quota-tank-reset { align-items: flex-end; text-align: end; }
 .allowance-timestamp { display: inline; width: fit-content; max-width: 100%; padding: 0; border: 0; border-bottom: 1px dotted currentColor; border-radius: 0; color: inherit; background: transparent; font: inherit; text-align: inherit; cursor: help; }
 .allowance-timestamp:hover { color: var(--green-text); }

@@ -1,3 +1,30 @@
+# TiboTempo（开发原型）
+
+这是一个以本机 Codex 用量为中心的个人产品，名为 TiboTempo。它从 TiboTattle 代码出发，按本项目需要精简；当前仍在开发，尚未发布正式安装包。
+
+首版目标是查看模型 TPS、首 Token 时间、有效轮数、额度与耗尽预估、Token 用量及 API 等效价值。日历默认使用系统时区；价格缺失和证据不足应保持明确的未知状态。API 等效价值不是订阅账单。
+
+Mac 开发入口（需要 Node.js 22.13 以上和 pnpm 11）：
+
+```sh
+pnpm install --frozen-lockfile --ignore-scripts
+NODE_USE_ENV_PROXY=1 node node_modules/electron/install.js
+npm run personal:dev
+```
+
+此入口使用单独的 `TiboTempo` 资料目录，并在应用关闭时停止自己的本地服务；不会复用原应用的资料目录。开发入口和正式打包、签名、安装、Windows 实机验证是不同阶段；当前不能把上游发布证据当作本产品的发布证明。
+
+可用 `npm run personal:package` 在 `.release-build/personal-dev/` 下生成未签名的 Mac 开发包；构建会校验包内许可、图标和本地服务。该包尚未安装，也不是已发布版本。模型性能页支持 `.jsonl` 和 `.jsonl.zst`，多帧归档经过合成数据的接口验证；本机全部历史的统计覆盖尚未验收。Windows 构建与实机验证尚未完成。
+
+本项目复用了 [TiboTattle](https://github.com/adamallcock/tibotattle) 的 MIT 许可代码，原版权和许可保留在 [LICENSE](LICENSE)。本项目的名称、功能、仓库和发布节奏由本项目自行决定。
+
+产品图标由本项目设计，矢量源文件是 [tibotempo.svg](apps/web/public/tibotempo.svg)。
+
+以下折叠内容保留为上游项目的历史参考；其中的安装、更新、社区服务和发布说明不代表本个人产品的现状。
+
+<details>
+<summary>上游 README（参考）</summary>
+
 # TiboTattle
 
 Local-first monitoring for coding-agent usage. TiboTattle
@@ -295,3 +322,5 @@ platform qualification separately.
 ## License
 
 [MIT](LICENSE)
+
+</details>

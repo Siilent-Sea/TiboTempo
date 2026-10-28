@@ -10,7 +10,6 @@ import { mountTrendsHorizon, createSpendRateLookup } from "./trends-horizon.js";
 import { mountAllowanceTanks } from "./allowance-tanks.js";
 import { modelUsagePresentation, modelThemeIcon } from "./model-visuals.js";
 import { buildAllowanceTrends } from "./allowance-trends.js";
-import { mountWorkUsageView } from "./work-usage-view.js";
 import { mountModelPerformance } from "./model-performance.js";
 import { createDashboardReportPreloader } from "./dashboard-report-preload.js";
 import {
@@ -38,6 +37,7 @@ import {
   diagnosticSurface,
   historyCoverageNoticeKind,
   historyIndexContinuationDecision,
+  quotaExhaustionProjection,
   refreshAccountingStatus,
   refreshQuickResultStatus,
   refreshNeedsContinuation,
@@ -48,11 +48,9 @@ import {
 } from "./navigation.js";
 import { resolveElectronStartupAppearance } from "./desktop-appearance.js";
 import {
-  renderInstallerJourney as renderSharedInstallerJourney,
-} from "./install-cta.js";
-import {
   COMPOSITION_MINIMUM_MODEL_COST_SHARE_PERCENT,
   createBrowserLocalization,
+  translateLegacyText,
 } from "./localization.js";
 import {
   TELEMETRY_PLAN_DISPLAY_NAMES,
@@ -450,13 +448,6 @@ function configuredSemanticOpenTarget(documentRef) {
 }
 
 const SEMANTIC_OPEN_TARGET = configuredSemanticOpenTarget(document);
-const installedAppLink = $("#open-installed-app");
-if (SEMANTIC_OPEN_TARGET) {
-  installedAppLink.href = SEMANTIC_OPEN_TARGET;
-} else {
-  installedAppLink.removeAttribute("href");
-  installedAppLink.setAttribute("aria-disabled", "true");
-}
 
 // A language change redraws browser-generated values using the same display
 // locale and leaves data, timestamps, and request ownership untouched. The
@@ -468,10 +459,6 @@ function rerenderLocalizedDashboard() {
   // locale's nodes from surviving a switch back to English (or Spanish) in the
   // same WebView.
   localization.localizeTree();
-  renderSharedInstallerJourney(document, {
-    formatLocale: getFormattingLocale(),
-    translateMessage: t,
-  });
   // Charts write formatted instants and numbers straight into an
   // `data-i18n-skip` SVG text layer, so the evidence view is redrawn from the
   // state it was built from. This is a single state-driven redraw, not a list
@@ -498,19 +485,6 @@ window.addEventListener("tibotattle:locale-change", (event) => {
   rerenderLocalizedDashboard();
 });
 
-function openInstalledApp() {
-  const status = $("#open-installed-app-status");
-  status.hidden = false;
-  status.textContent =
-    "Opening TiboTattle… If no app appears, install the signed Mac download above, then try again.";
-  window.setTimeout(() => {
-    if (!status.hidden) {
-      status.textContent =
-        "Continue in the TiboTattle in-app window. If nothing opened, the app is not installed or macOS blocked the link.";
-    }
-  }, 2_000);
-}
-
 function isLoopbackDashboard() {
   const host = String(window.location?.hostname ?? "").toLowerCase();
   return host === "localhost" || host === "127.0.0.1" || host === "::1";
@@ -524,7 +498,6 @@ function setJourneyState(state) {
   // loopback dashboard loses its local service briefly, showing instructions
   // for installing the app inside the already-installed app is actively
   // misleading.
-  $("#companion-setup").hidden = state !== "first-run" || isLoopbackDashboard();
   const hasEvidence = state === "local-ready" || state === "demo-mode";
   for (const element of document.querySelectorAll("[data-requires-evidence]")) {
     element.hidden = !hasEvidence;
@@ -544,15 +517,16 @@ function localAnalysisAllowed(value = localOnboarding) {
 
 function localAnalysisLabel() {
   if (dashboard?.collector?.indexing?.status === "bounded_pause") {
-    return "Continue local analysis";
+    return t("dashboard.analysis.continue");
   }
   return dashboard?.activity?.lastScanAt || dashboard?.collector?.lastScanAt
-    ? "Update local usage"
-    : "Analyze local usage";
+    ? t("dashboard.analysis.update")
+    : t("dashboard.analysis.start");
 }
 
 // Keep phase, count and elapsed time in stable slots across refresh updates.
 function renderRefreshProgress(button, phase, { processed = null, selected = null, elapsedSeconds = null } = {}) {
+  phase = translateLegacyText(phase, localization.locale());
   button.classList.add("refresh-progress");
   const label = node("span", "refresh-progress-phase", phase);
   const count = node("span", "refresh-progress-count");
@@ -675,7 +649,7 @@ function updateLocalActionButtons() {
   const cancel = $("#cancel-refresh");
   cancel.hidden = !localRefreshInProgress;
   cancel.disabled = localRefreshCancelRequested;
-  cancel.textContent = localRefreshCancelRequested ? "Cancelling…" : "Cancel";
+  cancel.textContent = t(localRefreshCancelRequested ? "action.cancelling" : "action.cancel");
 }
 
 let activeInformationPopover = null;
@@ -1154,7 +1128,8 @@ function renderElectronAccountlessCommunity() {
 
 async function loadElectronSharingPreference({ dashboardReady = false } = {}) {
   const bridge = electronSharingBridge();
-  if (!bridge || !dashboardReady || dashboard === null) {
+  const hasSharingSurface = Boolean($("#electron-sharing-notice") || $("#electron-accountless-community"));
+  if (!bridge || !hasSharingSurface || !dashboardReady || dashboard === null) {
     electronSharingPreference = null;
     electronSharingNoticeAckError = false;
     renderElectronAccountlessCommunity();
@@ -1327,7 +1302,6 @@ function renderReportingPeriod(data = dashboard) {
     : t("reporting.waiting");
   const rangeToggle = document.querySelector(".reporting-period-details > summary");
   if (rangeToggle && range) rangeToggle.title = range.textContent;
-  workUsageView.setReportingWindow(reportingWindow);
   modelPerformance.setReportingWindow(reportingWindow);
 }
 
@@ -1719,8 +1693,102 @@ function renderQuotaCards(data) {
     }
     bottom.append(amount, reset);
     card.append(header, bottom);
+    const projection = renderQuotaExhaustionProjection(window, { remainingPercent: remaining });
+    if (projection) card.append(projection);
     container.append(card);
   }
+}
+
+/**
+ * The run-out estimate for one allowance window.
+ *
+ * The owner-confirmed reading is proportional and anchored at the window's own
+ * start, so it is computed by `quotaExhaustionProjection` in lib.js and shown
+ * beside the reset time for comparison. It is drawn from this window only: an
+ * unknown start, reset, duration or used share produces the explicit
+ * unavailable/unknown state rather than a number, a stale observation keeps its
+ * own reading and says so, and a window with nothing used yet states that there
+ * is no pace to extrapolate instead of implying it never runs out.
+ */
+function renderQuotaExhaustionProjection(window, { remainingPercent: remainingOverride = null } = {}) {
+  const usedPercent = finite(window?.usedPercent);
+  const remaining = finite(remainingOverride) ?? finite(window?.remainingPercent);
+  const resetAt = forecastTimestamp(window?.resetAt);
+  const observedAt = window?.observedAt ?? null;
+  const projection = quotaExhaustionProjection({
+    usedPercent,
+    remainingPercent: remaining,
+    resetAt,
+    durationMinutes: finite(window?.durationMinutes),
+    observedAt,
+    status: window?.status === "stale" ? "stale" : "live",
+  });
+  const block = node("div", "quota-tank-projection");
+  block.dataset.projectionState = projection.state;
+  block.dataset.projectionStale = String(projection.stale === true);
+  const head = node("div", "quota-tank-projection-head");
+  head.append(node("span", "quota-tank-projection-label", t("allowance.projection")));
+  if (projection.stale) {
+    head.append(node("span", "evidence-chip quota-tank-projection-chip",
+      t("allowance.projectionStale")));
+  }
+  block.append(head);
+
+  if (projection.state === "projected") {
+    const duration = formatAllowanceDuration(projection.remainingHours);
+    const value = node("strong", "quota-tank-projection-value");
+    if (duration === null || projection.projectedAt === null) {
+      value.textContent = t("allowance.projectionUnavailable");
+      block.append(value, node("p", "quota-tank-projection-caption",
+        t("allowance.projectionUnavailableCaption")));
+      return block;
+    }
+    value.append(allowanceTimestamp(
+      t("allowance.projectionValue", { duration }),
+      projection.projectedAt,
+    ));
+    block.append(value);
+    block.append(node("p", "quota-tank-projection-caption",
+      projection.beforeReset
+        ? t("allowance.projectionBeforeReset")
+        : t("allowance.projectionAfterReset")));
+    block.append(node("p", "quota-tank-projection-detail",
+      t("allowance.projectionCaption")));
+    const facts = node("p", "quota-tank-projection-detail");
+    const parts = [
+      t("allowance.projectionElapsed", {
+        duration: formatAllowanceDuration(projection.elapsedHours) ?? "",
+      }),
+      t("allowance.projectionUsed", {
+        percent: formatPercent(projection.usedPercent, window?.precision ?? 0),
+      }),
+    ];
+    facts.textContent = parts.join(" · ");
+    block.append(facts);
+    if (projection.stale) {
+      block.append(node("p", "quota-tank-projection-caption",
+        t("allowance.projectionStaleCaption")));
+    }
+    return block;
+  }
+
+  const copyKey = projection.state === "exhausted"
+    ? "allowance.projectionExhausted"
+    : projection.state === "no_usage"
+      ? "allowance.projectionNoUsage"
+      : "allowance.projectionUnavailable";
+  const captionKey = projection.state === "exhausted"
+    ? "allowance.projectionExhaustedCaption"
+    : projection.state === "no_usage"
+      ? "allowance.projectionNoUsageCaption"
+      : "allowance.projectionUnavailableCaption";
+  block.append(node("strong", "quota-tank-projection-value is-unknown", t(copyKey)));
+  block.append(node("p", "quota-tank-projection-caption", t(captionKey)));
+  if (projection.stale) {
+    block.append(node("p", "quota-tank-projection-caption",
+      t("allowance.projectionStaleCaption")));
+  }
+  return block;
 }
 
 function providerReportedPlanEvidence(value) {
@@ -11723,9 +11791,14 @@ async function checkLocalSetup() {
     await loadLocalDashboard();
   } finally {
     localActionBusy = false;
-    $("#connection-check").textContent = "Check again";
-    $("#companion-check").textContent = "Check this page again";
-    $("#setup-check-again").textContent = "Check again";
+    for (const [selector, label] of [
+      ["#connection-check", "Check again"],
+      ["#companion-check", "Check this page again"],
+      ["#setup-check-again", "Check again"],
+    ]) {
+      const button = $(selector);
+      if (button) button.textContent = label;
+    }
     updateLocalActionButtons();
   }
 }
@@ -12028,9 +12101,7 @@ $("#setup-refresh").addEventListener("click", () => {
   void requestRefresh({ detailed: true });
 });
 $("#cancel-refresh").addEventListener("click", cancelLocalAnalysis);
-$("#open-installed-app").addEventListener("click", openInstalledApp);
 $("#connection-check").addEventListener("click", checkLocalSetup);
-$("#companion-check").addEventListener("click", checkLocalSetup);
 $("#setup-check-again").addEventListener("click", checkLocalSetup);
 window.addEventListener("tibotattle:automatic-refresh", handleElectronAutomaticRefresh);
 window.addEventListener("focus", () => {
@@ -12270,7 +12341,9 @@ document.addEventListener("scroll", () => {
   if (current) positionInformationPopover(current.popover, current.button);
 }, true);
 
-const workUsageView = mountWorkUsageView({ root: document.querySelector("#projects"), t, renderInformationLabel: informationLabel, sharedReporting: true, reportingWindow: null });
+// This product exposes model performance, usage, allowance and token value.
+// The upstream Projects & threads view has no section here, so it is not
+// mounted and nothing can request its report.
 const modelPerformance = mountModelPerformance({
   root: document.querySelector("#performance"), client: localClient,
   t, locale: () => localization.formatLocale(), sharedReporting: true, reportingWindow: null,
@@ -12285,7 +12358,7 @@ document.querySelector("#reporting-period-controls").addEventListener("click", e
   if (button) reportingPeriod.select(button.dataset.period);
 });
 renderReportingPeriod();
-const dashboardReportPreloader = createDashboardReportPreloader({ reports: [workUsageView, modelPerformance] });
+const dashboardReportPreloader = createDashboardReportPreloader({ reports: [modelPerformance] });
 
 mountDashboardNavigation({
   documentRef: document,
@@ -12293,10 +12366,6 @@ mountDashboardNavigation({
 });
 
 async function bootstrapDashboard() {
-  renderSharedInstallerJourney(document, {
-    formatLocale: getFormattingLocale(),
-    translateMessage: t,
-  });
   updateLocalActionButtons();
   await loadLocalDashboard();
   startElectronStartupRefresh();

@@ -847,7 +847,7 @@ test("macOS production runtime connects updater controls to protected preference
     },
   });
   assert.equal(fixture.spawnCalls[0].options.env.USAGE_MONITOR_DEVELOPMENT_ACCOUNT_SECRET_FILE, undefined);
-  assert.equal(firstRunDisclosures[0].title, "Welcome to TiboTattle");
+  assert.equal(firstRunDisclosures[0].title, "Welcome to TiboTempo");
   assert.doesNotMatch(firstRunDisclosures[0].detail, /Uploads are not available|development build/u);
   assert.equal(autoUpdater.autoInstallOnAppQuit, false);
   assert.equal(autoUpdater.autoDownload, true);

@@ -1228,21 +1228,23 @@ test("the public guidance pages are useful stubs without app-only controls", asy
   }
 });
 
-test("the dashboard uses accountless sharing while the public site owns delayed evidence", async () => {
+test("the local dashboard carries no community, account or download entry of its own", async () => {
   const siteSource = await readFile(SITE_SOURCE, "utf8");
   const appSource = await readFile(APP_SOURCE, "utf8");
+  // The upstream release site keeps its own entry points; the personal
+  // TiboTempo dashboard mounts neither of them.
   assert.match(siteSource, /from "\.\/community-view\.js"/u);
   assert.match(siteSource, /from "\.\/install-cta\.js"/u);
-  assert.match(appSource, /from "\.\/install-cta\.js"/u);
+  assert.doesNotMatch(appSource, /from "\.\/install-cta\.js"/u);
   assert.doesNotMatch(appSource, /from "\.\/community-view\.js"/u);
-  // The dashboard is a single local review/send destination; delayed public
-  // evidence remains rendered by the public website entry point.
+  assert.doesNotMatch(appSource, /from "\.\/community-data\.js"/u);
   assert.doesNotMatch(appSource, /COMMUNITY_METRIC_LABELS|renderSharedCommunitySnapshot/u);
   assert.doesNotMatch(appSource, /function configuredInstallerRelease\(/u);
   assert.doesNotMatch(appSource, /function formatInstallerSize\(/u);
   const appHtml = await readFile(APP_HTML, "utf8");
-  assert.match(appHtml, /id="community"/u);
-  assert.match(appHtml, /https:\/\/tibotattle\.com\/#community/u);
+  assert.doesNotMatch(appHtml, /id="community"/u);
+  assert.doesNotMatch(appHtml, /data-nav="community"/u);
+  assert.doesNotMatch(appHtml, /tibotattle\.com/u);
   for (const retiredControl of [
     'id="central-state"',
     'id="backend"',
@@ -1264,7 +1266,7 @@ test("the dashboard uses accountless sharing while the public site owns delayed 
   assert.doesNotMatch(appHtml, /id="prepare-contribution"/u);
   assert.doesNotMatch(appHtml, /id="sync-run-once"/u);
   assert.doesNotMatch(appHtml, /id="incremental-consent"/u);
-  assert.match(appHtml, /id="electron-accountless-sharing-enabled"/u);
+  assert.doesNotMatch(appHtml, /id="electron-accountless-sharing-enabled"/u);
 });
 
 test("the retained weekly snapshot normalizer still guards the app's closed contract", () => {

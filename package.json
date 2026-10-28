@@ -60,6 +60,8 @@
     "migrate:legacy-reports": "node ./scripts/migrate-local-legacy-reports.mjs",
     "package:electron:development": "node ./scripts/package-electron-development.mjs",
     "package:electron:production:prepare": "node ./scripts/package-electron-production.mjs",
+    "personal:dev": "electron ./apps/electron/personal-main.js",
+    "personal:package": "node ./scripts/package-personal-development.mjs",
     "product:backend:acceptance": "npm --prefix apps/worker run acceptance:local --",
     "product:backend:acceptance:real-local": "node ./scripts/run-real-local-backend-acceptance.js",
     "product:backend:account-scoped-smoke": "npm --prefix apps/worker run smoke:account-scoped:http --",

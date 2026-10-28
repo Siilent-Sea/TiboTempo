@@ -129,6 +129,7 @@ export const WEB_MESSAGES = Object.freeze({
       || key.startsWith("workUsage.")
       || key.startsWith("performance.")
       || key.startsWith("performanceConsent.")
+      || key.startsWith("dashboard.analysis.")
       || key === "dashboard.pricing.speedNote"
       || key === "accounting.pricingDisclosure"
       || key === "accounting.model.separateMainAllowanceTitle"
@@ -2374,6 +2375,17 @@ export const LEGACY_TEXT_CATALOG = Object.freeze({
   "Connecting…": ["正在连接…", "Conectando…"],
   "No real usage is displayed": ["未显示真实使用情况", "No se muestra uso real"],
   "Starting local analysis…": ["正在开始本地分析…", "Iniciando análisis local…"],
+  "Starting detailed accounting…": ["正在开始详细核算…", "Iniciando contabilidad detallada…"],
+  "Update running…": ["更新正在进行…", "Actualización en curso…"],
+  "Loading evidence…": ["正在加载数据…", "Cargando datos…"],
+  "Stopping safely…": ["正在安全停止…", "Deteniendo de forma segura…"],
+  "Indexing archive history…": ["正在索引归档历史…", "Indexando historial archivado…"],
+  "Scanning local history…": ["正在扫描本地历史…", "Explorando historial local…"],
+  "Calculating usage and allowance…": ["正在计算用量和额度…", "Calculando uso y cuota…"],
+  "Analyzing files…": ["正在分析文件…", "Analizando archivos…"],
+  "Analyzing local evidence…": ["正在分析本地数据…", "Analizando datos locales…"],
+  "Analyzing…": ["正在分析…", "Analizando…"],
+  "Stopping timed-out analysis…": ["正在停止超时分析…", "Deteniendo análisis agotado…"],
   "Update running; reconnecting…": ["更新正在运行；正在重新连接…", "Actualización en curso; reconectando…"],
   "Continuing local analysis…": ["正在继续本地分析…", "Continuando el análisis local…"],
   "Finalizing bounded pause…": ["正在完成有界暂停…", "Finalizando la pausa limitada…"],

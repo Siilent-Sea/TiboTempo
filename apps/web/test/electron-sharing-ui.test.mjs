@@ -114,14 +114,27 @@ test("Electron sharing UI uses the accountless bridge and visible receipt gate",
   assert.match(appSource, /listen\(globalThis\.window, "resize", retry\)/u);
   assert.match(appSource, /electronSharingNoticeReceiptIndex = index/u);
   assert.match(appSource, /preference\.noticeCount === receiptIndex/u);
-  assert.match(indexHtml, /id="electron-sharing-notice"/u);
-  assert.match(indexHtml, /id="electron-sharing-share-now"/u);
-  assert.match(indexHtml, /id="electron-sharing-keep-off"/u);
-  assert.doesNotMatch(settingsHtml, /id="settings-sharing-enabled"/u);
-  assert.match(settingsHtml, /id="settings-manage-sharing"/u);
-  assert.match(indexHtml, /id="electron-accountless-sharing-enabled"/u);
-  assert.match(indexHtml, /id="electron-accountless-sharing-description"/u);
-  assert.doesNotMatch(indexHtml, /id="electron-accountless-open-settings"/u);
+  // The bridge is still resolved and normalized, but TiboTempo exposes no
+  // sharing control: the dashboard and Settings render none of these nodes, so
+  // an installed build cannot invite a reader into a removed feature.
+  for (const removed of [
+    "electron-sharing-notice",
+    "electron-sharing-share-now",
+    "electron-sharing-keep-off",
+    "electron-accountless-sharing-enabled",
+    "electron-accountless-sharing-description",
+    "electron-accountless-community",
+  ]) {
+    assert.doesNotMatch(indexHtml, new RegExp(`id="${removed}`, "u"), removed);
+  }
+  for (const removed of [
+    "settings-sharing-enabled",
+    "settings-manage-sharing",
+    "settings-sharing-state",
+    "settings-sharing-transport",
+  ]) {
+    assert.doesNotMatch(settingsHtml, new RegExp(`id="${removed}"`, "u"), removed);
+  }
   assert.match(settingsSource, /settingsSharingBridge\.getSharingPreference\(\)/u);
   assert.match(settingsSource, /case "recovery_required":/u);
   assert.doesNotMatch(settingsSource, /settingsSharingBridge\.setSharingEnabled/u);
@@ -130,12 +143,20 @@ test("Electron sharing UI uses the accountless bridge and visible receipt gate",
   assert.match(settingsSource, /"is-error", hasMessage && error/u);
   assert.match(settingsCss, /\.settings-operation-status\.is-success\s*\{\s*color: var\(--green\);/u);
   assert.match(settingsCss, /\.settings-operation-status\.is-error\s*\{\s*color: var\(--rust\);/u);
-  assert.match(settingsHtml, /id="settings-download-update"[^>]*hidden[^>]*disabled/u);
-  assert.match(settingsHtml, /id="settings-install-update"[^>]*hidden[^>]*disabled/u);
+  // No updater controls survive in this product's settings surface. The fixed
+  // bridge actions stay declared so an installed build keeps a single closed
+  // action vocabulary, but nothing here renders a control around them.
+  for (const removed of [
+    "settings-download-update",
+    "settings-install-update",
+    "settings-check-for-updates",
+    "settings-automatic-updates",
+    "settings-updates-status",
+  ]) {
+    assert.doesNotMatch(settingsHtml, new RegExp(`id="${removed}"`, "u"), removed);
+  }
   assert.match(settingsSource, /"downloadUpdate",\s*"installUpdateAndRestart",\s*"setAutomaticDownload"/u);
-  assert.match(settingsSource, /void invoke\("downloadUpdate"\)/u);
-  assert.match(settingsSource, /void invoke\("installUpdateAndRestart"\)/u);
-  assert.match(settingsSource, /void invoke\("setAutomaticDownload", event\.target\.checked === true\)/u);
+  assert.match(settingsSource, /\["#settings-install-update", \(\) => invoke\("installUpdateAndRestart"\)\]/u);
 });
 
 test("paused sharing stays cause-neutral in Community and Settings in every locale", async () => {
@@ -259,7 +280,7 @@ test("Electron settings expose one analyzed Codex folder and retain extras witho
     readFile(new URL("../public/electron-settings.js", import.meta.url), "utf8"),
   ]);
   const renderer = extractFunction(settingsSource, "renderCodexRoots");
-  assert.match(settingsHtml, /TiboTattle analyzes the selected Codex folder/u);
+  assert.match(settingsHtml, /TiboTempo analyzes the selected Codex folder/u);
   assert.match(settingsHtml, /retained for future multi-folder support and are not analyzed/u);
   assert.match(settingsHtml, /id="settings-add-codex-root"[^>]*hidden[^>]*disabled/u);
   assert.match(settingsHtml, /id="settings-use-default-codex-folder"[^>]*disabled/u);

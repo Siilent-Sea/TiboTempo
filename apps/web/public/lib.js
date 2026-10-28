@@ -318,6 +318,140 @@ export function contributionBatchAdmission({
 // settle at their five-minute server bound.
 export const LOCAL_REFRESH_POLLING_WINDOW_MS = 241 * 60 * 1_000;
 
+/**
+ * Supply remaining in one allowance window, from the share already used.
+ *
+ * The owner-confirmed reading is proportional and anchored at the window's own
+ * start: the time elapsed since the window opened, divided by the share already
+ * used, gives the full duration the current pace implies; multiplying by the
+ * share still remaining converts that into how much longer the allowance lasts.
+ * Ten hours elapsed at 10% used therefore implies about ninety hours of supply
+ * left. It is a straight-line extrapolation of this window's own average, not a
+ * measured burn rate, and it never borrows another window's numbers.
+ *
+ * Every input is required. A missing window start, reset, duration or usage
+ * share stays `unavailable` instead of being substituted with a zero or a
+ * guess, and a stale observation is reported as stale rather than silently
+ * treated as current. `usedPercent === 0` also stays non-projected: no
+ * consumption yet is no evidence of a pace, so it cannot imply infinite supply.
+ */
+export function quotaExhaustionProjection({
+  usedPercent = null,
+  remainingPercent = null,
+  resetAt = null,
+  durationMinutes = null,
+  observedAt = null,
+  status = "live",
+  now = Date.now(),
+} = {}) {
+  const finiteNumber = (value) => (
+    typeof value === "number" && Number.isFinite(value) ? value : null
+  );
+  const used = finiteNumber(usedPercent);
+  const remaining = finiteNumber(remainingPercent);
+  const duration = finiteNumber(durationMinutes);
+  const resetMs = typeof resetAt === "string" || resetAt instanceof Date
+    ? Date.parse(resetAt)
+    : finiteNumber(resetAt);
+  const currentMs = finiteNumber(now);
+  const stale = status === "stale";
+  const unavailable = (reason) => Object.freeze({
+    state: "unavailable",
+    reason,
+    stale,
+    usedPercent: used,
+    remainingPercent: remaining,
+    elapsedHours: null,
+    remainingHours: null,
+    projectedAt: null,
+    hoursToReset: null,
+    beforeReset: null,
+    windowStartAt: null,
+    resetAt: Number.isFinite(resetMs) ? resetMs : null,
+    basisAt: null,
+  });
+
+  if (currentMs === null) return unavailable("no_clock");
+  if (duration === null || !(duration > 0)) return unavailable("no_window_duration");
+  if (resetMs === null || !Number.isFinite(resetMs)) return unavailable("no_reset");
+  const windowStartMs = resetMs - duration * 60_000;
+  if (!(windowStartMs < resetMs)) return unavailable("no_window_start");
+  if (currentMs < windowStartMs) return unavailable("window_not_started");
+  if (currentMs >= resetMs) return unavailable("window_expired");
+  if (used === null || remaining === null) return unavailable("no_share");
+  if (used < 0 || used > 100 || remaining < 0 || remaining > 100) {
+    return unavailable("share_out_of_range");
+  }
+  if (Math.abs(used + remaining - 100) > 0.001) return unavailable("inconsistent_share");
+
+  // Pair the observed share with the instant it was observed. A stale reading
+  // extrapolated from "now" would credit time it never saw. A timestamp
+  // outside the active window or in the future stays unavailable instead of
+  // being silently relabeled as a current observation.
+  const observationGiven = observedAt !== null && observedAt !== undefined;
+  const observedMs = typeof observedAt === "string" || observedAt instanceof Date
+    ? Date.parse(observedAt)
+    : finiteNumber(observedAt);
+  if (observationGiven && !Number.isFinite(observedMs)) {
+    return unavailable("no_observation_time");
+  }
+  if (!observationGiven) return unavailable("no_observation_time");
+  if (observationGiven && (observedMs < windowStartMs || observedMs >= resetMs)) {
+    return unavailable("observation_outside_window");
+  }
+  if (observationGiven && observedMs > currentMs) return unavailable("observation_in_future");
+  const basisMs = observationGiven ? observedMs : currentMs;
+  const elapsedHours = Math.max(0, (basisMs - windowStartMs) / 3_600_000);
+  const hoursToReset = Math.max(0, (resetMs - currentMs) / 3_600_000);
+  const shared = {
+    stale,
+    usedPercent: used,
+    remainingPercent: remaining,
+    elapsedHours,
+    hoursToReset,
+    windowStartAt: windowStartMs,
+    resetAt: resetMs,
+    basisAt: basisMs,
+  };
+
+  if (used >= 100 || remaining <= 0) {
+    return Object.freeze({
+      ...shared,
+      state: "exhausted",
+      reason: null,
+      remainingHours: 0,
+      projectedAt: basisMs,
+      beforeReset: true,
+    });
+  }
+  // No usage yet: there is no ratio to divide by, and "never runs out" would be
+  // a claim, not a projection.
+  if (!(used > 0) || !(elapsedHours > 0)) {
+    return Object.freeze({
+      ...shared,
+      state: "no_usage",
+      reason: used > 0 ? "no_elapsed_time" : "no_usage",
+      remainingHours: null,
+      projectedAt: null,
+      beforeReset: null,
+    });
+  }
+
+  const remainingHours = elapsedHours / used * remaining;
+  if (!Number.isFinite(remainingHours) || remainingHours < 0) {
+    return unavailable("not_finite");
+  }
+  const projectedAt = basisMs + remainingHours * 3_600_000;
+  return Object.freeze({
+    ...shared,
+    state: "projected",
+    reason: null,
+    remainingHours,
+    projectedAt,
+    beforeReset: projectedAt <= resetMs,
+  });
+}
+
 export function createRefreshPollingBudget({
   now = () => Date.now(),
   windowMs = LOCAL_REFRESH_POLLING_WINDOW_MS,

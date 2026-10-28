@@ -87,5 +87,8 @@ test("both real dashboard success paths schedule mounted reports after rendering
     const body = source.slice(offset, offset + start.length + next);
     assert.match(body, /renderDashboard\(data\);[\s\S]*?dashboardReportPreloader\.schedule\(\);/);
   }
-  assert.match(source, /reports: \[workUsageView, modelPerformance\]/);
+  // Model performance is the only mounted report in this product.
+  assert.match(source, /reports: \[modelPerformance\]/);
+  assert.doesNotMatch(source, /workUsageView/);
+  assert.doesNotMatch(source, /from "\.\/work-usage-view\.js"/u);
 });

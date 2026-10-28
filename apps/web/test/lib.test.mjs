@@ -5252,28 +5252,31 @@ test("first run is a truthful install and local preflight journey", async () => 
   assert.match(html, /property="og:image:height" content="630"/u);
   assert.match(html, /name="twitter:card" content="summary_large_image"/u);
   assert.match(html, /name="twitter:image" content=""/u);
-  assert.match(html, /id="installer-link"[^>]*hidden/u);
-  assert.match(html, /id="open-installed-app" href=""/u);
-  assert.match(html, /id="installer-details"[^>]*hidden/u);
-  assert.match(html, /A public installer is not configured for this build/u);
-  assert.match(html, /A normal website cannot read Codex files/u);
-  assert.match(html, /Your real usage appears only on that loopback page/u);
-  assert.match(html, /You may close this hosted browser tab at any time/u);
-  assert.match(html, /A useful headline often appears in seconds/u);
-  assert.match(html, /first deep pass can\s+take a few minutes/u);
-  assert.match(html, /later updates are normally faster/u);
-  assert.match(html, /id="release-notes-link"/u);
-  assert.match(html, /id="privacy-link"/u);
-  assert.match(html, /id="security-link"/u);
-  assert.match(html, /id="support-link"/u);
-  assert.match(html, /id="companion-check"/u);
+  // TiboTempo is a locally built desktop product: it publishes no installer
+  // and hosts no download journey, so none of that markup may reappear here.
+  for (const removed of [
+    "installer-link",
+    "intel-installer-link",
+    "installer-details",
+    "open-installed-app",
+    "companion-check",
+    "release-notes-link",
+    "community",
+  ]) {
+    assert.doesNotMatch(html, new RegExp(`id="${removed}"`, "u"), removed);
+  }
+  assert.doesNotMatch(html, /A normal website cannot read Codex files/u);
+  assert.doesNotMatch(html, /data-nav="community"/u);
   assert.match(html, /id="setup-check-again"/u);
   assert.match(html, /id="refresh-button"[^>]*disabled/u);
   assert.match(html, /data-requires-evidence/u);
   // Re-pinned 2026-08-08 (owner-directed): the prepare-and-review disclosure
   // is gone; the approve-once card carries the no-silent-upload promise now.
   assert.doesNotMatch(html, /id="community-contribution-disclosure"/u);
-  assert.match(html, /id="electron-accountless-sharing-description"/u);
+  // TiboTempo has no accounts, no hosted contribution and no community page,
+  // so no sharing control may be reachable from this dashboard.
+  assert.doesNotMatch(html, /electron-accountless-sharing-description/u);
+  assert.doesNotMatch(html, /electron-sharing-notice/u);
   assert.doesNotMatch(html, /id="incremental-consent"/u);
   assert.match(styles, /native-dashboard #setup-card/u);
   assert.match(appSource, /card\.hidden = true;[\s\S]*?card\.setAttribute\("aria-hidden", "true"\)/u);
@@ -5291,10 +5294,10 @@ test("first run is a truthful install and local preflight journey", async () => 
     /export function configuredInstallerRelease\(documentRef, \{ architecture = "arm64" \} = \{\}\)/u,
   );
   assert.doesNotMatch(installSource, /configuredSemanticOpenTarget|usage-monitor-semantic-open-target/u);
-  assert.match(appSource, /from "\.\/install-cta\.js"/u);
+  assert.doesNotMatch(appSource, /from "\.\/install-cta\.js"/u);
   assert.match(appSource, /function configuredSemanticOpenTarget\(documentRef\)/u);
   assert.match(appSource, /const SEMANTIC_OPEN_TARGET = configuredSemanticOpenTarget\(document\);/u);
-  assert.match(appSource, /installedAppLink\.href = SEMANTIC_OPEN_TARGET/u);
+  assert.doesNotMatch(appSource, /installedAppLink\.href/u);
   assert.doesNotMatch(appSource, /usagemonitor:\/\/open/u);
   assert.match(installSource, /translateMessage\(\s*"installer\.sha256",\s*\{ value: release\.sha256 \}/u);
   assert.match(
@@ -5303,7 +5306,7 @@ test("first run is a truthful install and local preflight journey", async () => 
   );
   assert.match(installSource, /selected\.protocol === "https:"/u);
   assert.doesNotMatch(appSource, /loopbackHttp/u);
-  assert.match(appSource, /function openInstalledApp\(\)/u);
+  assert.doesNotMatch(appSource, /function openInstalledApp\(\)/u);
   assert.match(appSource, /function localAnalysisAllowed\(/u);
   assert.match(appSource, /if \(!localAnalysisAllowed\(\)\) \{/u);
   for (const status of [
@@ -5375,7 +5378,8 @@ test("timeline keeps time, uncertainty, and primary navigation explicit", async 
   ]) {
     assert.match(html, new RegExp(`id="${id}"`));
   }
-  assert.match(html, /data-nav="community"/);
+  assert.doesNotMatch(html, /data-nav="community"/u);
+  assert.doesNotMatch(html, /data-nav="projects"/u);
   assert.doesNotMatch(html, /data-nav="data"/u);
   assert.match(html, /id="residual-time-heading">Local time/);
   assert.doesNotMatch(html, /Exact local \/ UTC time/);
@@ -6370,7 +6374,8 @@ test("the weekly allowance chart leads the dashboard", async () => {
     "the weekly allowance section precedes the timeline section",
   );
   assert.ok(
-    html.indexOf('data-nav="weekly"') < html.indexOf('data-nav="trends"'),
+    html.indexOf('data-nav="weekly"') < html.indexOf('data-nav="performance"')
+      && html.indexOf('data-nav="performance"') < html.indexOf('data-nav="method"'),
     "primary navigation follows the same order as the sections",
   );
   assert.match(html, /<h2 id="weekly-title" data-i18n="page.weekly.title">Allowance Value<\/h2>/u);

@@ -61,10 +61,12 @@ export function createDesktopTrayTemplate({
   systemLocales = defaultSystemLocales(),
   platform = process.platform,
   now = Date.now(),
+  minimal = false,
 } = {}) {
   if (typeof appName !== "string" || appName.trim().length === 0) {
     throw new TypeError("appName is required");
   }
+  if (typeof minimal !== "boolean") throw new TypeError("minimal must be a boolean");
   const boundedActions = createDesktopActionInterface(actions);
   const checkForUpdates = getDesktopOptionalAction(
     boundedActions,
@@ -168,6 +170,22 @@ export function createDesktopTrayTemplate({
       label: window.label,
       enabled: false,
     });
+  }
+  if (minimal) {
+    template.push(
+      { type: "separator" },
+      { label: desktopText("electron.tray.open", { appName }, textOptions), click: boundedActions.show },
+      refreshAction,
+      ...(typeof onCustomize === "function"
+        ? [{ label: desktopText("electron.tray.customize", {}, textOptions), click: onCustomize }]
+        : []),
+      { label: desktopText("electron.tray.settings", {}, textOptions), click: boundedActions.settings,
+        accelerator: "CmdOrCtrl+," },
+      { type: "separator" },
+      { label: desktopText("electron.tray.quit", { appName }, textOptions), click: boundedActions.quit,
+        accelerator: "CmdOrCtrl+Q" },
+    );
+    return template;
   }
   template.push(
     { type: "separator" },

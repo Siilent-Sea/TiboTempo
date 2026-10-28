@@ -221,10 +221,20 @@ export async function ensureDesktopFirstRunAcknowledged({
   locale = "system",
   systemLocales = [],
   production = false,
+  dialogCopy = null,
+  defaultStartAtLogin = true,
 } = {}) {
   const nativeDialog = assertDialog(dialog);
   const backend = assertReceiptBackend(receiptBackend);
-  const copy = desktopFirstRunDialogCopy({ locale, systemLocales, production });
+  if (typeof defaultStartAtLogin !== "boolean") throw new TypeError("invalid login default");
+  const copy = dialogCopy ?? desktopFirstRunDialogCopy({ locale, systemLocales, production });
+  if (!copy || typeof copy !== "object"
+      || ["title", "message", "detail", "checkboxLabel", "failureTitle", "failureMessage", "failureDetail"]
+        .some((key) => typeof copy[key] !== "string")
+      || !Array.isArray(copy.buttons) || copy.buttons.length !== 2
+      || copy.buttons.some((button) => typeof button !== "string")) {
+    throw new TypeError("invalid first-run copy");
+  }
 
   let receipt;
   try {
@@ -265,7 +275,7 @@ export async function ensureDesktopFirstRunAcknowledged({
       detail: copy.detail,
       buttons: [...copy.buttons],
       checkboxLabel: copy.checkboxLabel,
-      checkboxChecked: true,
+      checkboxChecked: defaultStartAtLogin,
       defaultId: 0,
       cancelId: 1,
       noLink: true,

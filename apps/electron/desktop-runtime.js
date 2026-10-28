@@ -705,6 +705,9 @@ export async function launchDesktopRuntime({
   sharingBackend,
   sharingInstallationState,
   firstRunReceiptBackend,
+  firstRunDialogCopy,
+  firstRunStartAtLoginDefault,
+  ignoreLegacyStateRoots = false,
   ownedDownloadsRegistry,
   automaticRefreshCadence,
   crashCapture = null,
@@ -885,6 +888,12 @@ export async function launchDesktopRuntime({
     || accountlessProduction !== undefined
     || selectedAccountlessSignedStagingRehearsal !== undefined
     || selectedAccountlessHostedRehearsal !== undefined;
+  if (typeof ignoreLegacyStateRoots !== "boolean"
+      || ((ignoreLegacyStateRoots || firstRunDialogCopy !== undefined
+          || firstRunStartAtLoginDefault !== undefined)
+        && (accountlessEnabled || productionDistribution !== undefined))) {
+    throw shellError("electron_configuration_invalid");
+  }
   const accountlessNativeCredential = accountlessProduction
     ?? selectedAccountlessSignedStagingRehearsal;
   const accountlessNativeCredentialUsesMac = accountlessNativeCredential !== undefined
@@ -1191,14 +1200,14 @@ export async function launchDesktopRuntime({
     platform,
     environment: runtimeEnvironment,
   });
-  const legacyStateRoots = accountlessRehearsalPaths === null
+  const legacyStateRoots = accountlessRehearsalPaths === null && !ignoreLegacyStateRoots
     ? [defaultExportStateDirectory({
       platform,
       homeDirectory,
       environment: runtimeEnvironment,
     })]
     : [];
-  if (accountlessRehearsalPaths === null && platform === "darwin") {
+  if (accountlessRehearsalPaths === null && !ignoreLegacyStateRoots && platform === "darwin") {
     legacyStateRoots.push(join(homeDirectory, "Library", "Application Support", "Usage Monitor"));
   }
   // Establish provenance before the first-run receipt or settings create a new
@@ -1299,6 +1308,8 @@ export async function launchDesktopRuntime({
     systemLocales: desktopSystemLocales,
     production: productionDistribution !== undefined
       || selectedAccountlessSignedStagingRehearsal !== undefined,
+    dialogCopy: firstRunDialogCopy,
+    defaultStartAtLogin: firstRunStartAtLoginDefault,
   });
   if (firstRun.status !== "acknowledged") {
     deepLinkIntakeCleanup();

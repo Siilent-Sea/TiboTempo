@@ -44,6 +44,11 @@ function positiveSafeInteger(value, label) {
  *
  * The view handed to `onLine` is only valid for the duration of that call. It
  * may alias the read buffer, which is refilled on the next read.
+ *
+ * A compressed source may pass `end: Infinity`. Its logical byte length is not
+ * known before decoding, and re-decoding a prefix per call would make a bounded
+ * multi-call scan quadratic, so callers that cannot express a logical budget
+ * read such a source through to its logical end in one pass.
  */
 export async function forEachRolloutLine(path, {
   start = 0,
@@ -59,24 +64,26 @@ export async function forEachRolloutLine(path, {
   if (!Number.isSafeInteger(start) || start < 0) {
     throw new TypeError("start must be a non-negative safe integer");
   }
-  if (!Number.isSafeInteger(end) || end < 0) {
-    throw new TypeError("end must be a non-negative safe integer");
-  }
   positiveSafeInteger(maximumLineBytes, "maximumLineBytes");
   positiveSafeInteger(highWaterMark, "highWaterMark");
 
+  const callerOwnedHandle = path && typeof path === "object"
+    && typeof path.stat === "function" && typeof path.read === "function";
+  const compressed = isCompressedRolloutSource(path);
+  if (!(compressed && end === Number.POSITIVE_INFINITY)
+      && (!Number.isSafeInteger(end) || end < 0)) {
+    throw new TypeError("end must be a non-negative safe integer");
+  }
+
   const empty = {
     nextOffset: start,
+    totalBytes: start,
     partialDeferred: false,
     oversizedLines: 0,
     completeLines: 0,
     aborted: signal?.aborted === true,
   };
   if (end <= start) return empty;
-
-  const callerOwnedHandle = path && typeof path === "object"
-    && typeof path.stat === "function" && typeof path.read === "function";
-  const compressed = isCompressedRolloutSource(path);
   const input = callerOwnedHandle || compressed
     ? null
     : createReadStream(path, { start, end: end - 1, highWaterMark });
@@ -202,6 +209,10 @@ export async function forEachRolloutLine(path, {
 
   return {
     nextOffset,
+    // Logical bytes observed. For a compressed source this exceeds the physical
+    // `end` argument, so callers checkpoint a decompressed offset, never a
+    // compressed file position.
+    totalBytes: absolutePosition,
     partialDeferred: !aborted && absolutePosition > nextOffset,
     oversizedLines,
     completeLines,

@@ -104,15 +104,32 @@ test("readiness retries remain bounded and generation fenced", async () => {
   assert.equal(timers.length, 0);
 });
 
-test("the shared dashboard retains accountless controls and removes retired social presentation", async () => {
+test("the dashboard presents no account, sharing or community surface at all", async () => {
   const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
   const styles = await readFile(new URL("../public/styles.css", import.meta.url), "utf8");
   for (const text of [source, html, styles]) {
     assert.doesNotMatch(text, /identity-google-signin|identity-apple-signin|provider-button-google|provider-button-apple|beginHostedSignIn|approveIncrementalContribution|disconnect-device-dialog|usage-monitor-google-client-id/u);
   }
-  assert.match(html, /id="electron-accountless-community-state"/u);
-  assert.match(html, /id="electron-accountless-community-transport"/u);
-  assert.match(html, /id="electron-accountless-sharing-enabled"/u);
+  // TiboTempo is a single-user local product: no account, contribution,
+  // community or hosted-download entry may be reachable from the dashboard.
+  for (const removed of [
+    "electron-accountless-community",
+    "electron-accountless-sharing-enabled",
+    "electron-sharing-notice",
+    "community-contribution-disclosure",
+    "community",
+    "installer-link",
+  ]) {
+    assert.doesNotMatch(html, new RegExp(`id="${removed}`, "u"), removed);
+  }
+  assert.doesNotMatch(html, /data-nav="community"/u);
+  assert.doesNotMatch(html, /tibotattle\.com/u);
+  assert.doesNotMatch(html, /github\.com\/adamallcock/u);
   assert.doesNotMatch(html, /id="(?:refresh-button|setup-refresh)"[^>]*hidden/u);
   assert.doesNotMatch(source, /dashboardCapabilities|communityClient|prepareContribution\(|restoreCommunitySession|resumePendingHostedSignIn/u);
+  // The only remaining destinations are the four product pages.
+  assert.deepEqual(
+    [...html.matchAll(/data-nav="([^"]+)"/gu)].map((match) => match[1]),
+    ["overview", "weekly", "performance", "method"],
+  );
 });
